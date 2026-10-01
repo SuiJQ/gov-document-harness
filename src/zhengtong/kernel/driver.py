@@ -79,6 +79,26 @@ def drive(
     `step` 收一个状态、返回一个 `Result[Step]`。它**不得抛异常**——
     要用 `Result.fail` 返回；真抛了说明实现有错，本层不兜。
 
+    ## 审计 D-137：step 抛异常时**先留痕再抛**
+
+    原实现对 `step(state)` 不设防，异常直接穿透 `drive()`。
+    实测后果（journal 落盘验证）：
+
+        走 Result.fail → ['run.started', 'run.failed']   ← 留痕完整
+        走 raise       → ['run.started']                   ← 原因消失
+
+    而本模块开头第 4 点写的正是「**保证停得干净**：
+    总线必须 flush 完才退出」，理由是「用户看到『导出被拦截』没弹，
+    **日志里也没有**」——而异常穿透时正是日志里什么都没有。
+    **注释担心的那个场景，正在它自己守护的这行代码里发生。**
+
+    故此处 `try/except`：发 `run.failed` 并 flush 后**原样重抛**。
+    既不吞异常（栈照常抛到调用方，调试时能看到确切位置），
+    又不留死角（用户排查时能看到失败原因）。
+
+    **不重抛才是错的**：吞掉异常会让编排层的 bug 变成
+    「程序莫名其妙不写了」，那是比崩溃更难查的问题。
+
     `max_steps` 是**死循环保险丝**。编排层一旦写成"总是返回同一步"，
     没有上限就会挂死用户界面；有了它至少能在有界时间内退出并留痕。
     默认 10000 步对真实任务绰绰有余（一个公文流程不超过几十步）。
@@ -108,7 +128,15 @@ def drive(
             _emit_failed(bus, run_id, detail)
             return Result.fail(ErrorCode.KERNEL_STALLED, detail)
 
-        got = step(state)
+        try:
+            got = step(state)
+        except Exception as 错:
+            # 审计 D-137：见上文。这里刻意用 Exception 而非具体类型——
+            # `step` 是任意用户回调，能抛出的类型不可穷举，
+            # 而 `BaseException` 里的 KeyboardInterrupt/SystemExit
+            # 属于「用户主动中断」，不该被包装成 run.failed。
+            _emit_failed(bus, run_id, f"编排层抛出未处理异常：{错!r}")
+            raise
         if got.is_error:
             err = got.error
             assert err is not None  # is_error 为 True 时 error 必非 None

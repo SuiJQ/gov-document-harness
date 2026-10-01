@@ -18,6 +18,8 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnusedCallResult=false, reportUnusedParameter=false
 from __future__ import annotations
 
+import pytest
+
 from zhengtong.domain.errors import ErrorCode, Result
 from zhengtong.domain.event import Event, EventKind
 from zhengtong.domain.ids import RunId
@@ -233,3 +235,74 @@ def test_终态对象可直接判断成败() -> None:
     assert isinstance(got.unwrap(), DriveOutcome)
     assert got.unwrap().ok and got.unwrap().run_id == RUN
     bus.stop()
+
+
+# ── D-137：step 抛异常时先留痕再抛 ──────────────────────────────────
+#
+# 本节的文件头第 1 条写的是「退出前必须 flush：日志里也没有——
+# 前面所有脱敏与落盘都白搭」。而异常穿透时正是日志里什么都没有。
+
+
+def test_异常穿透前已留下失败原因() -> None:
+    """**走 `raise` 与走 `Result.fail` 的留痕不该差这么多。**
+
+    实测（journal 落盘）：
+
+        走 Result.fail → ['run.started', 'run.failed']
+        走 raise       → ['run.started']            ← 原因消失
+
+    而本文件头第 1 条写的正是「用户看不到失败原因、日志里也没有」。
+    **注释担心的场景，正在它自己守护的这行代码里发生。**
+    """
+    收到: list[Event] = []
+    总线 = _bus()
+    总线.subscribe(收到.append)
+
+    def 抛(state: int) -> Result[Step[int]]:
+        raise ValueError("编排层在第3步写错了")
+
+    with pytest.raises(ValueError, match="编排层在第3步写错了"):
+        drive(run_id=RUN, bus=总线, initial_state=0, step=抛, max_steps=5)
+    总线.stop()
+
+    assert _kinds(收到) == ["run.started", "run.failed"]
+    失败 = 收到[-1]
+    assert 失败.data["detail"], "失败原因必须进事件，否则用户无从判断"
+    assert "编排层在第3步写错了" in str(失败.data["detail"])
+
+
+def test_异常须原样重抛不得吞掉() -> None:
+    """**吞异常才是错的**：那会让编排层的 bug 变成
+    「程序莫名其妙不写了」，比崩溃更难查。
+
+    故既要留痕，也要把原异常连栈一起抛给调用方。
+    """
+    总线 = _bus()
+
+    def 抛(state: int) -> Result[Step[int]]:
+        raise ZeroDivisionError("boom")
+
+    with pytest.raises(ZeroDivisionError):
+        drive(run_id=RUN, bus=总线, initial_state=0, step=抛, max_steps=5)
+    总线.stop()
+
+
+def test_用户中断不包装成失败() -> None:
+    """**`BaseException` 里的中断不该被包装成 run.failed。**
+
+    `step` 是任意用户回调，能抛的类型不可穷举，故用 `Exception`
+    而非具体类型；但 KeyboardInterrupt / SystemExit 属于
+    「用户主动中断」，把它记成运行失败是误报。
+    """
+    收到: list[Event] = []
+    总线 = _bus()
+    总线.subscribe(收到.append)
+
+    def 中断(state: int) -> Result[Step[int]]:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        drive(run_id=RUN, bus=总线, initial_state=0, step=中断, max_steps=5)
+    总线.stop()
+
+    assert _kinds(收到) == ["run.started"], "用户中断不是运行失败"
