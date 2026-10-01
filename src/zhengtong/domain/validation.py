@@ -113,10 +113,10 @@ def validate_run_state(state: RunState) -> Result[None]:
     for role in state.role_states:
         if role not in roster:
             return Result.fail(
-                ErrorCode.GATE_RESPONSIBLE_NOT_IN_TIER,
+                ErrorCode.STATE_ROLE_NOT_IN_TIER,
                 f"状态含未编入成员：{role.value}",
             )
     for gate in state.gates:
         if gate not in {g.value for g in FORMAL_GATES}:
-            return Result.fail(ErrorCode.GATE_NO_EVIDENCE, f"未知门禁：{gate}")
+            return Result.fail(ErrorCode.STATE_UNKNOWN_GATE, f"未知门禁：{gate}")
     return Result.ok_none()

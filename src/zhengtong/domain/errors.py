@@ -80,6 +80,12 @@ class ErrorCode(StrEnum):
     KERNEL_STALLED = "E080"  # 状态机无法推进（防挂死）
     ROLE_ROUND_LIMIT = "E081"  # 成员轮次超限（D-058）
     RUN_RESUMED = "E082"  # 从检查点续跑，非错误，仅记录
+    # ── 状态自检（E09x）：与门禁配平类错误区分 ──
+    # 审计 D-115：原先这两种错误都借用 E043/E041，而那两码
+    # 字面专指门禁取证。用户看到的是「门禁取证问题」，
+    # 实际问题却是「状态被污染」，排查方向会被带偏。
+    STATE_ROLE_NOT_IN_TIER = "E090"  # 状态里含本档未编入的角色
+    STATE_UNKNOWN_GATE = "E091"  # 状态里出现未知门禁编号
 
     def __str__(self) -> str:
         return self.value
