@@ -16,7 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10"]
+# 开发工具不进运行时依赖（D-003：断网 Windows 便携 zip，依赖越少越好）
+dev = [
+    "pytest>=8",
+    "ruff>=0.14",
+    "basedpyright>=1.31",   # 替代 mypy：类型覆盖更全；自带 Node runtime，不需系统装 Node
+]
 
 [project.scripts]
 zhengtong = "zhengtong.cli.main:main"
@@ -24,8 +29,49 @@ zhengtong = "zhengtong.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# ── Ruff：快，覆盖风格与静态缺陷（F 类）────────────────────
+# 只管 Ruff 擅长的，不与类型检查重叠。
 [tool.ruff]
 line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
 
-[tool.mypy]
-python_version = "3.11"
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes：未用导入、未定义名 —— basedpyright 不查，必须 Ruff 兜住
+    "E",     # pycodestyle 基本
+    "W",     # 行尾空白等
+    "I",     # import 排序
+    "UP",    # pyupgrade：3.11 可用的现代写法
+    "B",     # bugbear：可变默认参数、循环变量绑定等
+    "C4",    # 推导式：少写一层 list()
+    "SIM",   # simplify
+    "RET",   # 返回值
+    "ARG",   # 未使用参数（探针实测 Ruff 能抓到）
+    "PTH",   # pathlib 替代 os.path（路径守卫要 realpath，PTH 促使写法统一）
+    "RUF",   # ruff 自有规则
+]
+ignore = [
+    "E501",     # 行宽交给 formatter，不在 linter 里重复报
+    "SIM108",   # 三元表达式并不总是更清楚
+    "RUF001",   # 中文全角标点属正常，不当作 ambiguous unicode
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "S101"]   # 测试里允许未用参数与 assert
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ── BasedPyright：慢但完整，负责类型 ─────────────────────
+# D-068 要求全 tuple 真不可变、D-069 要求 provenance 可校验 —— 这些都只能靠类型检查兜。
+[tool.basedpyright]
+include = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "recommended"   # 比 pyright 默认严，适合本项目的强契约设计
+pythonPlatform = "Linux"          # CI 平台；Windows 下开发需覆盖此项
+reportMissingTypeStubs = "warning"
+reportAny = "warning"
+

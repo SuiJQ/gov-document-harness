@@ -48,11 +48,28 @@ D-Lock（方向锁） → Phase 0（因果推演） → Phase 0.5（政策取证
 ## 开发
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -e .
+uv venv .venv --python 3.11
+uv pip install --python .venv/bin/python -e ".[dev]"
 ```
 
-> 决策记录见工作区 `DECISIONS.md`（唯一权威来源，60 条决策）。
+### 代码检查
+
+```bash
+./scripts/check.sh          # 检查全部
+./scripts/check.sh --fix    # 顺便自动修（类型检查不参与自动修）
+```
+
+两个工具各管一段，**职责不重叠，缺一不可**：
+
+| 工具 | 负责 | 独有职责 |
+|---|---|---|
+| **Ruff** | 格式与静态缺陷 | 未使用导入、未定义名（基于类型检查查不到） |
+| **BasedPyright** | 类型检查 | 注解与实现不符、隐式 `Any`、缺属性注解 |
+
+单独跑其中一个会漏问题：`ruff check` 通过不代表类型正确，
+`basedpyright` 通过不代表没有死代码。选型依据见 `DECISIONS.md` D-083。
+
+> 决策记录见工作区 `DECISIONS.md`（唯一权威来源，83 条决策）。
 
 ## 许可
 

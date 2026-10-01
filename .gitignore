@@ -17,3 +17,6 @@ user/
 .env
 config.local.toml
 ARCH_REVIEW_TODO.md
+
+# Python 开发环境
+.venv/

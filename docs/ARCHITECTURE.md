@@ -1397,6 +1397,7 @@ src/zhengtong/
 | D-080 角色代号双层 | 内部 `role_id` 英文（目录/日志/事件）；界面 `display_name` 中文；映射只在 `manifest.json` | §7.1 §13 |
 | D-081 授权免标 | 纯自用不分发，`manifest.json` 只记 `name`/`version`/`sha256`，不加 `license` | §12 |
 | D-082 连接配置时机 | 第 6 步前需真实凭据；前 5 步不需；无凭据则该步标注"未实测"不推进 | §15 |
+| D-083 双检查器 | Ruff 管 F 类静态缺陷，BasedPyright 管类型；`scripts/check.sh` 统一入口 | §3.4 |
 | D-039 压缩保留优先级 | `ContextView.pinned_facts` 物理不可丢 | §7.2 |
 | D-040 D1–D9 字段 | `DCardField` 逐字段带 provenance 与采集时机 | §3.2 |
 | D-041 独立上下文 | 每角色一份 `ContextView`，成员唯一出口是工具 | §7.2 §7.4 |
