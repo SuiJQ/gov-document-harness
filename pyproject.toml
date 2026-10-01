@@ -21,6 +21,13 @@ dev = [
     "pytest>=8",
     "ruff>=0.14",
     "basedpyright>=1.31",   # 替代 mypy：类型覆盖更全；自带 Node runtime，不需系统装 Node
+    # ── 零信任审计三件套（D-103）─────────────────────────
+    # 三者只查**不同维度**，刻意不引入第二个类型检查器：
+    # 同维度重复验证的边际收益接近零，噪音反而会淹没真问题。
+    "pytest-cov>=7",   # 覆盖率：回答"哪些代码从没被执行"——没覆盖即没验证
+    "vulture>=2.16",   # 死代码：Ruff 的 F401 只管未用导入，整个没人调的函数它看不到
+    "hypothesis>=6.168",  # 属性测试：唯一能自动生成"我没想到的输入"的工具，
+                          #   用于路径守卫与配置容错这两处手写用例永远想不全的地方
 ]
 
 [project.scripts]
@@ -74,7 +81,9 @@ quote-style = "double"
 include = ["src", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "recommended"   # 比 pyright 默认严，适合本项目的强契约设计
-pythonPlatform = "Linux"          # CI 平台；Windows 下开发需覆盖此项
+pythonPlatform = "All"          # 原写死 "Linux"：Windows 下开发时类型检查会误报
+                              # os.name 等平台分支。目标平台是 Win11 + Linux 双支持（D-003），
+                              # 检查器必须按"平台未知"推断，而不是替我选一个
 reportMissingTypeStubs = "warning"
 # `__str__` 等内置协议覆盖要求 typing.override，那是 3.12 才有的（D-079 定 3.11），
 # 为此加 typing_extensions 不值得——收益只是让检查器闭嘴，不是让代码更对。

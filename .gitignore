@@ -7,7 +7,12 @@ dist/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
-.ruff_cache/
+
+# 覆盖率数据：含绝对路径，会泄露本地目录结构，且每次跑都变
+.coverage
+.coverage.*
+htmlcov/
+
 
 # 运行期数据不进仓库
 data/
