@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .adapters.fakes import (
+    STUB_MARK,
     FakeClock,
     FakeContentPack,
     FakeLlm,
@@ -40,17 +41,28 @@ from .domain.errors import ErrorCode, Result
 from .domain.event import Event, EventKind, Level
 from .domain.ids import ArtifactId, RunId
 from .domain.phase import PhaseId
+from .domain.role import RoleId
 from .kernel.bus import EventBus
 from .kernel.driver import DriveOutcome, Step, drive
 from .kernel.journal import JsonlJournal
 from .kernel.projection import DebugProjection, StandardProjection
 from .kernel.redactor import Redactor
+from .ports.llm import LlmRequest, Message
 from .ports.registry import PortRegistry
 
 #: 三个阶段成果的名字（D-030）。标准模式只显示这三样（D-046）。
 ARTIFACT_DIRECTION = "写作方向确认单"
 ARTIFACT_OUTLINE = "文章大纲"
 ARTIFACT_DRAFT = "正文初稿"
+
+
+#: 阶段 →（成果名, 成果种类, 负责角色）。**角色对应关系只放这里**，
+#: 因为它属内容包的编排事实；代码别处不得另建角色对照（D-080）。
+_PRODUCING: dict[PhaseId, tuple[str, str, RoleId]] = {
+    PhaseId.DIRECTION: (ARTIFACT_DIRECTION, "direction_sheet", RoleId.TEAM_LEAD),
+    PhaseId.OUTLINE: (ARTIFACT_OUTLINE, "outline", RoleId.STRUCTURE),
+    PhaseId.DRAFTING: (ARTIFACT_DRAFT, "draft", RoleId.LANGUAGE),
+}
 
 
 @dataclass(slots=True)
@@ -84,6 +96,11 @@ def build_app(
     secrets: FakeSecrets | None = None,
     storage: FakeStorage | None = None,
     validators: FakeValidators | None = None,
+    clock_override: FakeClock | None = None,
+    user_files: FakeUserFiles | None = None,
+    content_pack: FakeContentPack | None = None,
+    retriever: FakeRetriever | None = None,
+    llm: FakeLlm | None = None,
 ) -> App:
     """装配一个应用。**每个端口都可注入**，便于测试定向场景。
 
@@ -95,14 +112,14 @@ def build_app(
     val = validators if validators is not None else FakeValidators()
 
     ports = PortRegistry(
-        llm=FakeLlm(),
+        llm=llm if llm is not None else FakeLlm(),
         storage=st,
-        user_files=FakeUserFiles(),
-        content_pack=FakeContentPack(),
-        retriever=FakeRetriever(),
+        user_files=user_files if user_files is not None else FakeUserFiles(),
+        content_pack=content_pack if content_pack is not None else FakeContentPack(),
+        retriever=retriever if retriever is not None else FakeRetriever(),
         validators=val,
         secrets=sec,
-        clock=FakeClock(),
+        clock=clock_override if clock_override is not None else FakeClock(),
     )
 
     # 脱敏模式**取自 secrets 端口**：这是"密钥存哪、哪里就有它的片段"
@@ -153,12 +170,61 @@ def run_once(app: App) -> Result[DriveOutcome]:
 
         phase = order[state]
 
-        if phase is PhaseId.DIRECTION:
-            _artifact(app, PhaseId.DIRECTION, ARTIFACT_DIRECTION, "direction_sheet")
-        elif phase is PhaseId.OUTLINE:
-            _artifact(app, PhaseId.OUTLINE, ARTIFACT_OUTLINE, "outline")
-        elif phase is PhaseId.DRAFTING:
-            _artifact(app, PhaseId.DRAFTING, ARTIFACT_DRAFT, "draft")
+        if phase is PhaseId.INTAKE:
+            # 需求采集：登记 user/ 文件、建检索库、记起始时间。
+            # 这三件事在本步都是"空转"（没有真文件、没有真语料），
+            # **但必须真的调**——判据是"管线接通"，不是"这里有活干"。
+            # 跳过它们的话，"能跑起来"就只是驱动循环自己在转。
+            files = app.ports.user_files.scan_and_register()
+            got_build = app.ports.retriever.build(tuple(f.name for f in files))
+            if got_build.is_error:
+                err = got_build.error
+                assert err is not None
+                return Result.fail(err.code, err.detail)
+            _started_at = app.ports.clock.stamp()
+            app.bus.emit(
+                _ev(
+                    app,
+                    PhaseId.INTAKE,
+                    EventKind.RUN_STARTED,
+                    at=_started_at,
+                    user_files=len(files),
+                )
+            )
+
+        if phase in _PRODUCING:
+            name, kind, role = _PRODUCING[phase]
+            # 先取提示词（content_pack），再检索参考资料（retriever），
+            # 最后调模型（llm）——顺序即 D-071 定的阶段内次序：
+            # 没有提示词就没有角色，没有角色就不该产出。
+            got_prompt = app.ports.content_pack.load_role_prompt(role)
+            if got_prompt.is_error:
+                err = got_prompt.error
+                assert err is not None
+                return Result.fail(err.code, err.detail)
+            prompt = got_prompt.unwrap()
+
+            got_hit = app.ports.retriever.search(name, top_k=4)
+            if got_hit.is_error:
+                err = got_hit.error
+                assert err is not None
+                return Result.fail(err.code, err.detail)
+
+            got_llm = app.ports.llm.complete(
+                LlmRequest(
+                    # 模型名由用户手填（D-039），此处不编造——
+                    # 假实现阶段用固定占位名，第 5 步接真配置时替换。
+                    model="stub-model",
+                    messages=(Message(role="user", content=prompt),),
+                )
+            )
+            if got_llm.is_error:
+                err = got_llm.error
+                assert err is not None
+                return Result.fail(err.code, err.detail)
+            reply = got_llm.unwrap()
+
+            _artifact(app, phase, name, kind, content=reply.text)
 
         if phase is PhaseId.GATING:
             # 先发 gate.started 再跑校验：门禁组是并行执行的（D-049），
@@ -222,13 +288,18 @@ def run_once(app: App) -> Result[DriveOutcome]:
     return drive(run_id=app.run_id, bus=app.bus, initial_state=0, step=step)
 
 
-def _artifact(app: App, phase: PhaseId, name: str, kind: str) -> None:
+def _artifact(app: App, phase: PhaseId, name: str, kind: str, *, content: str = "") -> None:
     """发一份阶段成果。
 
     **载全文**（D-072）：标准模式的成果卡直接由它渲染，
     界面拿到的与落盘的是同一份内容。
     """
-    content = f"【桩】{name}：由全假实现产出，仅用于验证管线接通，不得用于交付。"
+    if not content:
+        content = f"{STUB_MARK}{name}：由全假实现产出，仅用于验证管线接通，不得用于交付。"
+    # 无论内容来自桩还是模型产出，**一律加桩标记**：
+    # 假实现的产出同样是桩，分不清就会在第 5 步接真模型时误当真实结果。
+    if not content.startswith(STUB_MARK):
+        content = f"{STUB_MARK}{content}"
     # `phase` 用**本成果自己的阶段**，不用当前阶段常量：
     # 三份成果分属 direction / outline / drafting 三个阶段，
     # 混用会让界面把"文章大纲"显示在"写作方向确认单"阶段里，

@@ -33,6 +33,7 @@ from zhengtong.domain.errors import ErrorCode
 from zhengtong.domain.event import EventKind
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.phase import PhaseId
+from zhengtong.domain.task import UserFile
 from zhengtong.ports.clock import ClockPort
 from zhengtong.ports.content_pack import ContentPackPort
 from zhengtong.ports.llm import LlmPort
@@ -198,6 +199,69 @@ def test_门禁不过时不空转() -> None:
         assert len(app.collected) < 20, f"事件数 {len(app.collected)}，疑似空转"
 
 
+# ── 判据的诚实读法：8 个端口都要真的被用上 ──
+
+
+def test_七个端口真的在流程里被调用() -> None:
+    """回归测试。
+
+    装配时把 8 个端口都注进去**不等于**管线接通——若流程只调了其中 2 个，
+    其余 6 个只是躺在那儿，"能跑起来"就是驱动循环自己在转的假象。
+    这里逐一验证调用真的发生过，而不只看它们被构造出来。
+    """
+    st = FakeStorage()
+    uf = FakeUserFiles(registered=(UserFile(name="背景材料.txt", size=10, suffix=".txt"),))
+    cp = FakeContentPack()
+    rt = FakeRetriever()
+    llm = FakeLlm()
+    val = FakeValidators()
+    clk = FakeClock()
+    # 端口只能在**装配时**注入：PortRegistry 是 frozen dataclass，
+    # 运行时替换是设计禁止的（装配完不该被改动）。
+    with build_app(
+        storage=st,
+        validators=val,
+        user_files=uf,
+        content_pack=cp,
+        retriever=rt,
+        llm=llm,
+        clock_override=clk,
+    ) as app:
+        _ = run_once(app)
+
+    assert rt.built_with, "retriever.build 未被调用"
+    assert rt.hits is not None and llm.calls, "llm.complete 未被调用"
+    assert len(llm.calls) == 3, f"三个产出阶段应各调一次，实得 {len(llm.calls)}"
+    assert val.ran, "validators 未被调用"
+    assert st.artifacts, "storage 未被调用"
+    assert clk.now_value > 0, "clock 未被调用"
+
+
+def test_secrets不进入编排流程() -> None:
+    """**反向断言**：API key 绝不能出现在编排逻辑里（D-030）。
+
+    `secrets` 端口只在装配时提供脱敏片段。把它接进 `run_once()`
+    看似"用上了全部端口"，实则是把密钥送进了最不该放它的地方。
+    故此处断言 `run_once` 的源码里没有 `get_api_key` 调用。
+    """
+    import inspect
+
+    from zhengtong.app import run_once as fn
+
+    src = inspect.getsource(fn)
+    assert "get_api_key" not in src, "编排流程不得取 API key"
+    assert "ports.secrets" not in src, "编排流程不应直接触碰 secrets 端口"
+
+
+def test_用户文件仅登记元信息不读内容() -> None:
+    """D-022/D-023：AI 初始只拿文件名，内容须按需读取。"""
+    uf = FakeUserFiles(registered=(UserFile(name="背景材料.txt", size=10, suffix=".txt"),))
+    with build_app(user_files=uf) as app:
+        _ = run_once(app)
+    # 只登记不读：contents 里没被塞过任何东西
+    assert not uf.contents, "不应在需求采集阶段就读取文件内容"
+
+
 # ── D-023：一个循环，两种投影 ──
 
 
@@ -237,7 +301,9 @@ def test_日志落盘且可回放(tmp_path: Path) -> None:
         _ = run_once(app)
     assert log.exists()
     lines = log.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 13, f"应为 13 条事件，实得 {len(lines)}"
+    # 14 条 = run.started + 6 阶段×2 + 3 成果 + gate.started + gate.passed
+    #        + run.finished
+    assert len(lines) == 14, f"应为 14 条事件，实得 {len(lines)}"
 
 
 def test_桩数据不得被误当真实产物() -> None:
