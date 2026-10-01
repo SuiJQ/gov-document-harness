@@ -31,10 +31,13 @@ AI **看不到也改不了** `system/`（D-017），所以配置文件天然是�
 
 from __future__ import annotations
 
+import math
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final
 
 import tomli_w
 
@@ -193,19 +196,65 @@ def _as_int(value: object, default: int) -> int:
         return default
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
-        return int(value.strip())
+    if isinstance(value, str):
+        return _解析整数(value, default)
+    return default
+
+
+#: D-140：容量单位。用户在配置里写 `128k` / `128K` 是极自然的写法
+#: （界面上问的就是「上下文容量多少 K」），原实现只认纯数字，
+#: 于是静默回落 0，报错却说「须为正整数」——而用户填的 128k
+#: **正是一个正整数**，用户只会反复重填而看不出自己多打了 k。
+_UNIT_K: Final[re.Pattern[str]] = re.compile(r"^\s*([+-]?\d+)\s*[kK]\s*$")
+
+
+def _解析整数(value: str, default: int) -> int:
+    """字符串 → 整数。**容许 `128k` 这类带单位的写法**（D-140）。
+
+    容许的单位只有 K——用户界面问的就是「多少 K」，
+    放行 M/G 只会引入「128M 到底是 128 还是 131072」这种歧义。
+    带 K 则无歧义：K 是本配置唯一约定的单位。
+
+    仍读不出就回落默认值，由 `validate` 去报「没填」。
+    """
+    文本 = value.strip()
+    if 文本.lstrip("+-").isdigit():
+        return int(文本)
+    if m := _UNIT_K.match(文本):
+        return int(m.group(1))
     return default
 
 
 def _as_float(value: object, default: float) -> float:
+    """转 float。
+
+    ## 审计 D-139：非有限值必须回落默认
+
+    原实现直接 `float(value)`，`float("NaN")` / `float("inf")` /
+    `float("1e999")` 都会成功，于是用户只要在配置里打一个字母
+    或一个足够大的数，`temperature` 就变成 NaN 或 inf 并一路流进 API 请求。
+
+    实测后果：`json.dumps({"temperature": nan})` 产出
+    `{"temperature": NaN}`——**这不是合法 JSON**，
+    多数服务端直接 400 拒绝，且报错与真实原因完全无关，
+    用户会以为是模型或端点的问题。
+    另一重后果：D-066 规定基准温度 0.3 是为可复现，
+    NaN 让可复现彻底失效。
+
+    且 `validate()` 只查必填项与 `context_k`，**从不查 temperature**，
+    所以这条路径上没有任何兜底。
+    故此处拦住非有限值（`math.isfinite`），回落默认值。
+    """
+    候选: float
     if isinstance(value, bool):
         return default
     if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
+        候选 = float(value)
+    elif isinstance(value, str):
         try:
-            return float(value)
+            候选 = float(value)
         except ValueError:
             return default
-    return default
+    else:
+        return default
+    return 候选 if math.isfinite(候选) else default

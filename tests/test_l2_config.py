@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 
 import pytest
@@ -251,3 +253,103 @@ def test_编码开关往返一致(tmp_path: Path, gb18030: bool) -> None:
     got = load(ws)
     assert got.is_ok
     assert got.unwrap().encoding.gb18030 is gb18030
+
+
+# ═══ D-139：非有限浮点值必须回落默认 ═══════════════════════════════════
+
+
+@pytest.mark.parametrize(
+    "坏值",
+    [
+        pytest.param("NaN", id="字母NaN"),
+        pytest.param("inf", id="inf"),
+        pytest.param("-inf", id="负inf"),
+        pytest.param("Infinity", id="全拼Infinity"),
+        pytest.param("1e999", id="溢出成inf"),
+        pytest.param(float("nan"), id="浮点NaN"),
+    ],
+)
+def test_非有限温度回落默认(坏值: object) -> None:
+    """**用户只要在配置里打一个字母或一个足够大的数就能触发。**
+
+    原实现直接 `float(value)`，而 `float("NaN")`、`float("inf")`、
+    `float("1e999")` 全都成功，于是 `temperature` 变成 NaN/inf
+    并一路流进 API 请求。
+
+    实测后果：`json.dumps({"temperature": nan})` 产出
+    `{"temperature": NaN}`——**这不是合法 JSON**，
+    多数服务端直接 400 拒绝，且报错与真实原因完全无关，
+    用户会以为是模型或端点的问题。
+
+    另一重后果：D-066 规定基准温度 0.3 是为可复现，
+    NaN 让可复现彻底失效。
+
+    且 `validate()` 只查必填项与 `context_k`，**从不查 temperature**，
+    这条路径上原本没有任何兜底。
+    """
+    got = Config.from_toml({"llm": {"temperature": 坏值}})
+    assert math.isfinite(got.temperature), f"{坏值!r} 透传成了 {got.temperature!r}"
+    assert got.temperature == 0.3, "应回落 D-066 的基准温度"
+
+
+def test_合法温度不受影响() -> None:
+    """**修 D-139 不能改坏正常值。**"""
+    for 好值, 期望 in [(0.3, 0.3), (0.7, 0.7), ("0.3", 0.3), (0, 0.0), (1, 1.0)]:
+        got = Config.from_toml({"llm": {"temperature": 好值}})
+        assert got.temperature == 期望
+
+
+def test_温度始终可安全序列化() -> None:
+    """`json.dumps` 不得产出 `NaN`——那是非法 JSON。"""
+    for 坏值 in ["NaN", "inf", "1e999"]:
+        got = Config.from_toml({"llm": {"temperature": 坏值}})
+        文本 = json.dumps({"temperature": got.temperature})
+        assert "NaN" not in 文本 and "Infinity" not in 文本, 文本
+
+
+# ═══ D-140：容许 128k 这类自然写法 ══════════════════════════════════════
+
+
+@pytest.mark.parametrize(
+    ("原值", "期望"),
+    [
+        pytest.param("128k", 128, id="小写k"),
+        pytest.param("128K", 128, id="大写K"),
+        pytest.param("128 K", 128, id="带空格"),
+        pytest.param("128", 128, id="纯数字"),
+        pytest.param(128, 128, id="整数"),
+    ],
+)
+def test_容量容许带K单位(原值: object, 期望: int) -> None:
+    """**用户界面问的就是「上下文容量多少 K」**，
+    配置里写 `128k` 是极自然的写法。
+
+    原实现只认纯数字，于是静默回落 0，报错却说
+    「须为正整数」——而用户填的 `128k` **正是一个正整数**，
+    用户只会反复重填，看不出是自己多打了 k。
+    """
+    got = Config.from_toml({"llm": {"context_k": 原值}})
+    assert got.context_k == 期望
+
+
+@pytest.mark.parametrize("坏值", ["128M", "1G", "128.5", "abc", "k128", ""])
+def test_有歧义的容量写法不猜(坏值: str) -> None:
+    """**只放行 K，不放行 M/G**。
+
+    K 是本配置唯一约定的单位，无歧义；而放行 M 就会引入
+    「128M 到底是 128 还是 131072」这种歧义——猜错比报错更糟。
+    """
+    got = Config.from_toml({"llm": {"context_k": 坏值}})
+    assert got.context_k == 0, f"{坏值!r} 不该被猜成 {got.context_k}"
+    assert (
+        not Config(endpoint="e", model="m", api_key="k", context_k=got.context_k).validate().is_ok
+    )
+
+
+def test_容量为正整数时validate通过() -> None:
+    """`128k` 现在能通过校验——这是 D-140 的目的。"""
+    c = Config.from_toml(
+        {"llm": {"endpoint": "e", "model": "m", "api_key": "k", "context_k": "128k"}}
+    )
+    assert c.context_k == 128
+    assert c.validate().is_ok
