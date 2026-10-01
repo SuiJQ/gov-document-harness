@@ -16,14 +16,20 @@ user/
 # 本地覆盖
 .env
 config.local.toml
-ARCH_REVIEW_TODO.md
 
 # Python 开发环境
 .venv/
 
-L0_DOMAIN_TODO.md
-L1_KERNEL_TODO.md
-APP_ROOT_TODO.md
-REVIEW_STEP4_TODO.md
-DECISIONS_BACKFILL_TODO.md
-L2_STORAGE_TODO.md
+# 原始提示词：保留在外围，不入版本控制、不进分发包（D-098）。
+# 理由是分发包只该含重写后的正式提示词；原件体积大且非程序必需，
+# 保留它是为了可对比、可回退。
+materials/
+*_原始提示词/
+*原始版*/
+CONTENT_SOURCE/
+
+# 临时与本地产物
+cross_platform_build/
+*.tmp
+.TODO.md
+*_TODO.md

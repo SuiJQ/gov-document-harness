@@ -45,6 +45,7 @@ import os
 from pathlib import Path
 
 from ..domain.errors import ErrorCode, Result
+from . import winname
 
 
 def resolve(raw: str | Path) -> Path:
@@ -61,6 +62,15 @@ def ensure_within(root: str | Path, raw: str | Path) -> Result[Path]:
     """
     base = resolve(root)
     target = resolve(raw)
+    # 每一段路径分量都要查。**只查文件名是不够的**：
+    # `user/NUL/../a.txt` 归一后仍是 `user/a.txt`，但中间的 `NUL`
+    # 在 Windows 上指向设备，任何基于它的操作都不可预期
+    for part in Path(str(raw)).parts:
+        if reason := winname.why_rejected(part):
+            return Result.fail(
+                ErrorCode.PATH_ESCAPE,
+                f"路径分量不可用：{reason}（{part}）",
+            )
     try:
         # 只用它"是否抛异常"来判包含，**不用它的返回值**：
         # 返回的相对路径在这里没有用处
