@@ -110,9 +110,16 @@ def _分量(raw: str) -> tuple[str, ...]:
     但不是保留名，Windows 上完全合法。实测确认 `data/我的NUL文件/x.txt`
     现在是通过的，不能被这个修复误伤。
     """
-    parts = set(Path(str(raw)).parts)
-    parts.update(p for p in re.split(r"[\\/]+", str(raw)) if p)
-    return tuple(parts)
+    原文 = str(raw)
+    parts = set(Path(原文).parts)
+    parts.update(p for p in re.split(r"[\\/]+", 原文) if p)
+    # 审计 D-141 回归修正：**分隔符本身不是文件名分量，必须滤掉**。
+    # `re.split` 会产出空串与单个分隔符，`Path("/a").parts` 会产出
+    # 根标记 `/`——它们都不是文件名，交给 `why_rejected` 会被
+    # D-141 新加的「这不是文件名」规则拦下，
+    # 从而把 `data/我的NUL文件/y.txt` 这类**完全正常**的路径误杀。
+    # 判据很简单：**只有不含分隔符、且非空的才可能是文件名。**
+    return tuple(p for p in parts if p and p not in {"/", "\\"})
 
 
 def is_within(root: str | Path, raw: str | Path) -> bool:

@@ -24,6 +24,8 @@ Linux 允许的文件名，Windows 一律拒绝。**这不是"洁癖"，是能�
 
 from __future__ import annotations
 
+from typing import Final
+
 #: Windows 保留设备名。**必须连扩展名一起比对**：
 #: `NUL.txt` 在 Windows 上同样是设备，任何扩展名都被忽略。
 #: 这些名字保留自 MS-DOS，无法禁用。
@@ -35,6 +37,25 @@ RESERVED_NAMES: frozenset[str] = frozenset(
 
 #: Windows 文件名非法字符。含正斜杠与反斜杠——它们同时是路径分隔符，
 #: 出现在文件名里就意味着目录穿越，必须一并禁掉。
+#: Windows 文件名非法字符。
+#:
+#: 审计 D-141：原注释写「含正斜杠与反斜杠——它们同时是路径分隔符，
+#: 出现在文件名里就意味着目录穿越，必须一并禁掉」，**但集合里并没有它们**
+#: （实测 `why_rejected("a/b")` 与 `why_rejected("a\\b")` 都返回「可用」）。
+#:
+#: 不放进本集合的理由是**职责边界**，不是遗漏：
+#: `ILLEGAL_CHARS` 回答的是「Windows 不接受这个字符」，
+#: 而 `/` 与 `\` 在 Windows 上是**完全合法的路径分隔符**
+#: ——`os.path.join` 天天在用，只是不能单独作为一个文件名分量。
+#: 把它们混进来会让「路径」与「文件名」两种输入无法区分。
+#:
+#: 故分隔符由调用方负责切分：`guard._分量()` 按两种分隔符都切，
+#: 再把每个分量交给本模块——那条路径是安全的（D-133 实测）。
+#: **但下一个人若照原注释理解、直接把整条路径传进来就会中招**，
+#: 故在 `why_rejected` 里显式拒绝含分隔符的输入（见下）。
+#: 路径分隔符。**不属于 `ILLEGAL_CHARS`**（理由见上），
+#: 但出现即说明调用方传错了东西——传进来的是路径，不是文件名。
+_SEPARATORS: Final[tuple[str, ...]] = ("/", "\\")
 ILLEGAL_CHARS: frozenset[str] = frozenset('<>:"|?*')
 
 
@@ -64,6 +85,15 @@ def why_rejected(name: str) -> str | None:
     """
     if not name:
         return "文件名不能为空"
+    # 审计 D-141：含路径分隔符说明传进来的是**整条路径**而非文件名。
+    # 本模块的契约是「单个文件名分量」——早先的注释说要禁分隔符，
+    # 但集合里并没有，于是 `why_rejected("../../etc/passwd")` 返回
+    # 「可用」，会让照文档理解直接调用的下一个人中招。
+    #
+    # 这里不把它们塞进 ILLEGAL_CHARS（那会混淆「Windows 不接受」
+    # 与「这不是文件名」两回事），而是单独拦下并说清原因。
+    if any(sep in name for sep in _SEPARATORS):
+        return "这不是文件名，而是含路径分隔符的路径；请先切分出单个文件名"
     if name in {".", ".."}:
         return "文件名不能是 . 或 .."
     if name.endswith((" ", ".")):
