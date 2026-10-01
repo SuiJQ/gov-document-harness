@@ -137,11 +137,17 @@ def from_json(raw: dict[str, object]) -> Result[RunState]:
     if not isinstance(run_id, str) or not run_id:
         return Result.fail(ErrorCode.FILE_UNREADABLE, "状态文件缺 run_id")
 
+    # 档位认不出就拒绝（D-146）。**放在这里而不是让 `_task_from` 回落**，
+    # 因为回落会让 10 道门禁失去取证方——而报错只丢一次 run。
+    任务, 任务错 = _task_from(raw.get("task"))
+    if 任务错:
+        return Result.fail(ErrorCode.FILE_UNREADABLE, 任务错)
+
     return Result.ok(
         RunState(
             schema_version=version,
             run_id=RunId(run_id),
-            task=_task_from(raw.get("task")),
+            task=任务,
             phase=_enum(PhaseId, raw.get("phase"), PhaseId.INTAKE),
             phase_state=_enum(PhaseState, raw.get("phase_state"), PhaseState.PENDING),
             dcard=_dcard_from(raw.get("dcard")),
@@ -210,13 +216,51 @@ def _enum(enum_cls: type[_E], value: object, default: _E) -> _E:
         return default
 
 
-def _task_from(raw: object) -> TaskSpec:
+def _task_from(raw: object) -> tuple[TaskSpec, str]:
+    """反序列化任务。**认不出的 `tier` 不回落，返回错误**（审计 D-146）。
+
+    这里刻意**不复用 `_enum` 的回落策略**——因为 `tier` 的回落后果
+    与其它枚举字段根本不同级：
+
+        phase       认不出 → 回落 INTAKE = 退到起点，安全
+        role_state  认不出 → 回落 IDLE   = 本就等于「没在跑」，安全
+        **tier     认不出 → 回落 CONSULT = 全局编制被悄悄改掉**
+
+    `TierId` 的实际取值是**小写** `'pro'` / `'flash'` / `'consult'`。
+    用户或早期版本写入 `'PRO'`（凭直觉的大小写）就会落到这里。
+    实测后果——同一份文件：
+
+        tier="pro"   → PRO      0 道门禁无人取证
+        tier="PRO"   → CONSULT 10 道门禁无人取证
+
+    即**一次静默降级就让 G1/G2/G3/G4/G5 等十道门禁失去取证方**，
+    且用户明确选过的工作量档位被改掉——违反 D-096
+    「工作量档位由用户自行选择，不提供自动判断机制」。
+
+    处置与 D-109 同源：**回落若会牵连一个不相干的实体，就是错的。**
+    且 `tier` 无法从文件其他部分推导（不像 RoleState 回落 IDLE
+    有一个天然正确的默认值），猜错等于用错误的规则产出公文。
+    """
     from ..domain.task import UserFile
 
     d = _as_dict(raw)
+    原始档位 = d.get("tier")
+    档位: TierId | None = None
+    错 = ""
+    if 原始档位 is None:
+        档位 = None  # 字段缺失：由调用方按「本就是新任务」处理
+    elif isinstance(原始档位, str):
+        try:
+            档位 = TierId(原始档位)
+        except ValueError:
+            已知 = "、".join(repr(x.value) for x in TierId)
+            错 = f"任务档位无法识别：{原始档位!r}（合法取值：{已知}）"
+    else:
+        错 = f"任务档位不是字符串：{原始档位!r}"
+
     files = cast("list[object]", d.get("user_files") or [])
-    return TaskSpec(
-        tier=_enum(TierId, d.get("tier"), TierId.CONSULT),
+    任务 = TaskSpec(
+        tier=档位 or TierId.CONSULT,
         requirement=str(d.get("requirement") or ""),
         user_files=tuple(
             UserFile(
@@ -227,6 +271,7 @@ def _task_from(raw: object) -> TaskSpec:
             for f in files
         ),
     )
+    return 任务, 错
 
 
 def _role_states_from(raw: object) -> dict[RoleId, RoleState]:

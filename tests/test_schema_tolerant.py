@@ -71,7 +71,7 @@ def _最小原始(**覆盖: object) -> dict[str, object]:
     原始: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "run_id": "r-schema",
-        "task": {"tier": "PRO", "requirement": "就旱情写个通知", "user_files": []},
+        "task": {"tier": "pro", "requirement": "就旱情写个通知", "user_files": []},
         "phase": "INTAKE",
         "phase_state": "PENDING",
         "dcard": {"by_id": {}},
@@ -84,6 +84,56 @@ def _最小原始(**覆盖: object) -> dict[str, object]:
     }
     原始.update(覆盖)
     return 原始
+
+
+class Test样本自身有效:
+    """**防呆：门禁的样本自己得先是对的。**
+
+    这条是被一次真实事故逼出来的。
+
+    审计时发现 `_最小原始` 里写着 `"tier": "pro"`，而 `TierId` 的
+    实际取值是小写 `'pro'`——于是样本里的档位一直是错的。
+    但因为所有断言都没查 `tier`，**它照样全绿**。
+
+    也就是说：**样本错了，门禁骗了你，而你从门禁结果里什么也看不出来。**
+    这比门禁漏检更危险，因为它连「变红」的机会都不给。
+    """
+
+    def test_样本能被原样读回(self) -> None:
+        """**一条最朴素、却最该先有的断言。**
+
+        如果连「我写的样本是不是合法」都不先确认，
+        那么后面所有「某畸形输入被正确拒绝」的断言都无从谈起——
+        因为可能只是样本本身全错。
+        """
+        结果 = from_json(_最小原始())
+        assert 结果.is_ok, f"最小样本自己就不是合法的：{结果.error.detail if 结果.error else ''}"
+        assert 结果.unwrap().task.tier.value == "pro"
+
+    @pytest.mark.parametrize("档位", ["consult", "flash", "pro"])
+    def test_三个合法档位都能读回(self, 档位: str) -> None:
+        """**三个档位逐个过**，而不是只测一个。
+
+        只测 `pro` 的话，`flash` 写错也不会有人发现——
+        而 Flash 是最常用的中间档（三人参与）。
+        """
+        结果 = from_json(_最小原始(task={"tier": 档位, "requirement": "x", "user_files": []}))
+        assert 结果.is_ok, f"合法档位 {档位!r} 被拒：{结果.error.detail if 结果.error else ''}"
+        assert 结果.unwrap().task.tier.value == 档位
+
+    @pytest.mark.parametrize("坏档位", ["PRO", "Flash", "专家版", "PRO ", 1, [], {}])
+    def test_认不出的档位必须拒绝而非回落(self, 坏档位: object) -> None:
+        """**D-146 的核心判据：认不出就拒绝，绝不静默回落。**
+
+        回落的后果不是「读出一个差不多的值」，而是
+        **Pro 静默变成 Consult，于是 10 道门禁失去取证方**——
+        且用户自己选的档位被改掉了。
+        """
+        结果 = from_json(_最小原始(task={"tier": 坏档位, "requirement": "x", "user_files": []}))
+        assert 结果.is_error, (
+            f"档位 {坏档位!r} 竟被接受——回落会让编制被悄悄改掉（Pro→Consult 时 10 道门禁无人取证）"
+        )
+        assert "档位" in (结果.error.detail if 结果.error else ""), "提示没说清是什么问题"
 
 
 class Test更新版本必须拒绝:
@@ -174,7 +224,7 @@ class Test未知字段必须忽略:
         """
         原始 = _最小原始()
         原始["task"] = {
-            "tier": "PRO",
+            "tier": "pro",
             "requirement": "就旱情写个通知",
             "user_files": [],
             "未来子字段": {"嵌套": [1, 2]},
@@ -196,6 +246,9 @@ class Test未知字段必须忽略:
         # RunId 是 NewType，运行时就是 str——直接比字符串，别写 .value
         assert 状态.run_id == "r-schema", "run_id 被未知字段影响了"
         assert 状态.task.requirement == "就旱情写个通知", "requirement 被未知字段影响了"
+        # tier 必须也查 —— 审计时正是漏了这一条，
+        # 样本里写着 "PRO"（TierId 实际取值是小写 "pro"）却一直没被发现。
+        assert 状态.task.tier.value == "pro", f"tier 被未知字段影响了：{状态.task.tier}"
 
 
 class Test不许用异常做控制流:
