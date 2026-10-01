@@ -62,9 +62,9 @@ def loads(text: str) -> Result[RunState]:
     try:
         raw = json.loads(text)
     except json.JSONDecodeError as exc:
-        return Result.fail(ErrorCode.RUN_RESUMED, f"状态文件不是合法 JSON：{exc}")
+        return Result.fail(ErrorCode.FILE_UNREADABLE, f"状态文件不是合法 JSON：{exc}")
     if not isinstance(raw, dict):
-        return Result.fail(ErrorCode.RUN_RESUMED, "状态文件顶层不是对象")
+        return Result.fail(ErrorCode.FILE_UNREADABLE, "状态文件顶层不是对象")
     return from_json(cast("dict[str, object]", raw))
 
 
@@ -123,15 +123,15 @@ def from_json(raw: dict[str, object]) -> Result[RunState]:
     状态损坏不该把程序带崩，用户需要看到"这个 run 读不了"而不是栈回溯。"""
     version = raw.get("schema_version")
     if not isinstance(version, int):
-        return Result.fail(ErrorCode.RUN_RESUMED, "状态文件缺 schema_version")
+        return Result.fail(ErrorCode.FILE_UNREADABLE, "状态文件缺 schema_version")
     if version > SCHEMA_VERSION:
         return Result.fail(
-            ErrorCode.RUN_RESUMED,
+            ErrorCode.FILE_UNREADABLE,
             f"状态文件版本 {version} 高于当前程序支持的 {SCHEMA_VERSION}，拒绝加载",
         )
     run_id = raw.get("run_id")
     if not isinstance(run_id, str) or not run_id:
-        return Result.fail(ErrorCode.RUN_RESUMED, "状态文件缺 run_id")
+        return Result.fail(ErrorCode.FILE_UNREADABLE, "状态文件缺 run_id")
 
     return Result.ok(
         RunState(
@@ -141,22 +141,41 @@ def from_json(raw: dict[str, object]) -> Result[RunState]:
             phase=_enum(PhaseId, raw.get("phase"), PhaseId.INTAKE),
             phase_state=_enum(PhaseState, raw.get("phase_state"), PhaseState.PENDING),
             dcard=_dcard_from(raw.get("dcard")),
-            role_states={
-                _enum(RoleId, k, RoleId.TEAM_LEAD): _enum(RoleState, v, RoleState.IDLE)
-                for k, v in _as_dict(raw.get("role_states")).items()
-            },
+            role_states=_role_states_from(raw.get("role_states")),
             artifacts={k: _ref_from(v) for k, v in _as_dict(raw.get("artifacts")).items()},
             gates={k: _gate_from(v) for k, v in _as_dict(raw.get("gates")).items()},
             completed_call_ids=tuple(
                 str(x) for x in cast("list[object]", raw.get("completed_call_ids") or [])
             ),
-            last_seq=int(cast("int", raw.get("last_seq") or 0)),
+            last_seq=_as_int(raw.get("last_seq"), 0),
             last_error=str(raw.get("last_error") or ""),
         )
     )
 
 
 # ── 子结构 ──
+
+
+def _as_int(value: object, default: int) -> int:
+    """数字容错。**状态文件是外部输入，`"abc"` 传给 `int()` 会抛 ValueError**
+    并一路冒泡出 `from_json`——一个畸形文件就能让程序崩在启动，
+    而"崩"恰恰是断点续跑最不能接受的结果。
+
+    **不能靠上层 try 兜**：那会把"哪个字段坏了"这个有用的诊断信息
+    一起吞掉，退化成一句"状态文件有问题"。
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    if isinstance(value, float):
+        return int(value)
+    return default
 
 
 def _as_dict(value: object) -> dict[str, object]:
@@ -198,12 +217,33 @@ def _task_from(raw: object) -> TaskSpec:
         user_files=tuple(
             UserFile(
                 name=str(_as_dict(f).get("name") or ""),
-                size=int(cast("int", _as_dict(f).get("size") or 0)),
+                size=_as_int(_as_dict(f).get("size"), 0),
                 suffix=str(_as_dict(f).get("suffix") or ""),
             )
             for f in files
         ),
     )
+
+
+def _role_states_from(raw: object) -> dict[RoleId, RoleState]:
+    """角色状态表。**未知角色整条丢弃，绝不牵连已知角色。**
+
+    原实现对未知键回落 `TEAM_LEAD`，于是 `{"未来角色": "运行中"}`
+    会把**主理人**凭空置为"运行中"——续跑后系统在等一个
+    永远不会来的角色响应，整个 run 卡死。
+
+    键和值是**一对**：键不对，这一对数据整体没有意义，
+    不该让另一个角色替它背锅。缺失的角色状态回落 IDLE 是对的，
+    因为那本来就等于"没在跑"。
+    """
+    out: dict[RoleId, RoleState] = {}
+    for k, v in _as_dict(raw).items():
+        try:
+            rid = RoleId(k)
+        except ValueError:
+            continue
+        out[rid] = _enum(RoleState, v, RoleState.IDLE)
+    return out
 
 
 def _dcard_from(raw: object) -> DCard:
@@ -212,10 +252,18 @@ def _dcard_from(raw: object) -> DCard:
     fields = _as_dict(d.get("by_id"))
     if not fields:
         return base
-    # DCard 没有独立的 id 字段：它的身份就是这 9 个字段的键集合
-    return DCard(
-        by_id={DCardFieldId(k): _field_from(v, DCardFieldId(k)) for k, v in fields.items()}
-    )
+    # DCard 没有独立的 id 字段：它的身份就是这 9 个字段的键集合。
+    # **必须逐个键检查**：`DCardFieldId(k)` 遇未知键会抛 ValueError，
+    # 而状态文件可能来自旧版本或被手改过。不认识的键**丢弃**，
+    # 不能让它把整个 run 读不出来——那等于让用户丢掉已完成的工作。
+    by_id: dict[DCardFieldId, DCardField] = {}
+    for k, v in fields.items():
+        try:
+            fid = DCardFieldId(k)
+        except ValueError:
+            continue
+        by_id[fid] = _field_from(v, fid)
+    return DCard(by_id=by_id)
 
 
 def _field_from(raw: object, fid: DCardFieldId) -> DCardField:
@@ -235,7 +283,7 @@ def _ref_from(raw: object) -> ArtifactRef:
         id=ArtifactId(str(d.get("id") or "")),
         kind=_enum(ArtifactKind, d.get("kind"), ArtifactKind.NOTE),
         path=str(d.get("path") or ""),
-        version=int(cast("int", d.get("version") or 1)),
+        version=_as_int(d.get("version"), 1),
     )
 
 
@@ -244,7 +292,7 @@ def _gate_from(raw: object) -> GateRecord:
     return GateRecord(
         gate=str(d.get("gate") or ""),
         passed=bool(d.get("passed")),
-        attempt=int(cast("int", d.get("attempt") or 0)),
+        attempt=_as_int(d.get("attempt"), 0),
         evidence=tuple(str(x) for x in cast("list[object]", d.get("evidence") or [])),
         rejection_reason=str(d.get("rejection_reason") or ""),
     )
