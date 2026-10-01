@@ -416,32 +416,58 @@ D-064 决定门禁走线程池，于是门禁线程与编排线程会并发调 `
 `SecretPort` 进一步保证：编排层拿到的 `SecretRef` 根本不是明文，
 要到 L2 适配器构造 HTTP 请求的那一刻才解出真值。**上层永远拿不到明文。**
 
-### 5.4 事件目录（`EventKind`）
+### 5.4 事件目录（`EventKind`，37 项）
 
 事件种类要**少而正交**，每种都对应一个用户能问的问题。
 
+> 本表于实现第 3 步与代码合并对齐。原先架构列 29 项、L0 代码列 18 项
+> 且仅 5 项交集——第 1 步重设计事件体系后未回写文档，属实现与设计分叉。
+> 合并裁决与逐项理由见 `EVENT_MERGE.md`。**现两表逐字一致。**
+
 | 组 | 事件 | 携带 |
 |---|---|---|
-| 运行 | `run.started` / `run.finished` / `run.failed` / `run.resumed` | `tier` / `run_id` |
-| 阶段 | `phase.entered` / `phase.exited` / `phase.progress` | `phase_id` |
-| **阶段成果** | `phase.artifact_ready` | `phase_id` / `name` / `kind` / **`content` 全文** / `hash` / `is_gate` |
-| 角色 | `role.turn` / `role.tool_call` / `role.sleep` / `role.wake` / `role.report` | `role_id` / 工具名 / 轮次 |
-| 模型 | `model.request` / `model.response` / `model.error` / `model.retry` | token / 耗时 / `finish_reason` |
-| 门禁 | `gate.started` / `gate.verdict` / `gate.rework` / `gate.escalated` | `gate_id` / 判定 / 证据锚点 |
-| 提问 | `user.asked` / `user.answered` | 字段清单（D1–D9），**只记字段码不记答案全文** |
+| 运行 | `run.started` / `run.finished` / `run.failed` / `run.resumed` | `tier` / `run_id` / 失败原因 |
+| 阶段 | `phase.started` / `phase.advanced` / `phase.exited` | `phase_id` |
+| **阶段成果** | `phase.artifact_ready` / `phase.artifact_updated` | `phase_id` / `name` / `kind` / **`content` 全文** / `hash` / `is_gate` |
+| 方向 | `direction.confirmed` | 方向确认单已确认 |
+| 角色 | `role.state_changed` / `role.turn` / `role.tool_call` / `role.sleep` / `role.wake` / `role.report` | `role_id` / 工具名 / 轮次 |
+| 守卫 | `tool.denied` | 越权尝试（路径/权限），**不归属某角色派发** |
+| 检索 | `retrieval.done` | 命中数 / 耗时 |
+| 模型 | `model.request` / `model.response` / `model.error` / `model.retry` | token / 耗时 / `finish_reason` / 重试次数 |
+| 门禁 | `gate.started` / `gate.passed` / `gate.failed` / `gate.rejected` / `gate.rework` / `gate.escalated` | `gate_id` / 判定 / 证据锚点 |
 | 上下文 | `context.composed` / `context.compacted` | 占用率 / 保留了哪几类（D-039） |
+| 提问 | `user.question_raised` / `user.answered` | 字段清单（D1–D9），**只记字段码不记答案全文** |
 | 产物 | `artifact.published` / `artifact.drafted` | `name` / `kind` / `hash` |
 | 导出 | `export.blocked` / `export.done` | 被拦截的占位符清单 / 文件列表（D-038） |
+| 错误 | `error.raised` | `detail`（**INTERNAL**，不直接给用户看） |
 
-`audience=USER` 的白名单**只有**四类（对齐 D-023 用户只需知道四件事）：
-`phase.artifact_ready`、`export.*`、`run.failed`、`user.asked`。
-其余全部 `INTERNAL`——这条白名单同时落实 D-046（不显示成员状态）
-与 D-030（不展示审核意见）。
+**两处命名与合并相关的关键点**：
+
+- **`phase.artifact_ready` 而非 `artifact.ready`**：它是**阶段成果**（D-072），
+  不是"产物"——产物落盘走 `artifact.published` / `artifact.drafted`。
+  名字必须与代码逐字一致，否则按本文档 grep 排障会空手而归。
+- **`role.tool_call` 而非 `tool.called`**：工具调用必属某角色的派发。
+  但 **`tool.denied` 独立**——它表达守卫拦截，是安全线索
+  （"谁尝试越权"），不该归属角色，也不该在 `role.*` 检索时被淹没。
+- **门禁 6 项而非 3 项**：`passed`/`failed`/`rejected` 答"判成什么"，
+  `rework`/`escalated` 答"判完之后做了什么"，语义不重叠。
+  后两者是"红线问题必须修正后才能交付"（D-038/D-046）的留痕依据。
+
+**用户白名单**（对齐 D-023 用户只需知道四件事）：表内 **5 项**，
+因为 `export.blocked` 与 `export.done` 同属"导出结果"一族、分开计：
+`phase.artifact_ready`、`export.blocked`、`export.done`、
+`run.failed`、`user.question_raised`。其余 32 项全部 `INTERNAL`。
+
+**`error.raised` 刻意不进白名单**：它是实现细节，直接放行会让用户
+看到内部异常名。运行真的失败时，由编排层升级为 `run.failed` 再告知——
+这与门禁"退回修正而非绕过"（D-038）是同一个处理原则：
+内部细节不上台面，只呈现对用户有意义的结论。
 
 **注意白名单里为什么只有 `phase.artifact_ready` 而不是整个 `phase.*`**：
-进度类事件（`phase.entered` / `phase.progress`）的标准界面**只用来看那一行总体进度**
-（D-046），不需要单独渲染成卡片；真正要给用户"看内容"的只有三份阶段成果
-（方向确认单 / 文章大纲 / 正文初稿，D-030），它们由 `phase.artifact_ready` 承载**全文**。
+进度类事件（`phase.started` / `phase.advanced`）的标准界面**只用来看
+那一行总体进度**（D-046），不需要单独渲染成卡片；真正要给用户"看内容"的
+只有三份阶段成果（方向确认单 / 文章大纲 / 正文初稿，D-030），
+它们由 `phase.artifact_ready` 承载**全文**。
 
 所以这个事件的 `data.content` **装的是成果全文，不是摘要**。
 界面拿到它直接渲染成成果卡；调试模式则拿它和后续的 `artifact.published` 对照，

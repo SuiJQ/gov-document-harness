@@ -33,37 +33,81 @@ from .ids import RunId
 
 
 class EventKind(StrEnum):
-    """事件类型。命名规则 `领域.动作`（过去式）。"""
+    """事件类型。命名规则 `领域.动作`（过去式）。
 
+    **本表与架构 §5.4 逐字一致**，合并裁决见 `EVENT_MERGE.md`。
+    事件名是日志里的检索锚点：按架构文档 grep 若搜不到，排障时会空手而归。
+    故改名字必须两边同时改，且先改本表再改文档。
+    """
+
+    # ── 运行 ──
     RUN_STARTED = "run.started"
-    RUN_RESUMED = "run.resumed"
     RUN_FINISHED = "run.finished"
+    RUN_FAILED = "run.failed"
+    RUN_RESUMED = "run.resumed"
 
+    # ── 阶段 ──
     PHASE_STARTED = "phase.started"
     PHASE_ADVANCED = "phase.advanced"
+    PHASE_EXITED = "phase.exited"
 
-    ROLE_STATE_CHANGED = "role.state_changed"
-
-    # 注意命名：架构 §5.4 里这两类叫 `phase.artifact_ready` /
-    # `phase.artifact_updated`，因为它们是**阶段成果**（D-072），
-    # 不是"产物"——产物落盘走 `artifact.published` / `artifact.drafted`。
-    # 事件名是日志里的检索锚点，必须与架构逐字一致：
-    # 按架构文档 grep "phase.artifact_ready" 若搜不到，排障时会空手而归。
+    # ── 阶段成果 ──
+    # 这两类叫 `phase.artifact_*` 而非 `artifact.*`：它们是**阶段成果**
+    # （D-072），不是"产物"——产物落盘走 ARTIFACT_PUBLISHED / ARTIFACT_DRAFTED。
     ARTIFACT_READY = "phase.artifact_ready"
     ARTIFACT_UPDATED = "phase.artifact_updated"
 
+    # ── 方向 ──
     DIRECTION_CONFIRMED = "direction.confirmed"
-    USER_QUESTION_RAISED = "user.question_raised"
 
+    # ── 角色 ──
+    ROLE_STATE_CHANGED = "role.state_changed"
+    ROLE_TURN = "role.turn"
+    # `role.tool_call` 而非 `tool.called`：工具调用必属某角色的派发，
+    # 带角色归属是必然的（D-049 责任映射）。
+    ROLE_TOOL_CALL = "role.tool_call"
+    ROLE_SLEEP = "role.sleep"
+    ROLE_WAKE = "role.wake"
+    ROLE_REPORT = "role.report"
+    # 但 `tool.denied` 独立：它是**守卫拦截**（WorkspaceGuard），
+    # 表达"谁尝试越权"这条安全线索，不归属任何角色的正常派发，
+    # 也不该被 role.* 检索时顺带淹没。
+    TOOL_DENIED = "tool.denied"
+
+    # ── 模型 ──
+    MODEL_REQUEST = "model.request"
+    MODEL_RESPONSE = "model.response"
+    MODEL_ERROR = "model.error"
+    MODEL_RETRY = "model.retry"
+
+    # ── 检索 ──
+    RETRIEVAL_DONE = "retrieval.done"
+
+    # ── 门禁 ──
     GATE_STARTED = "gate.started"
     GATE_PASSED = "gate.passed"
     GATE_FAILED = "gate.failed"
     GATE_REJECTED = "gate.rejected"
+    GATE_REWORK = "gate.rework"
+    GATE_ESCALATED = "gate.escalated"
 
-    RETRIEVAL_DONE = "retrieval.done"
-    TOOL_CALLED = "tool.called"
-    TOOL_DENIED = "tool.denied"
+    # ── 上下文 ──
+    CONTEXT_COMPOSED = "context.composed"
+    CONTEXT_COMPACTED = "context.compacted"
 
+    # ── 提问 ──
+    USER_QUESTION_RAISED = "user.question_raised"
+    USER_ANSWERED = "user.answered"
+
+    # ── 产物 ──
+    ARTIFACT_PUBLISHED = "artifact.published"
+    ARTIFACT_DRAFTED = "artifact.drafted"
+
+    # ── 导出 ──
+    EXPORT_BLOCKED = "export.blocked"
+    EXPORT_DONE = "export.done"
+
+    # ── 错误 ──
     ERROR_RAISED = "error.raised"
 
 
@@ -145,28 +189,43 @@ def make_call_id(kind: str, run_id: str, phase_id: str, **discriminators: str) -
 DEBUG_ONLY_KINDS: Final[frozenset[EventKind]] = frozenset(
     {
         EventKind.ROLE_STATE_CHANGED,
-        EventKind.TOOL_CALLED,
+        EventKind.ROLE_TURN,
+        EventKind.ROLE_TOOL_CALL,
+        EventKind.ROLE_SLEEP,
+        EventKind.ROLE_WAKE,
+        EventKind.ROLE_REPORT,
         EventKind.TOOL_DENIED,
         EventKind.RETRIEVAL_DONE,
+        EventKind.CONTEXT_COMPOSED,
+        EventKind.CONTEXT_COMPACTED,
+        EventKind.MODEL_REQUEST,
+        EventKind.MODEL_RESPONSE,
+        EventKind.MODEL_ERROR,
+        EventKind.MODEL_RETRY,
     }
 )
 
-#: **标准模式唯一可见的四类**（架构 §5.4，对齐 D-023 / D-046 / D-030）。
+#: **标准模式唯一可见的五类**（架构 §5.4，对齐 D-023 / D-046 / D-030）。
 #:
-#: 白名单只有四项，且**不是**整个 `phase.*`——进度类事件在标准界面上
+#: 合并裁决（`EVENT_MERGE.md`）：`export.blocked` 与 `export.done`
+#: 属同一族，分开计为两项。故表内 5 项、语义上仍是 D-023 说的"四件事"：
+#: 三份阶段成果、导出结果、运行失败、需要用户答。
+#:
+#: 白名单**不是**整个 `phase.*`——进度类事件在标准界面上
 #: 只用来渲染"总体进度"那一行（D-046），不需要单独成卡；
 #: 真正要给用户"看内容"的只有三份阶段成果，由 ARTIFACT_READY 承载全文。
 #:
 #: 这张表是 D-046「不显示成员状态、不展示审核意见」的机械落点：
 #: 成员状态与门禁明细都不在其中，故它们进不了标准界面。
 #:
-#: 注意 `RUN_FINISHED` 也不在其中：完成由界面自行收束，
+#: 注意 `RUN_FINISHED` 不在其中：完成由界面自行收束，
 #: 不额外弹事件卡片，避免和成果卡抢注意力。
 USER_VISIBLE_KINDS: Final[frozenset[EventKind]] = frozenset(
     {
         EventKind.ARTIFACT_READY,
-        EventKind.ERROR_RAISED,
-        EventKind.DIRECTION_CONFIRMED,
+        EventKind.EXPORT_BLOCKED,
+        EventKind.EXPORT_DONE,
+        EventKind.RUN_FAILED,
         EventKind.USER_QUESTION_RAISED,
     }
 )

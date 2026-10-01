@@ -71,7 +71,7 @@ def test_伪造密钥在落盘文件中查不到(tmp_path: Path) -> None:
         {"key": "my-secret-key-abc123"},
     ]
     for p in payloads:
-        bus.emit(_ev(EventKind.TOOL_CALLED, p))
+        bus.emit(_ev(EventKind.ROLE_TOOL_CALL, p))
 
     assert bus.flush(5.0), "泵线程未在超时内排空队列"
     bus.stop()
@@ -94,7 +94,7 @@ def test_伪造密钥不进投影() -> None:
     bus.subscribe(std.accept)
     bus.subscribe(dbg.accept)
 
-    bus.emit(_ev(EventKind.TOOL_CALLED, {"body": f"key={FAKE_SK}"}))
+    bus.emit(_ev(EventKind.ROLE_TOOL_CALL, {"body": f"key={FAKE_SK}"}))
     assert bus.flush(5.0)
     bus.stop()
 
@@ -163,19 +163,35 @@ def test_阶段成果事件名与架构逐字一致() -> None:
 # ── 白名单：D-046 的机械落点 ──
 
 
-def test_标准模式只放行四类() -> None:
+def test_标准模式只放行五项四类事() -> None:
+    """D-023「用户只需知道四件事」+ D-046。
+
+    表内 5 项是因为 `export.blocked` / `export.done` 属同一族
+    （导出结果）分开计；语义上仍是四件事。合并裁决见 EVENT_MERGE.md。
+    """
     assert is_user_visible(EventKind.ARTIFACT_READY)
-    assert is_user_visible(EventKind.ERROR_RAISED)
-    assert is_user_visible(EventKind.DIRECTION_CONFIRMED)
+    assert is_user_visible(EventKind.EXPORT_BLOCKED)
+    assert is_user_visible(EventKind.EXPORT_DONE)
+    assert is_user_visible(EventKind.RUN_FAILED)
     assert is_user_visible(EventKind.USER_QUESTION_RAISED)
-    assert len({k for k in EventKind if is_user_visible(k)}) == 4
+    # 事件共 37 项，标准界面只放行 5 项——这正是 D-046 的意义
+    assert len({k for k in EventKind if is_user_visible(k)}) == 5
+    assert len(EventKind) == 37, "事件总数变了，架构 §5.4 与 EVENT_MERGE.md 需同步"
+
+
+def test_错误事件不直接进标准模式() -> None:
+    """`error.raised` 是实现细节，运行失败才升级为 `run.failed`。
+
+    直接把 error.raised 放行会让用户看到内部异常名（D-046 反例）。
+    """
+    assert not is_user_visible(EventKind.ERROR_RAISED)
 
 
 def test_成员状态与门禁明细不进标准模式() -> None:
     """D-046：不显示成员状态、不展示审核意见。"""
     for kind in (
         EventKind.ROLE_STATE_CHANGED,
-        EventKind.TOOL_CALLED,
+        EventKind.ROLE_TOOL_CALL,
         EventKind.GATE_REJECTED,
         EventKind.GATE_PASSED,
         EventKind.PHASE_STARTED,
