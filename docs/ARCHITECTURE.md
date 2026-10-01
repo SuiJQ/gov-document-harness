@@ -1394,6 +1394,9 @@ src/zhengtong/
 | D-077 token 估算/真实分离 | 触发用保守估算（D-025 基线）；展示与台账用真实值 | §7.2 |
 | D-078 docx 元数据先查 | 单 entry 20MB / 总量 100MB / 压缩比 100:1 三重上限 | §6.3 |
 | D-079 最低 Python 3.11 | `tomllib` 内置故不装 `tomli`；`tomli-w` 仅用于写 | §2.3 |
+| D-080 角色代号双层 | 内部 `role_id` 英文（目录/日志/事件）；界面 `display_name` 中文；映射只在 `manifest.json` | §7.1 §13 |
+| D-081 授权免标 | 纯自用不分发，`manifest.json` 只记 `name`/`version`/`sha256`，不加 `license` | §12 |
+| D-082 连接配置时机 | 第 6 步前需真实凭据；前 5 步不需；无凭据则该步标注"未实测"不推进 | §15 |
 | D-039 压缩保留优先级 | `ContextView.pinned_facts` 物理不可丢 | §7.2 |
 | D-040 D1–D9 字段 | `DCardField` 逐字段带 provenance 与采集时机 | §3.2 |
 | D-041 独立上下文 | 每角色一份 `ContextView`，成员唯一出口是工具 | §7.2 §7.4 |
