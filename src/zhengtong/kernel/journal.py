@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
-from typing import Protocol, cast, runtime_checkable
+from typing import IO, Protocol, cast, runtime_checkable
 
 from ..domain.event import Event
 from ..domain.ids import RunId
@@ -51,7 +52,23 @@ class JsonlJournal:
         # 缓冲里的内容在进程被杀时就丢了。
         line = json.dumps(_to_json(event), ensure_ascii=False)
         with self._path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+            _ = fh.write(line + "\n")
+            # 审计 D-135：**append 也必须刷盘**。
+            # 原实现只 write + close，而 close 只 flush 到 page cache，
+            # **不是落盘**——断电或内核崩溃时最后若干条事件就没了。
+            # 而 journal 恰恰是断点续跑（D-027/D-082）的唯一依据：
+            # `append` 自己的注释写着「事件日志的价值全在『崩了也留痕』」，
+            # 却是本仓库唯一没做 fsync 的持久化路径。
+            # （`adapters/atomic.py` 早就为原子写加了这层保障，
+            #   第 1 批审计已确认其必要。）
+            #
+            # 为什么不批量刷：`append` 每次 open/write/close，
+            # 文件句柄不跨调用保留，**没有批量点可攒**。
+            # 实测每条 fsync 约 0.39 ms，一次成文按 80 个事件算
+            # 额外约 31 ms——远小于一次模型调用的耗时，可以全开。
+            # 若将来事件量级上升，正确做法是让句柄常驻并按条刷，
+            # 而不是退回不刷盘。
+            _ = _刷盘(fh)
 
     def read_all(self) -> tuple[Event, ...]:
         """读回全部事件。**跳过损坏行，但一条好的都不丢**（审计 D-123）。
@@ -89,6 +106,24 @@ class JsonlJournal:
                 _记损坏行(行号)
                 continue
         return tuple(out)
+
+
+def _刷盘(fh: IO[str]) -> None:
+    """flush + fsync，**失败不抛**——刷盘失败不该让流程崩掉。
+
+    取与 `adapters/atomic.py` 同一套策略：
+    - flush 把 Python 缓冲推给 OS，返回值无用但调用必要
+    - fsync 才真正落盘；POSIX 上没有它，断电就丢数据
+    - fsync 在 FAT32/某些网络盘上不可用，那里做降级而非拒绝
+      （第 1 批已在 `atomic.py` 实测并确认该降级是必要的）
+    """
+    _ = fh.flush()
+    try:
+        _ = os.fsync(fh.fileno())
+    except OSError:
+        # 记 debug 而非 warning：这是环境限制，不是数据损坏。
+        # 且 D-123 已保证即便真丢了末行，好数据仍可读回。
+        logging.getLogger(__name__).debug("fsync 不可用，事件仅落到页缓存", exc_info=True)
 
 
 def _记损坏行(行号: int) -> None:

@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -341,3 +343,43 @@ def test_seq类型不对的行被跳过而非崩(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert [e.seq for e in j.read_all()] == [1, 2, 3]
+
+
+# ═══ D-135：append 也必须刷盘 ═══════════════════════════════════════════
+
+
+def test_每条事件都须fsync(tmp_path: Path) -> None:
+    """**journal 是断点续跑（D-027/D-082）的唯一依据。**
+
+    原实现只 `write` + `close`，而 close 只 flush 到 page cache，
+    **不是落盘**——断电或内核崩溃时最后若干条事件就没了。
+    而 `append` 自己的注释写着「事件日志的价值全在『崩了也留痕』」，
+    却是本仓库唯一没做 fsync 的持久化路径
+    （`adapters/atomic.py` 早就为原子写加了这层保障）。
+    """
+    记录: list[int] = []
+    原始 = os.fsync
+
+    def 假fsync(fd: int) -> None:
+        记录.append(fd)
+        原始(fd)
+
+    with patch("zhengtong.kernel.journal.os.fsync", 假fsync):
+        日志 = JsonlJournal(tmp_path / "e.jsonl")
+        日志.append(_事件(1))
+        日志.append(_事件(2))
+
+    assert len(记录) == 2, f"每条事件都应刷盘，实得 {len(记录)} 次"
+
+
+def test_fsync不可用时不得崩溃(tmp_path: Path) -> None:
+    """**降级而非拒绝**，与 `atomic.py` 同一套策略。
+
+    fsync 在 FAT32 与部分网络盘上不可用。那是环境限制，
+    不是数据损坏，不该让整个流程崩在这里——
+    而 D-123 已保证即便真丢了末行，好数据仍可读回。
+    """
+    日志 = JsonlJournal(tmp_path / "e.jsonl")
+    with patch("zhengtong.kernel.journal.os.fsync", side_effect=OSError("FAT32 不支持")):
+        日志.append(_事件(1))
+    assert len(日志.read_all()) == 1, "fsync 失败后事件仍须写入且可读回"
