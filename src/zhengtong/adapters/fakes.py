@@ -249,6 +249,23 @@ class FakeStorage:
         return Result.fail(ErrorCode.FILE_UNREADABLE, f"文件不存在：{rel_path}")
 
     def exists(self, rel_path: str) -> bool:
+        """**审计 D-142：这里也必须查权限。**
+
+        原实现是 `return rel_path in self.files`，**不做任何权限检查**——
+        于是对 `../../etc/passwd` 也返回 `True`，而真实实现在同一输入上
+        返回 `False`（它走 `_resolve_for_read`，越权即否）。
+
+        后果很具体：上层若据此判断「文件已就绪，可以读取」，
+        在假环境里照跑通过，接上真适配器才发现读不到——
+        **失败点在上层，看不出根因在假实现**。
+        这正是 D-112 说的「假实现一旦更宽松，就不再是可信参照物」。
+
+        返回类型是 `bool` 而非 `Result`，故越权时只能是 `False`——
+        与真实实现在**同一输入上给出同一答案**，这才是关键。
+        """
+        got = _查权限(rel_path, paths.AI_READABLE)
+        if got.is_error:
+            return False
         return rel_path in self.files
 
     def list_dir(self, rel_path: str) -> tuple[str, ...]:
@@ -262,7 +279,24 @@ class FakeStorage:
         而且失败点在上层，看不出根因在这里。
 
         越权或不存在都返回空元组，与真实实现一致（见 fs_storage.list_dir）。
+
+        ## 审计 D-142：这里原本也**没有权限检查**
+
+        原实现直接按前缀匹配，于是
+        `list_dir("../../etc")` 在假实现上返回 `("x.txt",)`，
+        真实实现返回 `()`。同样是「假实现比真实现宽松」。
+
+        对照 `read_text` 已经补过的权限检查（D-128/D-129）——
+        当时修了**会返回 Result 的方法**，而 `exists` / `list_dir`
+        返回的是 `bool` 与 `tuple`，被漏掉了。
+
+        **教训：补一处只补返回 `Result` 的那类，是不完整的。**
+        返回裸值的便捷方法同样是契约的一部分，
+        上层照样会拿它们的返回值做判断。
         """
+        got = _查权限(rel_path, paths.AI_READABLE)
+        if got.is_error:
+            return ()
         prefix = f"{rel_path.rstrip('/')}/"
         names = {k[len(prefix) :].split("/", 1)[0] for k in self.files if k.startswith(prefix)}
         return tuple(sorted(names))

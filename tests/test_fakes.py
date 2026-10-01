@@ -11,9 +11,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from zhengtong.adapters import fakes
+from zhengtong.adapters.fs_storage import FsStorage
+from zhengtong.adapters.paths import Workspace, ensure_dirs
 from zhengtong.domain.errors import ErrorCode
 from zhengtong.domain.event import Span
 from zhengtong.domain.role import RoleId
@@ -355,3 +359,81 @@ def test_导入时即校验协议() -> None:
 
 def test_stub_text可辨认() -> None:
     assert fakes.STUB_MARK in fakes.stub_text("某类")
+
+
+# ── D-142：返回裸值的方法同样要查权限 ──────────────────────────────
+#
+# D-128/D-129 曾给 `read_text` 补过权限检查，但**只补了返回 Result 的方法**。
+# `exists`（bool）与 `list_dir`（tuple）被漏掉了——
+# 上层照样会拿它们的返回值做判断，契约一样成立。
+
+
+@pytest.mark.parametrize(
+    "越权路径",
+    [
+        pytest.param("../../etc/passwd", id="目录穿越"),
+        pytest.param("/etc/passwd", id="绝对路径"),
+        pytest.param("data/../../x.txt", id="中途折返"),
+        pytest.param("..", id="父目录"),
+    ],
+)
+def test_假实现exists对越权路径须与真实现一致(越权路径: str) -> None:
+    """**返回类型是 `bool`，但契约与 `Result` 方法一样。**
+
+    原实现 `return rel_path in self.files` 不做任何权限检查，
+    对 `../../etc/passwd` 也返回 `True`，而真实实现在同一输入上
+    返回 `False`（它走 `_resolve_for_read`，越权即否）。
+
+    后果很具体：上层若据此判断「文件已就绪，可以读取」，
+    在假环境里照跑通过，接真适配器才发现读不到——
+    **失败点在上层，看不出根因在假实现。**
+    这正是 D-112 说的「假实现一旦更宽松，就不再是可信参照物」。
+    """
+    假 = fakes.FakeStorage()
+    假.files["../../etc/passwd"] = "系统文件"
+    assert not 假.exists(越权路径), f"{越权路径!r} 在假实现上被判定为存在"
+
+
+def test_假实现list_dir对越权路径须返回空() -> None:
+    """原实现按前缀直接匹配，`list_dir("../../etc")` 返回
+    `("x.txt",)`，真实实现返回 `()`。"""
+    假 = fakes.FakeStorage()
+    假.files["../../etc/x.txt"] = "x"
+    assert 假.list_dir("../../etc") == ()
+    assert 假.list_dir("..") == ()
+
+
+def test_假实现权限检查不得影响正常路径() -> None:
+    """**修 D-142 不能改坏正常读取。**"""
+    假 = fakes.FakeStorage()
+    假.files["user/材料.txt"] = "用户材料"
+    假.files["data/产出.txt"] = "产出"
+
+    assert 假.exists("user/材料.txt")
+    assert 假.exists("data/产出.txt")
+    assert 假.list_dir("user") == ("材料.txt",)
+    assert 假.list_dir("data") == ("产出.txt",)
+    # D-022/D-023：AI 可读 user/，但只能写 data/
+    assert 假.read_text("user/材料.txt").is_ok
+    assert not 假.write_atomic("user/x.txt", "x").is_ok
+
+
+def test_假实现与真实实现在同一输入上答案一致(tmp_path: Path) -> None:
+    """**这是 D-142 的判据：不是「假实现更严」，而是「两边一致」。**
+
+    只测「假实现拒绝越权」是不够的——真正的风险是**分歧**。
+    故这里直接对着真实 `FsStorage` 逐条比答案。
+    """
+    根 = tmp_path / "ws"
+    _ = ensure_dirs(根)
+    真 = FsStorage(Workspace(根))
+    假 = fakes.FakeStorage()
+
+    for 相对 in ("user/材料.txt", "data/产出.txt"):
+        假.files[相对] = "内容"
+        _ = (根 / 相对).write_text("内容", encoding="utf-8")
+
+    for 路径 in ("../../etc/passwd", "/etc/passwd", "data/../../x.txt", ".."):
+        assert 假.exists(路径) == 真.exists(路径), 路径
+    for 路径 in ("../../etc", "..", "data", "user"):
+        assert 假.list_dir(路径) == 真.list_dir(路径), 路径
