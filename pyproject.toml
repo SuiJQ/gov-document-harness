@@ -68,10 +68,17 @@ quote-style = "double"
 # ── BasedPyright：慢但完整，负责类型 ─────────────────────
 # D-068 要求全 tuple 真不可变、D-069 要求 provenance 可校验 —— 这些都只能靠类型检查兜。
 [tool.basedpyright]
-include = ["src"]
+# 测试一并纳入类型检查。原配置只查 src，导致 154 个测试里的类型错误
+# 完全没人管——实测一纳入就查出 7 个 error（返回标注写成 object、
+# 故意违反 frozen 的地方没标注意图）。测试是判据，判据自己不受检查不行。
+include = ["src", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "recommended"   # 比 pyright 默认严，适合本项目的强契约设计
 pythonPlatform = "Linux"          # CI 平台；Windows 下开发需覆盖此项
 reportMissingTypeStubs = "warning"
-reportAny = "warning"
+# `__str__` 等内置协议覆盖要求 typing.override，那是 3.12 才有的（D-079 定 3.11），
+# 为此加 typing_extensions 不值得——收益只是让检查器闭嘴，不是让代码更对。
+# 真实类型错误仍由其余规则覆盖。
+reportImplicitOverride = false
+
 

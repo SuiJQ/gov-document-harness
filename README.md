@@ -9,7 +9,7 @@
 
 ```
 D-Lock（方向锁） → Phase 0（因果推演） → Phase 0.5（政策取证）
-   → 起草 → 12 道取证门禁 G0–G13 → DG-X（交付一致终闸）
+   → 起草 → 12 道取证门禁（G1–G13 去 G0/G6） → DG-X（交付一致终闸）
    → G12（用户原始诉求复核） → 成稿
 ```
 
@@ -59,6 +59,35 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 ./scripts/check.sh --fix    # 顺便自动修（类型检查不参与自动修）
 ```
 
+Ruff 管风格与静态缺陷，BasedPyright 管类型，**两者都跑，缺一不可**：
+未用导入、未定义名只有 Ruff 查；类型问题只有 BasedPyright 查。
+`src` 与 `tests` 一并纳入类型检查——测试是判据，判据自己不受检查不行。
+
+### 跑测试
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+```
+
+> 若提示 `No module named 'platformdirs.pytest_plugin'`，加环境变量
+> `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` 绕开系统 venv 漏进来的插件。
+
+## 实现进度
+
+按 `docs/ARCHITECTURE.md` §15 的顺序自底向上推进，**每层先有测试再接上层**。
+
+| 步 | 内容 | 状态 |
+|---|---|---|
+| 1a | L0 领域层形状：类型、字段、`schema_version` | ✅ |
+| 2 | L3 端口层：用 1a 的形状签接口 | ✅ |
+| 1b | L0 领域层行为：校验、默认值、往返测试 | ✅ |
+| 3 | L1 内核层：事件总线 + 两投影 + 脱敏 | ⬜ |
+| 4 | 装配根 + 全假实现（**能跑起来**） | ⬜ |
+| 5 | L2 适配：配置与日志 | ⬜ |
+
+第 1 步的三条判据均已机械验证：**零第三方依赖**、**全部 dataclass 均 `frozen` + `slots`**、
+**全部值类型可 JSON 化**。详见 `L0_DOMAIN_TODO.md`。
+
 两个工具各管一段，**职责不重叠，缺一不可**：
 
 | 工具 | 负责 | 独有职责 |
@@ -69,7 +98,7 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 单独跑其中一个会漏问题：`ruff check` 通过不代表类型正确，
 `basedpyright` 通过不代表没有死代码。选型依据见 `DECISIONS.md` D-083。
 
-> 决策记录见工作区 `DECISIONS.md`（唯一权威来源，83 条决策）。
+> 决策记录见工作区 `DECISIONS.md`（唯一权威来源，85 条决策）。
 
 ## 许可
 

@@ -22,7 +22,9 @@ FIX=""
 [ "$1" = "--fix" ] && FIX="--fix"
 
 echo "── Ruff（格式 + 静态检查）──"
-"$V/ruff" format $FIX src tests
+# 注意：--fix 只属于 `ruff check`（它修代码），
+# `ruff format` 是格式化器，没有这个选项，传了会直接报 unexpected argument。
+"$V/ruff" format src tests
 "$V/ruff" check $FIX src tests
 
 echo ""
