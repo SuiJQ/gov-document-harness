@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from ..domain.event import Event, EventKind, is_user_visible
 from ..domain.role import RoleId, display_name
@@ -30,6 +30,29 @@ class Projection(Protocol):
     def lines(self) -> tuple[str, ...]:
         """已积累的显示行。**纯读，不消费。**"""
         ...
+
+
+def _as_names(value: object) -> tuple[str, ...]:
+    """把 `data` 里的清单字段安全转成显示用字符串序列。
+
+    `data` 的类型是 `dict[str, object]`，发射端可能给
+    `list` / `tuple` / 单个 `str`，也可能是 `None`。
+    **投影层不能因为发射端写错类型就崩**——它跑在 TUI 主循环里，
+    一崩整个界面就没了。故这里做防御性收敛。
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, (list, tuple)):
+        # 显式 cast：BP 无法从 `isinstance(value, (list, tuple))` 收窄元素类型
+        out: list[str] = []
+        for 元素 in cast("tuple[object, ...]", value):
+            文 = str(元素)
+            if 文:
+                out.append(文)
+        return tuple(out)
+    return (str(value),)
 
 
 @dataclass(slots=True)
@@ -66,10 +89,31 @@ class StandardProjection:
         elif event.kind is EventKind.USER_QUESTION_RAISED:
             fields = str(data.get("fields", ""))
             self.questions = (*self.questions, f"需要确认：{fields}")
-        elif event.kind is EventKind.DIRECTION_CONFIRMED:
-            self.progress = "方向已确认"
-        elif event.kind is EventKind.ERROR_RAISED:
+        elif event.kind is EventKind.RUN_FAILED:
+            # 运行失败**要**让用户知道（白名单第 4 项）。
+            # 架构 §5.4：「运行真的失败时，由编排层升级为 `run.failed` 再告知」——
+            # 失败信息由 `run.failed` 承载，`error.raised` 只作内部细节留痕。
+            #
+            # 审计 D-118：原先此处挂的是 `ERROR_RAISED`，
+            # 而它不在白名单里，分支**永不可达**，`errors` 因此永远是空的。
             self.errors = (*self.errors, str(data.get("detail", "")))
+            self.progress = "运行失败"
+        elif event.kind is EventKind.EXPORT_BLOCKED:
+            # 审计 D-118：原先**没有任何分支处理它**——在白名单里却毫无效果。
+            # 后果：导出被残留占位符拦下时，用户看不到任何提示，
+            # 门禁变成静默的（比没有门禁更危险）。
+            # D-038 要求「列出待补信息」，故这里必须把清单显示出来。
+            待补 = _as_names(data.get("placeholders"))
+            self.questions = (*self.questions, f"还有待补信息，暂不能导出：{'、'.join(待补)}")
+            self.progress = "导出被拦：请补齐待补信息"
+        elif event.kind is EventKind.EXPORT_DONE:
+            # 同为白名单项，此前也无分支。导出成功是用户明确期待的结论，
+            # 必须显式告知，且要点名交付了哪些文件。
+            文件 = _as_names(data.get("files"))
+            self.progress = f"已导出：{'、'.join(文件)}" if 文件 else "已导出"
+        # 审计 D-118 另删掉一处死分支 `DIRECTION_CONFIRMED`：
+        # 它同样不在白名单里，永远进不来。
+        # 方向确认单本就是三份阶段成果之一，走 `ARTIFACT_READY` 即可。
 
     def lines(self) -> tuple[str, ...]:
         """标准模式的全部输出。**顺序稳定**：进度、提问、成果、错误。"""
