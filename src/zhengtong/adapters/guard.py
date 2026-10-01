@@ -42,6 +42,7 @@ resolved.relative_to(base)
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from ..domain.errors import ErrorCode, Result
@@ -62,14 +63,11 @@ def ensure_within(root: str | Path, raw: str | Path) -> Result[Path]:
     """
     base = resolve(root)
     target = resolve(raw)
-    # 每一段路径分量都要查。**只查文件名是不够的**：
-    # `user/NUL/../a.txt` 归一后仍是 `user/a.txt`，但中间的 `NUL`
-    # 在 Windows 上指向设备，任何基于它的操作都不可预期
-    for part in Path(str(raw)).parts:
-        if reason := winname.why_rejected(part):
+    for 分量 in _分量(str(raw)):
+        if reason := winname.why_rejected(分量):
             return Result.fail(
                 ErrorCode.PATH_ESCAPE,
-                f"路径分量不可用：{reason}（{part}）",
+                f"路径分量不可用：{reason}（{分量}）",
             )
     try:
         # 只用它"是否抛异常"来判包含，**不用它的返回值**：
@@ -81,6 +79,40 @@ def ensure_within(root: str | Path, raw: str | Path) -> Result[Path]:
             f"路径越出允许范围：{raw}",
         )
     return Result.ok(target)
+
+
+def _分量(raw: str) -> tuple[str, ...]:
+    """把路径**按两种分隔符都切开**，返回每个分量。
+
+    ## 审计 D-133：不能只用 `Path.parts` —— 它依赖运行平台
+
+    原实现用 `Path(str(raw)).parts` 取分量。在 Windows 上这是对的，
+    但在 POSIX 上**反斜杠不是分隔符**：
+
+        Path("data\\NUL\\x.txt").parts  →  ('data\\NUL\\x.txt',)   # 一个整体
+
+    实测后果：`why_rejected("data\\NUL\\x.txt")` 返回 `None`（未识别），
+    `ensure_within` **放行**，文件被真的写了出来。搬到 Windows 上，
+    `NUL` 被当成设备名——正是本模块开头警告的
+    「写进去、找不回来，且没有任何报错」。
+
+    这在 Linux 上跑测试时**完全看不出来**：整套设备名防护的反斜杠
+    分支从不执行。而 D-003 的验收平台是 Windows。
+
+    故这里**手工按两种分隔符切**，与运行平台无关：
+    无论在 Linux 还是 Windows 上开发，`data\\NUL\\x.txt` 都会被拦下。
+
+    保留 `Path.parts` 的结果并**求并集**，因为它还负责拆掉
+    盘符（`C:`）与 UNC 前缀（`\\\\server\\share`）——
+    那些不是文件名，不该拿去做 `why_rejected`。
+
+    **不能简单用 `保留名 in 分量` 来判断**：`我的NUL文件` 含 `NUL`
+    但不是保留名，Windows 上完全合法。实测确认 `data/我的NUL文件/x.txt`
+    现在是通过的，不能被这个修复误伤。
+    """
+    parts = set(Path(str(raw)).parts)
+    parts.update(p for p in re.split(r"[\\/]+", str(raw)) if p)
+    return tuple(parts)
 
 
 def is_within(root: str | Path, raw: str | Path) -> bool:
