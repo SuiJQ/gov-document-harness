@@ -32,11 +32,23 @@ REDACTED: Final[str] = "[已脱敏]"
 #:
 #: 这是第二道防线。第一道是 SecretsPort 提供的精确模式
 #: （能认出用户自己那个 key，无论它长什么样）。
+#: `sk-` 开头的 OpenAI 风格 key。
+#:
+#: 审计 D-122：**这里不能用 `\b`**。Python 的 `\b` 边界基于 `\w`，
+#: 而 `\w` 在 Python 3 默认含中文——于是「我的key是sk-xxxx」里
+#: `是` 与 `s` 都是词字符，**没有边界，模式匹配不上**，密钥原样放行。
+#: 本项目是中文公文系统，密钥嵌在中文句子里是常态而非特例。
+#: 故改为"前一字符不能是 key 的构成字符"。
+#: 注意排除集里**不能含连字符**：`run-sk-xxx` 这种前缀极常见
+#: （`run_id`、条目名都可能这么拼），若把 `-` 算作"仍在 key 内"
+#: 就会漏掉。实测踩过：`run-sk-proj-...` 因前一字符是 `-` 而未被拦下。
+PAT_SK: Final[re.Pattern[str]] = re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_\-]{8,}")
+
 _PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     # sk- 开头的 OpenAI 风格 key
-    re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}"),
+    PAT_SK,
     # Bearer 令牌
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"),
+    re.compile(r"(?i)(?<![A-Za-z0-9._\-])bearer\s+[A-Za-z0-9._\-]{8,}"),
     # 裸长十六进制串（可能是 key 或哈希），要求足够长以免误伤哈希指纹
     re.compile(r"\b[0-9a-fA-F]{32,}\b"),
     # key/secret/token + 赋值
@@ -67,11 +79,42 @@ class Redactor:
     def scrub(self, event: Event) -> Event:
         """脱敏一个事件，返回**新**事件。
 
-        连 `data` 里的嵌套结构一起处理：`data` 的值类型是 `object`，
-        可能是 str、list、dict，光处理顶层等于没处理——
-        密钥十有八九藏在嵌套里（比如请求体、日志片段）。
+                连 `data` 里的嵌套结构一起处理：`data` 的值类型是 `object`，
+                可能是 str、list、dict，光处理顶层等于没处理——
+                密钥十有八九藏在嵌套里（比如请求体、日志片段）。
+
+                ## 审计 D-120：不能只扫 `data`
+
+                原实现只处理 `event.data`。而 `Event` 还有 `call_id`、
+                `run_id`、`phase`、`span.role` 等字段同样是 `str`——
+                `bus` 对**每个**事件调本方法，于是任何进了这些字段的密钥都会原样落盘。
+
+                `call_id` 尤其危险：它由 D-076 用 `sha256` 生成，本不该含密钥，
+                但一旦某处误把请求内容或 URL 塞进去（`make_call_id` 接的是
+                `**discriminators: str`），泄漏就发生在**最不该发生的地方**。
+
+                故此处把 `Event` 上所有字符串字段一并脱敏，**含 `span`**——
+        `span.role` / `span.gate` 同样是 `str`，且 `span.gate` 的值来自门禁配置，
+        跨配置来源，不能假定它干净（审计中实测确认它确会原样透出密钥）。
+        `kind` 与 `level` 等枚举值不处理——它们来自封闭枚举集，
+        不可能承载密钥，脱敏只会白白改坏合法数据。
         """
-        return replace(event, data=self.scrub_value(event.data))
+        span = event.span
+        return replace(
+            event,
+            call_id=self.scrub_text(event.call_id),
+            run_id=self.scrub_text(str(event.run_id)),
+            span=(
+                None
+                if span is None
+                else replace(
+                    span,
+                    role=self.scrub_text(span.role) if span.role is not None else None,
+                    gate=self.scrub_text(span.gate) if span.gate is not None else None,
+                )
+            ),
+            data=self.scrub_value(event.data),
+        )
 
     def scrub_value(self, value: object) -> object:
         """递归脱敏任意 JSON 兼容结构。
@@ -86,7 +129,24 @@ class Redactor:
             return self.scrub_text(value)
         if isinstance(value, dict):
             mapping = cast("dict[object, object]", value)
-            return {str(k): self.scrub_value(v) for k, v in mapping.items()}
+            # 审计 D-121：**键名也要脱敏**，不能只脱敏值。
+            # 原实现只对值递归、键仅 `str(k)`——于是
+            # `{"key是sk-xxxx": "值"}` 这类载荷会把密钥原样留在键上。
+            # `data` 的键可由调用方自定义，不能假定"键名一定干净"。
+            #
+            # 键脱敏后会碰撞：两个**不同**的密钥脱敏后都是 `[已脱敏]`，
+            # 覆盖就会静默丢数据。故碰撞时保留后者并计数，
+            # 让"这里原本有几条"仍可辨认——不静默丢东西是底线。
+            out: dict[str, object] = {}
+            碰撞次数 = 0
+            for k, v in mapping.items():
+                脱敏键 = self.scrub_text(str(k))
+                if 脱敏键 in out:
+                    碰撞次数 += 1
+                out[脱敏键] = self.scrub_value(v)
+            if 碰撞次数:
+                out[f"{REDACTED}(键名脱敏后碰撞{碰撞次数}次)"] = 碰撞次数
+            return out
         if isinstance(value, tuple | list):
             seq = cast("tuple[object, ...] | list[object]", value)
             return [self.scrub_value(v) for v in seq]
