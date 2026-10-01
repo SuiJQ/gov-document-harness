@@ -51,7 +51,7 @@ def _to_jsonable(obj: object) -> object:
     # 注意：**不能**写 `isinstance(obj, dict[object, object])` 来收窄——
     # Python 运行时禁止 isinstance 传参数化泛型（3.11 抛 TypeError
     # "isinstance() argument 2 cannot be a parameterized generic"），
-    # 与 D-085 是同一族限制。故先裸判类型，再经中间变量显式标注。
+    # 与 D-086 是同一族限制（3.11 限制）。故先裸判类型，再经中间变量显式标注。
     if isinstance(obj, dict):
         mapping = cast("dict[object, object]", obj)
         return {_str(k): _to_jsonable(v) for k, v in mapping.items()}

@@ -44,8 +44,13 @@ class EventKind(StrEnum):
 
     ROLE_STATE_CHANGED = "role.state_changed"
 
-    ARTIFACT_READY = "artifact.ready"
-    ARTIFACT_UPDATED = "artifact.updated"
+    # 注意命名：架构 §5.4 里这两类叫 `phase.artifact_ready` /
+    # `phase.artifact_updated`，因为它们是**阶段成果**（D-072），
+    # 不是"产物"——产物落盘走 `artifact.published` / `artifact.drafted`。
+    # 事件名是日志里的检索锚点，必须与架构逐字一致：
+    # 按架构文档 grep "phase.artifact_ready" 若搜不到，排障时会空手而归。
+    ARTIFACT_READY = "phase.artifact_ready"
+    ARTIFACT_UPDATED = "phase.artifact_updated"
 
     DIRECTION_CONFIRMED = "direction.confirmed"
     USER_QUESTION_RAISED = "user.question_raised"
@@ -99,9 +104,12 @@ class Event:
     但 `Any` 会把下游所有类型检查一并放行，等于没有标注。
     `object` 逼着消费方先判断类型再用——这正是我们要的。
 
-    `data` 里**只放标量与小结构**，不放正文全文——
-    `phase.artifact_ready` 按架构要求载全文时，
-    那是特例，且应走 `artifact.ready` 事件而非塞进 progress 事件。
+    `data` 里**只放标量与小结构**，唯一例外是 `ARTIFACT_READY`——
+    它按 D-072 携**成果全文**（不是摘要），因为标准模式的成果卡
+    直接由它渲染（D-030/D-046）。其余事件都不许放全文。
+
+    理由是结果直传（D-025）：让界面拿到的与落盘的是同一份内容，
+    从根上消除"界面显示的和落盘的不是一份"这类最难查的错。
     """
 
     seq: int
@@ -116,8 +124,8 @@ class Event:
 
     @property
     def is_user_visible(self) -> bool:
-        """标准模式是否显示。**标准模式绝不显示 DEBUG 类。**"""
-        return self.audience is not Audience.DEBUG
+        """标准模式是否显示。由 `USER_VISIBLE_KINDS` 白名单单独决定。"""
+        return is_user_visible(self.kind)
 
 
 def make_call_id(kind: str, run_id: str, phase_id: str, **discriminators: str) -> str:
@@ -142,3 +150,35 @@ DEBUG_ONLY_KINDS: Final[frozenset[EventKind]] = frozenset(
         EventKind.RETRIEVAL_DONE,
     }
 )
+
+#: **标准模式唯一可见的四类**（架构 §5.4，对齐 D-023 / D-046 / D-030）。
+#:
+#: 白名单只有四项，且**不是**整个 `phase.*`——进度类事件在标准界面上
+#: 只用来渲染"总体进度"那一行（D-046），不需要单独成卡；
+#: 真正要给用户"看内容"的只有三份阶段成果，由 ARTIFACT_READY 承载全文。
+#:
+#: 这张表是 D-046「不显示成员状态、不展示审核意见」的机械落点：
+#: 成员状态与门禁明细都不在其中，故它们进不了标准界面。
+#:
+#: 注意 `RUN_FINISHED` 也不在其中：完成由界面自行收束，
+#: 不额外弹事件卡片，避免和成果卡抢注意力。
+USER_VISIBLE_KINDS: Final[frozenset[EventKind]] = frozenset(
+    {
+        EventKind.ARTIFACT_READY,
+        EventKind.ERROR_RAISED,
+        EventKind.DIRECTION_CONFIRMED,
+        EventKind.USER_QUESTION_RAISED,
+    }
+)
+
+
+def is_user_visible(kind: EventKind) -> bool:
+    """标准模式是否显示该事件。
+
+    **只看 `kind`，不看 `audience`**：白名单是唯一判据。
+    若两者都看，就得同时保证"事件被标成 USER"且"在白名单里"——
+    两个条件任一漏掉都会让该显示的东西消失，而这种 bug 只在
+    真实运行时才看得见。故让 `audience` 不参与这个判断，
+    白名单说了算（D-046）。
+    """
+    return kind in USER_VISIBLE_KINDS

@@ -1,6 +1,6 @@
 # 本文件放宽 Unknown 类规则：`Result.fail(...)` 的返回类型是 `Result[Any]`
-# （D-085 已论证：`Result[Never]` 因不变性报错，`Self` 在裸调用时退回 Unknown，
-#   `Result[Any]` 是唯一可行解）。故拿它的结果去做成员访问时类型是未知的。
+# （D-085：`Result[Never]` 因不变性报错，`Self` 在裸调用时退回 Unknown，
+#   `Result[Any]` 是唯一可行解——三方案均已实测）。故拿它的结果去做成员访问时类型是未知的。
 # 这不影响断言有效性——未知只影响静态提示，不影响运行行为。
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnusedCallResult=false
 """L0 行为测试：Result、D-Card 校验、配平铁律、ContextView 不可变性。"""
