@@ -276,3 +276,111 @@ def test_键名碰撞不静默丢数据() -> None:
 def test_无碰撞时不加多余标记() -> None:
     结果 = Redactor().scrub_value({"正常键": "值"})
     assert 结果 == {"正常键": "值"}
+
+
+# ═══ D-134：片段是锚点，不是待替换的完整子串 ═══════════════════════════
+#
+# 本节的判据是**穷举 + 反向验证**：每条用例都必须同时证明
+# 「密钥主体没落盘」和「周围说明文字没被误伤」。
+# 只证明前者是不够的——一个把所有东西都替换成 [已脱敏] 的脱敏器
+# 同样能通过前一条，但它会让日志彻底失去可读性。
+
+
+def _泄(输出: str, key: str, 片段: str) -> bool:
+    """密钥全文或**主体**（去掉片段后的剩余部分）是否还在输出里。"""
+    主体 = key[len(片段) :]
+    return key in 输出 or (bool(主体) and 主体 in 输出)
+
+
+@pytest.mark.parametrize(
+    ("key", "锚点", "文本"),
+    [
+        pytest.param(
+            "projXYZ1234567890abcdef",
+            "projXYZ",
+            "连接串 projXYZ1234567890abcdef 超时",
+            id="前缀片段",
+        ),
+        pytest.param("Zq7x9w2mKj3n", "Zq7x", "凭据 Zq7x9w2mKj3n 无效", id="中段片段"),
+        pytest.param(
+            "AbCdEf1234567890XyZ", "AbCdEf", "字段 AbCdEf1234567890XyZ 缺失", id="另一中段"
+        ),
+        pytest.param(
+            "projXYZ1234567890abcdef",
+            "projXYZ",
+            "Authorization: Bearer projXYZ1234567890abcdef",
+            id="Bearer形态",
+        ),
+        pytest.param(
+            "sk-proj-abcdef123456",
+            "sk-proj",
+            "我的key是sk-proj-abcdef123456请检查",
+            id="sk形态嵌中文",
+        ),
+    ],
+)
+def test_片段替换必须吞掉密钥主体(key: str, 锚点: str, 文本: str) -> None:
+    """**修复前 3/3 用例泄漏。**
+
+    原实现对 `extra_patterns` 做 `str.replace` 字面替换。而
+    `SecretsPort.redaction_patterns()` 按设计只返回**片段**
+    （D-030：让 Redactor 持有「怎么脱」而非「脱什么」），
+    于是字面替换只吃掉片段本身，密钥主体原样落盘：
+
+        key  = "projXYZ1234567890abcdef"
+        片段 = "projXYZ"
+        修复前 = "连接串 [已脱敏]1234567890abcdef 超时"
+
+    **这比不脱更糟**：日志里留下「一半密钥 + 一半明文上下文」，
+    比完整密钥更容易被拼接还原。
+
+    故片段被当作**锚点**，向后贪婪吞掉同构成字符
+    （`[A-Za-z0-9._-]`），一次吃到密钥的自然边界。
+    这样 D-030 的设计意图（Redactor 不持有密钥全文）
+    与实际效果（脱干净）两件事才同时成立。
+    """
+    输出 = Redactor(extra_patterns=(锚点,)).scrub_text(文本)
+    assert not _泄(输出, key, 锚点), f"密钥主体落盘：{输出!r}"
+
+
+@pytest.mark.parametrize(
+    ("锚点", "文本", "须保留"),
+    [
+        pytest.param(
+            "sk-proj", "我的key是sk-proj-abcdef请检查并重试", "请检查并重试", id="中文说明"
+        ),
+        pytest.param(
+            "projXYZ",
+            "连接串 projXYZ1234567890abcdef 超时，请稍后重试",
+            "请稍后重试",
+            id="逗号后说明",
+        ),
+        pytest.param("Zq7x", "凭据 Zq7x9w2mKj3n 无效，请联系管理员", "请联系管理员", id="致谢语"),
+    ],
+)
+def test_脱敏不得吃掉后续说明(锚点: str, 文本: str, 须保留: str) -> None:
+    """**贪婪必须有边界。**
+
+    若无脑吃到空白，「key 是 sk-xxx 请检查」会把后面的中文说明
+    一起替换掉，日志可读性尽失——而日志的价值恰恰在于
+    「出了什么事、上下文是什么」。
+
+    故边界排除空格与中文：密钥后面跟的往往是给人看的说明。
+    """
+    输出 = Redactor(extra_patterns=(锚点,)).scrub_text(文本)
+    assert 须保留 in 输出, f"脱敏误伤了说明文字：{输出!r}"
+
+
+def test_锚点不存在时文本不变() -> None:
+    """锚点不命中就什么都不该改——不能凭空插入 `[已脱敏]`。"""
+    文本 = "一切正常的日志行"
+    assert Redactor(extra_patterns=("sk-proj",)).scrub_text(文本) == 文本
+
+
+def test_多个锚点各自生效() -> None:
+    """用户可能有多个凭据（如主 key + 备用 key）。"""
+    文本 = "主 projXYZ1234567890abc 备用 Zq7x9w2mKj3n 都试过了"
+    输出 = Redactor(extra_patterns=("projXYZ", "Zq7x")).scrub_text(文本)
+    assert "1234567890abc" not in 输出
+    assert "9w2mKj3n" not in 输出
+    assert "都试过了" in 输出, f"说明文字被误伤：{输出!r}"

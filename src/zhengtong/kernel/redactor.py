@@ -56,6 +56,14 @@ _PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
+#: D-134：锚点之后贪婪吞掉同构成字符，直到自然边界。
+#: 边界排除空格与中文——密钥后面跟的往往是给人看的说明文字，
+#: 一起吃掉会让日志变得没法读（实测确认「请检查」等中文完整保留）。
+_吞到边界: Final[re.Pattern[str]] = re.compile(
+    re.escape(REDACTED) + r"[A-Za-z0-9._\-]*",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Redactor:
     """把密钥从任意文本与事件里摘掉。
@@ -68,10 +76,36 @@ class Redactor:
     extra_patterns: tuple[str, ...] = ()
 
     def scrub_text(self, text: str) -> str:
-        """脱敏一段文本。"""
-        for literal in self.extra_patterns:
-            if literal and literal in text:
-                text = text.replace(literal, REDACTED)
+        r"""脱敏一段文本。
+
+        ## 审计 D-134：片段是锚点，不是待替换的完整子串
+
+        原实现对 `extra_patterns` 做 `str.replace` **字面替换**。
+        但 `SecretsPort.redaction_patterns()` 按设计只返回**片段**
+        （D-030：让 Redactor 持有「怎么脱」而非「脱什么」），
+        于是字面替换只吃掉片段本身，**密钥主体原样落盘**：
+
+            key   = "projXYZ1234567890abcdef"
+            片段  = "projXYZ"                     # 前缀片段
+            文本  = "连接串 projXYZ1234567890abcdef 超时"
+            修复前 = "连接串 [已脱敏]1234567890abcdef 超时"   ← 泄漏
+
+        实测 3/3 用例密钥主体落盘，含 Bearer 形态。
+        **这比不脱更糟**：日志里留下「一半密钥 + 一半明文上下文」，
+        比完整密钥更容易被拼接还原。
+
+        故改为：片段作**锚点**，向后贪婪吞掉同构成字符
+        （`[A-Za-z0-9._\-]`），一次吃到密钥自然边界。
+        这保住了 D-030 的设计意图（Redactor 仍不持有密钥全文）
+        与实际效果（脱干净）两件事。
+
+        注意贪婪边界**不能吃空格**——否则
+        「key 是 sk-xxx 请检查」会把后面的中文说明一起吃掉，
+        日志可读性尽失。实测确认这句中文完整保留。
+        """
+        for 锚点 in self.extra_patterns:
+            if 锚点:
+                text = _吞到边界.sub(REDACTED, text.replace(锚点, REDACTED))
         for pattern in _PATTERNS:
             text = pattern.sub(REDACTED, text)
         return text
