@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .role import RoleId
+from .role import ROLES, RoleId
 
 
 class GateId(StrEnum):
@@ -56,16 +56,23 @@ FORMAL_GATES: tuple[GateId, ...] = (
     GateId.G13,
 )
 
-#: 并行分组（D-049）。组 1 补入了 G11，组 2 拆出 G13 的结构部分。
-#: G9 与 G12 不在此表：G9 动态、G12 与 DG-X 是主理人独占终闸。
-GATE_GROUPS: tuple[tuple[RoleId, ...], ...] = (
-    (RoleId.COMPLIANCE,),  # G1 G2 G7 G10 G11
-    (RoleId.STRUCTURE,),  # G5 G8
-    (RoleId.LANGUAGE,),  # G4（+ E10，见 D-084）
-    (RoleId.DOC_ADVISOR,),  # G3（仅 Pro 档编入）
-)
 
-
+#: 并行分组（D-049）：**由 `GATES[...].owners` 按角色归组推导，不另建事实源。**
+#:
+#: 审计 D-143：本表原先是一份**独立声明**的表，于是变成第二事实源——
+#: 它只列了 4 个组，漏掉 TEAM_LEAD 组（G0/G6/G12）与
+#: G13（STRUCTURE + COMPLIANCE 双取证方）；
+#: 注释还称「组 2 拆出 G13 的结构部分」，而 G13 根本不在表里，
+#: **注释描述了一个代码里不存在的行为**。
+#: 更糟的是 `validation.py` 曾据此做编制校验（现已删除那段冗余校验），
+#: 而当时的测试只断言「每组是单元素」，**从未断言它与 `GATES` 一致**，
+#: 两表漂移因此长期无人发现。
+#:
+#: 故改为**从 `GATES` 推导**，并由 `tests/test_domain_invariants.py`
+#: 的 `test_并行分组须与GATES一致` 锁死：改了 `owners` 而忘了这里会红。
+#:
+#: G9 天然不在任何组里——它的取证方运行期才定（D-084）。
+#: G12 与 DG-X 是主理人独占终闸，不与其他门禁并行。
 @dataclass(frozen=True, slots=True)
 class GateSpec:
     """一道门禁的静态定义。
@@ -106,3 +113,30 @@ GATES: dict[GateId, GateSpec] = {
 def gate_owners(gate: GateId) -> tuple[RoleId, ...]:
     """静态取证方。G9 返回空元组——它的取证方运行期才定。"""
     return GATES[gate].owners
+
+
+def gate_groups() -> tuple[tuple[RoleId, ...], ...]:
+    """并行分组：由 `GATES[...].owners` 推导，**不另建事实源**（D-143）。
+
+    惰性求值（函数而非常量）是为避开定义顺序——
+    它依赖 `GATES`，而 `GATES` 定义在本文件上方，但它自身是本模块的公开常量，
+    改为常量就会在定义时求值，形成前向引用。
+
+    规则：**只收「恰好独占一整组」的角色**（`owners` 为该角色的单元素元组）。
+
+    - G13 是**双取证方**（STRUCTURE + COMPLIANCE），故不在任何组里：
+      把它硬并进 STRUCTURE 那一组，会让双取证的门禁与单取证的并行，
+      破坏 D-084 定下的「G13 由两人共同取证」语义。
+    - G9 的取证方运行期才定（`dynamic_owners`），天然不在任何组里。
+    - G12 与 DG-X 是主理人独占终闸，不与其他门禁并行。
+
+    组序取 `ROLES` 的声明顺序，使分组顺序在日志与测试里稳定可比对。
+    """
+    return tuple(
+        (role.id,)
+        for role in ROLES
+        if any(
+            not spec.dynamic_owners and len(spec.owners) == 1 and spec.owners[0] is role.id
+            for spec in GATES.values()
+        )
+    )

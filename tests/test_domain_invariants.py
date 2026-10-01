@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from zhengtong.domain.gate import FORMAL_GATES, GATE_GROUPS, GATES, GateId
+from zhengtong.domain.gate import FORMAL_GATES, GATES, GateId, gate_groups
 from zhengtong.domain.role import ROLE_BY_ID, ROLES, RoleId, display_name
 
 
@@ -65,9 +65,44 @@ class Test取证方映射:  # D-084
             assert GATES[gate].owners, f"{gate} 漏了取证方"
 
     def test_并行分组均含五角色(self) -> None:
-        for group in GATE_GROUPS:
+        """**这条断言在 D-143 之前形同虚设。**
+
+        原断言只检查「每组是单元素、成员是已知角色」，
+        而 `GATE_GROUPS` 当时是一份**独立声明**的表，
+        与 `GATES` 没有任何交叉校验——所以它漏掉 TEAM_LEAD 组
+        与 G13 长达整个审计都没人发现。
+        """
+        for group in gate_groups():
             assert len(group) == 1
             assert group[0] in ROLE_BY_ID
+
+    def test_并行分组须与GATES一致(self) -> None:
+        """**D-143 的防漂移断言：分组是推导出来的，不是另建的表。**
+
+        `gate_groups()` 由 `GATES[...].owners` 推导，本测试锁死两者一致。
+        今后若改了某道门禁的 `owners` 而推导规则没跟上，这里会红。
+
+        额外锁死两件事（它们都是 D-143 里真实漏掉的）：
+        - **TEAM_LEAD 组必须在**：G0/G6/G12 的取证方都是主理人
+        - **G13 不得进任何组**：它是 STRUCTURE + COMPLIANCE 双取证方，
+          并进去会让双取证的门禁与单取证并行，破坏 D-084 的语义
+        """
+        groups = gate_groups()
+
+        # 1. 单元素独占组 == 由 owners 推导出的全部组
+        推导 = {
+            (spec.owners[0],)
+            for spec in GATES.values()
+            if not spec.dynamic_owners and len(spec.owners) == 1
+        }
+        assert set(groups) == 推导, "分组与 GATES.owners 不一致"
+
+        # 2. TEAM_LEAD 组（D-143 漏掉的第一个）
+        assert (RoleId.TEAM_LEAD,) in groups, "TEAM_LEAD 组缺失（G0/G6/G12 会无人认领）"
+
+        # 3. G13 不得进组（D-143 漏掉的第二个）
+        assert all(len(g) == 1 for g in groups), "双取证门禁不得并入并行组"
+        assert RoleId.STRUCTURE not in {g[0] for g in groups if len(g) > 1}
 
 
 class Test角色定义:  # D-080

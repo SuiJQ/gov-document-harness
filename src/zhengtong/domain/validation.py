@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .dcard import ALLOWED_INFERRED_FIELDS, DCard, Provenance
 from .errors import ErrorCode, Result
-from .gate import FORMAL_GATES, GATE_GROUPS, GATES, GateId
+from .gate import FORMAL_GATES, GATES, GateId
 from .role import RoleId
 from .run_state import RunState
 from .task import TaskSpec
@@ -90,15 +90,21 @@ def validate_gate_balance(tier: TierId) -> Result[None]:
                 f"{gate} 的取证方不在本档编制内",
             )
 
-    # 并行分组的成员也必须在编制内（分组是执行单位）。
-    # 文择体是唯一可豁免者：他只在 Pro 档编入（对应 G3 的降级例外）。
-    for group in GATE_GROUPS:
-        for member in group:
-            if member not in roster and member is not RoleId.DOC_ADVISOR:
-                return Result.fail(
-                    ErrorCode.GATE_RESPONSIBLE_NOT_IN_TIER,
-                    f"并行组含本档未编入成员：{member.value}",
-                )
+    # 审计 D-143：这里原先还有一段遍历 `GATE_GROUPS` 的相同校验，
+    # 已删除。两个原因：
+    #
+    # 1. **完全冗余**。穷举 2^5 全部 32 种编制组合实测：
+    #    该段独有的拦截 0 例、误拦 0 例——上面那段按
+    #    `FORMAL_GATES` + `GATES[gate].owners` 已经覆盖了全部 12 道门禁。
+    # 2. **它还是第二事实源**（D-055/D-008 禁止的正是这个）。
+    #    `GATE_GROUPS` 只声明了 4 个组，漏掉 TEAM_LEAD 组（G0/G6/G12）
+    #    与 G13（STRUCTURE + COMPLIANCE 双取证方）；
+    #    它的注释还称「组 2 拆出 G13 的结构部分」，
+    #    而代码里 G13 完全不在该表中——注释描述了一个不存在的行为。
+    #
+    # **判据**：同一份事实只应存在于一处。
+    # 并行分组不是独立信息，它就是 `owners` 按角色归组的结果；
+    # 要用时从 `GATES` 推导，不要另建一张表。
     return Result.ok_none()
 
 
