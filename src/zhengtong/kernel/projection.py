@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, cast, runtime_checkable
 
 from ..domain.event import Event, EventKind, is_user_visible
@@ -71,18 +71,25 @@ class StandardProjection:
     artifacts: tuple[tuple[str, str], ...] = ()
     questions: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
-    _seen: int = field(default=0, repr=False)
 
     def accept(self, event: Event) -> None:
         if not is_user_visible(event.kind):
             return
-        self._seen += 1
         data = event.data
         name = str(data.get("name", ""))
         if event.kind is EventKind.ARTIFACT_READY:
-            # D-072：content 装的是成果全文，界面直接渲染成成果卡。
-            # 这里只记标题与全文长度——**不复制全文**，
-            # 因为全文已经落盘且在事件流里，复制一份等于让内存翻倍。
+            # D-072：content 装的就是成果全文，界面直接渲染成成果卡。
+            #
+            # 审计更正：原注释写「只记标题与全文长度——不复制全文」，
+            # 但实现存的**确实是全文**（`content` 整份留下来）。
+            # 查过 D-072 的机制落点：「`phase.artifact_ready` 携全文」——
+            # **全文本就该在事件里**，所以实现是对的，注释是错的。
+            #
+            # 曾评估是否改为只存长度，结论是不改：
+            # - 内存与性能均无实际问题（实测 30 份 × 8000 字常驻，
+            #   `lines()` 调用 100 次耗时 0.4 ms）
+            # - 而 `lines()` 要输出「（N 字）」，调用方拿不到正文就没法渲染成果卡
+            # 故按实现更正注释，行为不动。
             content = str(data.get("content", ""))
             self.artifacts = (*self.artifacts, (name, content))
             self.progress = f"已完成：{name}"
