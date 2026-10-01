@@ -22,6 +22,7 @@ D-072 定的方案是「队列 + 泵线程**单点发射**」：
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -311,3 +312,48 @@ def _总线(tmp_path: Path, sinks: list[Sink] | None = None) -> EventBus:
     for s in sinks or []:
         b.subscribe(s)
     return b
+
+
+# ═══ D-136：总线已停时 flush 不得白等一个超时 ═══════════════════════════
+
+
+def test_停后flush立即返回() -> None:
+    """**修复前要白等 2 秒才返回 False。**
+
+    泵线程已退出，`_Probe` 永远不会被处理，原实现只会干等到
+    timeout 耗尽。而 False 与「超时了」在调用方看来完全一样，
+    没有任何信号说明「这次根本没人在处理」。
+
+    这个区分要紧的原因是 `driver.py` 有两处 `_ = bus.flush()`：
+    一处在宣布**任务成功**前，一处在发**失败原因**后。
+    后者的注释明写着「若这里图省事不 flush，
+    用户就看不到失败原因」——可 flush 静默失败时，
+    原因照样看不到，且还要额外白等 2 秒。
+    """
+    总线 = EventBus(Redactor())
+    总线.stop()
+    起 = time.perf_counter()
+    assert 总线.flush(2.0) is False
+    耗时 = time.perf_counter() - 起
+    assert 耗时 < 0.1, f"停后 flush 白等了 {耗时:.2f}s，应立即返回"
+
+
+def test_运行中flush仍正常返回True() -> None:
+    """**修 D-136 不能改坏正常路径**：运行中的 flush 必须仍排空队列。"""
+    总线 = EventBus(Redactor())
+    try:
+        for i in range(5):
+            总线.emit(_事件(call_id=str(i)))
+        assert 总线.flush(2.0) is True
+    finally:
+        总线.stop()
+
+
+def test_drainFalse停后flush也立即返回() -> None:
+    """`stop(drain=False)` 走的也是同一条泵线程退出路径，须一并覆盖。"""
+    总线 = EventBus(Redactor())
+    总线.emit(_事件(call_id="1"))
+    总线.stop(drain=False)
+    起 = time.perf_counter()
+    assert 总线.flush(2.0) is False
+    assert time.perf_counter() - 起 < 0.1

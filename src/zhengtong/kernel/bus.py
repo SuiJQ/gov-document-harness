@@ -115,6 +115,19 @@ class EventBus:
         事件就永远不会落盘。正确做法是投一个**信标**进队列，
         等泵线程处理到它就说明前面的都处理完了。
         """
+        if self._stopped:
+            # 审计 D-136：总线已停时**不能白等一个超时**。
+            # 泵线程已退出，_Probe 永远不会被处理，
+            # 原实现只会干等到 timeout 耗尽再返回 False——
+            # 而 False 与「超时了」在调用方看来完全一样，
+            # 没有任何信号说��「这次根本没人在处理」。
+            #
+            # 为什么这个区分要紧：`driver.py` 有两处 `_ = bus.flush()`，
+            # 一处在宣布**任务成功**前，一处在发**失败原因**后。
+            # 后者的注释明写着「若这里图省事不 flush，
+            # 用户就看不到失败原因」——可 flush 静默失败时，
+            # 原因照样看不到，且还要额外白等 2 秒。
+            return False
         probe = _Probe()
         self._inbox.put(probe)
         return probe.done.wait(timeout)
