@@ -1266,8 +1266,12 @@ src/zhengtong/
 │   ├── redactor.py                  发射处脱敏
 │   ├── projection.py                Projection 抽象 + Standard + Debug
 │   ├── driver.py                    drive() 驱动循环（TUI/无界面/测试共用）
-│   ├── scheduler.py                 线程池调度（D-049 并行）
-│   └── result.py                    Result 风格返回（拒绝是正常返回不是异常）
+│   └── scheduler.py                 线程池调度（D-049 并行）
+│
+│   ※ 原列于 kernel/ 的 result.py 已移出：`Result` 是**值对象**，
+│     按 L0 定义在 domain/errors.py。搬进 kernel（L4）会迫使 6 个
+│     端口文件（L3）import kernel，直接违反 §2.3「L3 不得 import
+│     L4 及以上」。故此处以注解记录该次更正及理由，不留悬空文件。
 │
 ├── ports/                           L3 · 纯抽象
 │   ├── llm.py  content_pack.py  storage.py  user_files.py
@@ -1485,7 +1489,7 @@ grep -oE '^### D-[0-9]{3}' DECISIONS.md | sort -u
 | **1a** | L0 领域层**形状**：类型、字段、`schema_version` | — | 只用标准库；全部 `frozen` + 可序列化 |
 | **2** | L3 端口层：用 1a 的形状签接口 | 1a | 签名不含任何第三方类型；`PortRegistry` 字段齐全（含 `retriever`） |
 | **1b** | L0 领域层**行为**：校验、默认值、往返测试 | 1a, 2 | JSON 往返测试全绿；`ContextView` 全 `tuple` 真正不可变 |
-| **3** | L1 内核层：事件总线 + 两投影 + 脱敏 | 1b | 伪造密钥断言不入日志；`phase.artifact_ready` 载全文 |
+| **3** | L1 内核层：事件总线 + 两投影 + 脱敏 + 驱动循环 | 1b | ① 伪造密钥断言不入日志；② `phase.artifact_ready` 载全文；③ 并发发射 seq 零重复零空洞；④ `drive()` 三形态共用且**退出前必 flush**（否则未处理事件随进程消失）；⑤ 失败是 `Result` 返回不是异常；⑥ 死循环保险丝生效 |
 | **4** | 装配根 `app.py` + 一套全假实现 | 1b, 2, 3 | **能装配并跑起来**（此时 L4/L5 尚无，全假即可） |
 | **5** | L2 适配：配置与日志 | 4 | 原子写、符号链接解析、启动自检重建三目录（D-017） |
 | **6** | L2 适配：模型连接 | 5 | D-024 四项 + D-048 探测跑通真实端点 |

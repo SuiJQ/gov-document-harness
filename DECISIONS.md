@@ -72,6 +72,45 @@ if isinstance(value, dict):
 **决策记录里不接受未验证的断言**——一个靠不住的依据比没有依据更坏，
 因为它会让后来人省掉验证这一步。
 
+### D-087 · `drive()` 退出前必须 flush 总线
+
+`driver.py` 在返回前必须让事件总线排空，否则未处理的事件随进程退出一起消失。
+
+**理由**：用户看到"导出被拦截"没弹窗、日志里也查不到——
+而前面所有脱敏（D-030）与 JSONL 落盘都是为这一刻准备的。
+不 flush 等于全部白做，且**失败时不发 `run.failed`**，
+而它正是 D-023 白名单里"运行失败"那一项。
+
+已实测：成功与失败两条路径各有断言——`drive()` 返回后不再调
+`flush()`/`stop()` 即可看到全部事件，证明排空发生在函数内部。
+
+**推论**：第 4 步装配根 `app.py` 时**不得绕过 `drive()` 自己发失败事件**，
+否则又会出现"文档说了、代码没有"的账。
+
+### D-088 · `Result` 留在 domain，不搬到 kernel
+
+架构模块树原将 `result.py` 列在 `kernel/`（L4）。核实后**不搬**：
+
+- `Result` 是值对象，按层序属 L0
+- 已被 6 个端口文件（L3）import：`llm` / `storage` / `retriever` /
+  `content_pack` / `user_files` / `validators`
+- 搬进 kernel 会迫使 L3 import L4，**直接违反架构 §2.3**
+  「L3 不得 import L4 及以上」
+
+故改为在模块树处以注解记录该次更正及理由，不新建悬空文件。
+
+### D-089 · `ids.py` 不保留与枚举同名的 NewType 别名
+
+`ids.py` 曾同时声明 `PhaseId = NewType(...)` 与 `GateId = NewType(...)`，
+而真定义是 `phase.py` 的 `PhaseId` 枚举与 `gate.py` 的 `GateId`——**同名两物**。
+全仓无人使用这两个别名（写 driver 时才注意到）。
+
+**理由**：`from .ids import PhaseId` 静默拿到 NewType 而非枚举，
+赋值给枚举字段时抛 AttributeError，报错位置离定义处很远，极难定位。
+**这类"看起来能用、实际是另一个东西"的别名，代价远大于它省下的几行。**
+
+已删除，全仓一律从 `phase.py` / `gate.py` import。
+
 ---
 
 ## 待补

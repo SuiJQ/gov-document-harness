@@ -21,11 +21,11 @@ RunId = NewType("RunId", str)
 ArtifactId = NewType("ArtifactId", str)
 """产物的标识。含阶段与角色，便于从文件名反查来源（D-080：仅内部使用）。"""
 
-PhaseId = NewType("PhaseId", str)
-"""阶段标识。见 `phase.py` 的 PhaseId 枚举取值。"""
-
-GateId = NewType("GateId", str)
-"""门禁标识。见 `gate.py` 的 GateId 枚举取值。"""
+# 注：`PhaseId` 与 `GateId` 曾在此以 NewType 各声明一份，但真正的定义是
+# `phase.py` 的 `PhaseId` 枚举与 `gate.py` 的 `GateId`——同名两物。
+# 写 `from .ids import PhaseId` 会拿到一个 NewType，赋值给枚举字段时报
+# AttributeError，且报错位置离定义处很远，极难定位。故移除这两个别名，
+# 全仓一律从 phase.py / gate.py import。**(删于实现第 3 步，实测踩到)**
 
 
 def make_run_id(stamp: str, suffix: str) -> RunId:
