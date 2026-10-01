@@ -24,6 +24,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnusedParameter=false
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 from ..domain.artifact import ArtifactRef
@@ -100,7 +101,15 @@ class FakeClock:
         return self.now_value
 
     def sleep(self, seconds: float) -> None:
-        """推进时间而不是真睡——测试里真睡只会让套件变慢。"""
+        """推进时间而不是真睡——测试里真睡只会让套件变慢。
+
+        **负数不是"倒着睡"，是编程错误**：真实现里 `sleep(-1)` 会挂起，
+        而这里若照单全收，事件时间戳会倒退，
+        破坏 `ts_monotonic` 的单调性假设。
+        故显式拒绝，而不是让测试悄悄拿到一个倒退的时钟。
+        """
+        if seconds < 0:
+            raise ValueError(f"假时钟不接受负数睡眠：{seconds}")
         self.now_value += seconds
 
     def stamp(self) -> str:
@@ -151,6 +160,9 @@ class FakeLlm:
     #: 记录收到的请求，供测试断言编排层确实传对了东西
     calls: list[LlmRequest] = field(default_factory=list)
     fail_with: ErrorCode | None = None
+    #: 脚本用尽后是否报错。默认 `False` 保持第 4 步「跑得通」的宽松行为，
+    #: 但**测试该覆盖这两种模式**——见 `strict_script`。
+    strict_script: bool = False
 
     def complete(self, request: LlmRequest) -> Result[LlmResponse]:
         self.calls.append(request)
@@ -159,13 +171,20 @@ class FakeLlm:
             return Result.fail(self.fail_with, "FakeLlm 被要求失败")
         if self.scripted:
             return Result.ok(self.scripted.pop(0))
+        if self.strict_script:
+            # **假实现不得比真实现宽松**：队列用尽却静默给桩文本，
+            # 会让编排层「多发一次请求」这种真 bug 在假环境里照跑通过，
+            # 接上真模型才炸。宁可当场失败。
+            return Result.fail(
+                ErrorCode.LLM_REQUEST_FAILED,
+                f"FakeLlm 脚本已用尽（第 {len(self.calls)} 次调用），拒绝静默回落",
+            )
         return Result.ok(
             LlmResponse(
                 text=self.default_text,
                 finish_reason=FinishReason.STOP,
                 usage=TokenUsage(prompt_tokens=10, completion_tokens=10),
-                # call_id 必须在响应里产生（D-065），故这里给一个稳定值
-                call_id=f"fake-{len(self.calls)}",
+                call_id=_semantic_call_id(request),
             )
         )
 
@@ -199,8 +218,20 @@ class FakeStorage:
         return rel_path in self.files
 
     def list_dir(self, rel_path: str) -> tuple[str, ...]:
+        """列条目名。**只取名字、不带子路径、不递归**（端口契约）。
+
+        审计中发现的偏差：原实现返回 `子路径/文件名`
+        （如 `("深层/x.txt",)`），而真实实现用 `p.name` 只返回 `("深层",)`。
+
+        **这类"假实现比真实现宽松"的偏差最危险**：
+        上层在假环境里照跑通过，接上真适配器立刻失败——
+        而且失败点在上层，看不出根因在这里。
+
+        越权或不存在都返回空元组，与真实实现一致（见 fs_storage.list_dir）。
+        """
         prefix = f"{rel_path.rstrip('/')}/"
-        return tuple(sorted(k[len(prefix) :] for k in self.files if k.startswith(prefix)))
+        names = {k[len(prefix) :].split("/", 1)[0] for k in self.files if k.startswith(prefix)}
+        return tuple(sorted(names))
 
     def save_run_state(self, state: RunState) -> Result[None]:
         self.states[state.run_id] = state
@@ -324,6 +355,38 @@ class FakeValidators:
     def run_structure(self, payload: dict[str, object]) -> Result[ValidationResult]:  # noqa: ARG002
         self.ran.append("structure")
         return Result.ok(ValidationResult(script="structure", passed=self.pass_structure))
+
+
+def _semantic_call_id(request: LlmRequest) -> str:
+    """按 D-065 生成 `call_id`：**语义哈希，不是位置序号**。
+
+    ## 为什么这里必须和真实现一样
+
+    D-065 把 `call_id` 定为幂等记账的**语义唯一键**，并明确
+    「不由角色、轮次或位置序号生成」。
+
+    原实现用 `f"fake-{len(self.calls)}"` —— 正是被明文禁止的方式。
+    后果不是"假的东西不够真"，而是**基于它的测试会测不出真问题**：
+    断点续跑重放同一逻辑调用时，真实现给同一个 `call_id`（幂等生效），
+    假实现给一个新的序号（看着像新调用）。于是"重放是否幂等"
+    这条判据在假环境里**恒真**，接上真适配器才暴露。
+
+    ## 为什么不用 prompt 内容哈希
+
+    同一句 prompt 在不同轮次是不同的逻辑调用；而内容相同、
+    角色与门禁不同的调用又是不同的。这里用 `Span` 的三个判别因子
+    （role / gate / round_no），与架构 §8.6 一致。
+    """
+    span = request.span
+    parts = [
+        request.model,
+        span.role if span and span.role else "-",
+        span.gate if span and span.gate else "-",
+        str(span.round_no) if span and span.round_no is not None else "-",
+        str(request.temperature),
+    ]
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+    return f"fake-{digest[:16]}"
 
 
 def _hard_issue() -> ValidationIssue:
