@@ -47,6 +47,7 @@ from ..ports.secrets import SecretsPort
 from ..ports.storage import StoragePort
 from ..ports.user_files import UserFilesPort
 from ..ports.validators import ValidationIssue, ValidationResult, ValidatorPort
+from . import paths
 
 #: 桩内容统一前缀。任何含它的文本都一眼可知不是真产物。
 STUB_MARK = "【桩】"
@@ -197,7 +198,26 @@ class FakeLlm:
 
 @dataclass(slots=True)
 class FakeStorage:
-    """假存储。**纯内存**，不碰文件系统——内核层本就无权碰盘。"""
+    """假存储。**纯内存**，不碰文件系统——内核层本就无权碰盘。
+
+    ## 审计 D-128：假实现也必须做目录权限检查
+
+    原实现直接 `self.files[rel_path] = content`，**不检查路径**。
+    这让假实现比真实现**宽松**，直接违反 D-112
+    （「假实现的价值在于行为与真实现一致，一旦更宽松，
+    它就不再是可信的参照物，而是误导源」）。
+
+    后果很具体：编排层若在假环境里对 `user/` 发起写入
+    （越权，是真 bug），假环境照跑通过；
+    接上真适配器才炸，而失败点在编排层，看不出根因在假实现。
+
+    故补上与 `FsStorage` 相同的顶层目录判断。
+    差别只有一处，且是**不可不认的**：
+    真实现判的是**软链接解析后的真实落点**，
+    假实现没有文件系统、无法解析软链接，故只能判**字符串路径**——
+    软链接越权（D-126）这一类**只在真适配器上可测**，
+    假实现做不到，也不假装能做到。
+    """
 
     files: dict[str, str] = field(default_factory=dict)
     states: dict[str, RunState] = field(default_factory=dict)
@@ -206,10 +226,24 @@ class FakeStorage:
     draft_ok: bool = False
 
     def write_atomic(self, rel_path: str, content: str) -> Result[None]:
+        got = _查权限(rel_path, paths.AI_WRITABLE)
+        if got.is_error:
+            return got
         self.files[rel_path] = content
         return Result.ok_none()
 
     def read_text(self, rel_path: str) -> Result[str]:
+        got = _查权限(rel_path, paths.AI_READABLE)
+        if got.is_error:
+            # **原样搬运错误码，不改写**（审计 D-129）。
+            # 曾在这里把 PATH_ESCAPE 降级成 FILE_UNREADABLE，理由是
+            # "读不到文件"，但两者对调用方意义完全不同：
+            # PATH_ESCAPE 是"你不该看这个"，FILE_UNREADABLE 是"文件不在"。
+            # 混为一谈会让上层把**权限问题当成缺文件**去补材料，
+            # 或者干脆当成偶发错误重试——越权被当成了偶发。
+            err = got.error
+            assert err is not None, "is_error 为真时 error 必非空"
+            return Result.fail(err.code, err.detail)
         if rel_path in self.files:
             return Result.ok(self.files[rel_path])
         return Result.fail(ErrorCode.FILE_UNREADABLE, f"文件不存在：{rel_path}")
@@ -391,6 +425,26 @@ def _semantic_call_id(request: LlmRequest) -> str:
 
 def _hard_issue() -> ValidationIssue:
     return ValidationIssue(rule="红线", message="桩数据：硬约束不通过", at="")
+
+
+def _查权限(rel_path: str, 允许: tuple[str, ...]) -> Result[None]:
+    """检查 `rel_path` 的顶层目录是否在 `允许` 之内。
+
+    放在**字符串路径**上判断，`user/`、`system/` 一律拒绝。
+    `..` 直接拒绝——不做规范化（规范化是 `guard` 的职责，
+    假实现不重复那个逻辑，也不假装有）。
+
+    **这一步比真实现弱，且必须承认**：真实现判的是软链接解析后的
+    真实落点，假实现没有文件系统，判不了。
+    所以"软链接越权"这一类只能在真适配器上测——
+    `FakeStorage` 做不到，也不该让人以为它能做到。
+    """
+    顶层 = rel_path.replace("\\", "/").split("/", 1)[0]
+    if 顶层 in (".", "..") or rel_path.startswith("/"):
+        return Result.fail(ErrorCode.PATH_ESCAPE, f"越权路径：{rel_path}")
+    if 顶层 not in 允许:
+        return Result.fail(ErrorCode.PATH_ESCAPE, f"不可访问该目录：{顶层}")
+    return Result.ok_none()
 
 
 # 导入即校验：任何签名不符立刻炸，不留到运行时

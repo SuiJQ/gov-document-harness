@@ -57,14 +57,33 @@ class FsStorage:
         return self._resolve_any(rel_path)
 
     def _resolve_for_write(self, rel_path: str) -> Result[Path]:
-        """写：**只允许 `data/`**。写 `user/` 视为越权（D-022）。"""
-        top = rel_path.split("/", 1)[0].split("\\", 1)[0]
-        if top not in paths.AI_WRITABLE:
+        """写：**只允许 `data/`**。写 `user/` 视为越权（D-022）。
+
+        ## 审计 D-126：必须在**解析后**判权限，不能看原始字符串
+
+        原实现先拿 `rel_path` 切出顶层目录名（`"data/t/x.txt"` → `"data"`）
+        判断在不在 `AI_WRITABLE` 里，再交给 `_resolve_any` 做守卫。
+
+        **这个顺序可以被软链接绕过**：在 `data/` 里放一个指向 `user/`
+        的软链接 `data/t`，那么 `data/t/偷写.txt` 的字符串顶层是 `data`
+        （放行），而它的**真实落点是 `user/`**——
+        实测 AI 成功把文件写进了 `user/`，直接违反 D-022
+        （「AI 只能写入 `data/`」）与「程序不得改写用户文件」。
+
+        故改为：**先过守卫拿到解析后的绝对路径，再据其真实落点判权限**。
+        守卫本身（`ensure_within`）保证不会逃出工作区根，
+        这一层再保证落点在允许的顶层目录内。
+        """
+        got = self._resolve_any(rel_path)
+        if got.is_error:
+            return got
+        顶层 = _顶层目录(got.unwrap(), self.ws)
+        if 顶层 and 顶层 not in paths.AI_WRITABLE:
             return Result.fail(
                 ErrorCode.PATH_ESCAPE,
-                f"AI 只能写入 {paths.AI_WRITABLE}，不可写：{top}",
+                f"AI 只能写入 {paths.AI_WRITABLE}，实际落点在：{顶层}",
             )
-        return self._resolve_any(rel_path)
+        return got
 
     def _resolve_any(self, rel_path: str) -> Result[Path]:
         """拼到工作区根下并过守卫。
@@ -76,12 +95,9 @@ class FsStorage:
         if got.is_error:
             return got
         target = got.unwrap()
-        top = target.relative_to(got_base(self.ws)).parts[0] if target != got_base(self.ws) else ""
-        if top and top not in paths.AI_READABLE:
-            return Result.fail(
-                ErrorCode.PATH_ESCAPE,
-                f"AI 不可访问该目录：{top}",
-            )
+        顶层 = _顶层目录(target, self.ws)
+        if 顶层 and 顶层 not in paths.AI_READABLE:
+            return Result.fail(ErrorCode.PATH_ESCAPE, f"AI 不可访问该目录：{顶层}")
         return Result.ok(target)
 
     # ── StoragePort ──
@@ -125,9 +141,7 @@ class FsStorage:
         增量更新意味着一次崩溃就要写"补丁的补丁"，得不偿失。"""
         # 编码在 domain/state_codec：枚举键的 JSON 化是领域知识，
         # 放进存储层会让两层都懂一半
-        return self.write_atomic(
-            f"{paths.DATA}/{state.run_id}/state.json", state_codec.dumps(state)
-        )
+        return self._写产物(f"{paths.DATA}/{state.run_id}/state.json", state_codec.dumps(state))
 
     def load_run_state(self, run_id: RunId) -> Result[RunState]:
         text = self.read_text(f"{paths.DATA}/{run_id}/state.json")
@@ -136,7 +150,42 @@ class FsStorage:
         return state_codec.loads(text.unwrap())
 
     def put_artifact(self, ref: ArtifactRef, content: str) -> Result[None]:
-        return self.write_atomic(f"{paths.DATA}/{ref.path}", content)
+        return self._写产物(f"{paths.DATA}/{ref.path}", content)
+
+    def _写产物(self, rel_path: str, content: str) -> Result[None]:
+        """写产物：**先建父目录，再原子写**。
+
+        ## 审计 D-127：产物目录必须由程序自己创建
+
+        `atomic.write_atomic` 有意**不**隐式建目录
+        （理由正当：隐式建目录会让一次打错的路径凭空生成一串空目录）。
+        但它把建目录的职责推给了"调用方"，而调用链上**没有一处真的建**：
+        `ensure_dirs()` 只有定义、**全仓无调用方**，且它只管
+        `data/` `user/` `system/` 三个顶层目录，不管 `data/<run-id>/`。
+
+        实测后果：`save_run_state` 在全新运行时**必然失败**——
+        `data/r-001/` 从未创建，原子写报
+        `No such file or directory: .../data/r-001/.state.json.tmp`。
+        这是状态机持久化的唯一入口，失败即断点续跑无从谈起。
+
+        架构第 843 行明文：「新建文件必然由程序自己在**已校验的**父目录下创建」。
+        故在此处显式建，且建的是**已过守卫、已确认落在 `data/` 内**的目录——
+        不是让 `write_atomic` 拿一个未校验的路径去建。
+
+        `parents=True`：`data/<run-id>/附件/` 这类多层结构同样要能直接写。
+        `exist_ok=True`：重复保存状态不报错（每次都写全量）。
+        """
+        target = self._resolve_for_write(rel_path)
+        if target.is_error:
+            return _reraise_as(target, None)
+        try:
+            target.unwrap().parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return Result.fail(
+                ErrorCode.STORAGE_WRITE_FAILED,
+                f"无法创建产物目录 {target.unwrap().parent}：{exc}",
+            )
+        return write_atomic(target.unwrap(), content, encoding=self.encoding)
 
     def draft_paper_ok(self, role: str, current_count: int) -> bool:
         """草稿纸是否还能再放一个（D-042 上限 3）。
@@ -179,6 +228,28 @@ def _reraise_as(got: _HasError, _t: type[_T] | None = None) -> Result[_T]:
     err = got.error
     assert err is not None
     return Result.fail(err.code, err.detail)
+
+
+def _顶层目录(target: Path, ws: Workspace) -> str:
+    """`target`（**已解析**的绝对路径）在工作区里的顶层目录名。
+
+    ## 为什么必须传已解析的路径
+
+    权限判断的全部意义在于"文件最终落在哪儿"，
+    而软链接会让"写的路径"与"落点"分道扬镳。
+    故入参必须是 `ensure_within` 处理过的 `realpath + normcase` 结果。
+
+    顶层目录名同样取自解析后的路径——否则 `data/t/x` 里
+    那个 `t` 是软链接时，取到的就不是真实落点的顶层了。
+
+    返回空串表示"就是工作区根本身"，调用方据此放行
+    （根目录不是某个顶层目录，不该按目录权限拦）。
+    """
+    base = got_base(ws)
+    if target == base:
+        return ""
+    相对 = target.relative_to(base)
+    return 相对.parts[0] if 相对.parts else ""
 
 
 def got_base(ws: Workspace) -> Path:
