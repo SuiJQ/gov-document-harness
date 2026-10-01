@@ -547,10 +547,14 @@ D-048 的探测式适配，独立成一个文件，因为它是**唯一一处**�
 MAX_ENTRY   = 20 * 1024 * 1024    # 单 entry 解压后上限
 MAX_TOTAL   = 100 * 1024 * 1024   # 全包解压后总量上限
 MAX_RATIO   = 100                 # 压缩比上限，防 zip bomb
+MAX_ENTRIES = 2000                # 条目数上限（D-022 第三重，审计 D-131 补）
 
 def guard(zf: ZipFile) -> None:
+    infos = zf.infolist()
+    if len(infos) > MAX_ENTRIES:
+        raise DocxTooLarge(f"条目数 {len(infos)} 超限 {MAX_ENTRIES}")
     total = 0
-    for info in zf.infolist():          # 元数据在 central directory 里，不解压即可读
+    for info in infos:                   # 元数据在 central directory 里，不解压即可读
         if info.file_size > MAX_ENTRY:
             raise DocxTooLarge(f"{info.filename} 解压后 {info.file_size >> 20}MB")
         if info.compress_size and info.file_size / info.compress_size > MAX_RATIO:
@@ -564,6 +568,32 @@ def guard(zf: ZipFile) -> None:
 磁盘上只有 **190 KB**，解压后 **190 MB**——纯 `read()` 会直接把这 190MB
 打进内存。一个畸形或恶意的 `.docx` 就能让程序 OOM。
 元数据检查在循环里就把它挡掉，实测确认拦截。
+
+**但这只是筛子，不是安全边界**（审计 D-131 实测补记）：
+
+| 缺口 | 实测 |
+|---|---|
+| **条目数量无上限** | D-022 要求「条目大小、解压总量、**条目数量**」三重，本节只写了两个。构造 20 万条目包（19MB）三项检查**全部通过**，而 `infolist()` 已耗 0.89s |
+| **`file_size` 可伪造** | 直接改 central directory 的 `uncompressed size`（10,485,760 → 100），三项检查**全部通过**，`read()` 仍解压出 10MB |
+
+`zipfile` 的 CRC 兜底确实会抛 `BadZipFile`，但**校验发生在整个 entry
+解压完之后**——期间的内存已经吃掉。实测量化：
+
+| 真实体积 | 元数据伪报 | 异常时内存峰值 |
+|---|---|---|
+| 10MB | 100 字节 | 23.4 MB |
+| 50MB | 100 字节 | 127.4 MB |
+| 100MB | 100 字节 | 209.5 MB |
+
+**元数据被绕过时，峰值可超本节自设的 100MB 总量上限一倍以上。**
+
+故实施时（第 9 步 `adapters/user_files`）必须：
+
+1. 补 `MAX_ENTRIES` 条目数上限；
+2. 元数据检查**保留但降级为快速筛子**；
+3. 解压走 `zlib.decompressobj` 增量路径，`max_length` 限死单次输出、
+   累计计数超限立即中止——**让内存占用与真实体积解耦**；
+4. **不依赖 CRC 兜底**，它太晚。
 
 **XML 实体展开已是安全的**，无需额外处理：Python 的 `xml.etree`
 底层 expat 对未定义实体抛 `ParseError`，实测含外部实体的 docx 被拒。
