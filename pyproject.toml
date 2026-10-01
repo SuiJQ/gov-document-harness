@@ -90,4 +90,7 @@ reportMissingTypeStubs = "warning"
 # 真实类型错误仍由其余规则覆盖。
 reportImplicitOverride = false
 
-
+# 注意：BasedPyright 1.40.1 的 `[[tool.basedpyright.overrides]]` 在本项目
+# **实测不生效**（试过 "tests/x.py"、"tests"、"tests/**/*.py"、
+# "**/tests/*.py" 四种 include 形式，报错数一律不变）。
+# 故门禁测试改用文件内 `# pyright: basic` 指令豁免，见五个文件头部。

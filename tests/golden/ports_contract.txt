@@ -1,0 +1,31 @@
+# 端口契约金样（架构 §12 机制 5）
+# 改签名必须同步改本文件，且提交信息里说明理由。
+# 生成方式见 tests/test_port_contract.py::_快照
+# `__init__` 不在列——那是 Protocol 继承的 object.__init__，不是对外契约。
+
+clock.ClockPort.now() -> 'float'
+clock.ClockPort.sleep(seconds: 'float') -> 'None'
+clock.ClockPort.stamp() -> 'str'
+content_pack.ContentPackPort.load_reference(ref: 'str') -> 'Result[str]'
+content_pack.ContentPackPort.load_role_prompt(role: 'RoleId') -> 'Result[str]'
+content_pack.ContentPackPort.verify_manifest() -> 'Result[None]'
+content_pack.ContentPackPort.version() -> 'str'
+llm.LlmPort.complete(request: 'LlmRequest') -> 'Result[LlmResponse]'
+llm.LlmPort.probe() -> 'Result[TokenUsage]'
+retriever.RetrieverPort.build(docs: 'tuple[str, ...]') -> 'Result[None]'
+retriever.RetrieverPort.search(query: 'str', top_k: 'int' = 8) -> 'Result[tuple[SearchHit, ...]]'
+secrets.SecretsPort.get_api_key() -> 'str'
+secrets.SecretsPort.redaction_patterns() -> 'tuple[str, ...]'
+storage.StoragePort.draft_paper_ok(role: 'str', current_count: 'int') -> 'bool'
+storage.StoragePort.exists(rel_path: 'str') -> 'bool'
+storage.StoragePort.list_dir(rel_path: 'str') -> 'tuple[str, ...]'
+storage.StoragePort.load_run_state(run_id: 'RunId') -> 'Result[RunState]'
+storage.StoragePort.put_artifact(ref: 'ArtifactRef', content: 'str') -> 'Result[None]'
+storage.StoragePort.read_text(rel_path: 'str') -> 'Result[str]'
+storage.StoragePort.save_run_state(state: 'RunState') -> 'Result[None]'
+storage.StoragePort.write_atomic(rel_path: 'str', content: 'str') -> 'Result[None]'
+user_files.UserFilesPort.list_registered() -> 'tuple[UserFile, ...]'
+user_files.UserFilesPort.read_text(name: 'str') -> 'Result[str]'
+user_files.UserFilesPort.scan_and_register() -> 'tuple[UserFile, ...]'
+validators.ValidatorPort.run_hard_constraint(payload: 'dict[str, object]') -> 'Result[ValidationResult]'
+validators.ValidatorPort.run_structure(payload: 'dict[str, object]') -> 'Result[ValidationResult]'

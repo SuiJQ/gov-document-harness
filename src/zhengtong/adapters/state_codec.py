@@ -122,7 +122,11 @@ def from_json(raw: dict[str, object]) -> Result[RunState]:
     """可序列化结构 → 状态。**任何一步不对都返回 fail，不抛异常**——
     状态损坏不该把程序带崩，用户需要看到"这个 run 读不了"而不是栈回溯。"""
     version = raw.get("schema_version")
-    if not isinstance(version, int):
+    # 审计 D-144：`isinstance(True, int)` 在 Python 里**为真**（bool 是 int 的子类），
+    # 于是 `"schema_version": true` 会被当成版本 1 静默放过去。
+    # 这不是洁癖——`true` 只能来自手改过的文件，而「读得进」的全部前提是
+    # **知道对方是哪个版本**；把布尔当版本接受，等于声称知道而其实不知道。
+    if not isinstance(version, int) or isinstance(version, bool):
         return Result.fail(ErrorCode.FILE_UNREADABLE, "状态文件缺 schema_version")
     if version > SCHEMA_VERSION:
         return Result.fail(
