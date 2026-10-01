@@ -216,6 +216,46 @@ def _enum(enum_cls: type[_E], value: object, default: _E) -> _E:
         return default
 
 
+def _枚举保守(enum_cls: type[_E], value: object, default: _E) -> _E:
+    """枚举反序列化，**回落到保守的那个**（审计 D-148）。
+
+    与 `_enum` 的区别只有一处，但那一处是最高数据纪律问题。
+
+    `_enum` 认不出的值一律回落 `default`，**调用方必须自己保证
+    `default` 是保守方向**。对 `phase`（INTAKE 更早）、`role_state`
+    （IDLE 中性）、`artifact_kind`（NOTE 中性）都成立。
+
+    但 `provenance` 不成立：
+
+        Provenance.USER           = 「这是用户提供的」
+        Provenance.LEAD_INFERRED  = 「这是主理人推断的」
+
+    **USER 的信任度高于推断。** 回落 USER 等于把推断或编造的内容
+    标记成用户提供——实测：
+
+        provenance="MODEL_INFERRED"  →  回落 USER   AI 推断被当成事实
+        provenance="AI"              →  回落 USER   编造被伪装成用户提供
+
+    D-Card 的全部意义就是区分「用户说的」与「推断的」，
+    而「严禁编造」是本项目的最高数据纪律。
+    把这个区分静默破坏，双轴台账与推定黑名单就失去了依据，
+    且**用户在成品里看不出来**。
+
+    故这里回落 `LEAD_INFERRED`：认不出的来源，按「这是推断」处理。
+    宁可全部标成推断（用户知道要核实），
+    也不能把推断标成用户提供（用户以为不必核实）。
+
+    **判据：回落的默认值不能比任何可能值更宽松。**
+    这一条对每个字段都要单独确认，不能靠「回落默认」这个做法本身。
+    """
+    if value is None:
+        return default
+    try:
+        return enum_cls(value)  # pyright: ignore[reportCallIssue]
+    except ValueError:
+        return default
+
+
 def _task_from(raw: object) -> tuple[TaskSpec, str]:
     """反序列化任务。**认不出的 `tier` 不回落，返回错误**（审计 D-146）。
 
@@ -322,7 +362,7 @@ def _field_from(raw: object, fid: DCardFieldId) -> DCardField:
         id=fid,
         label=str(d.get("label") or ""),
         value=None if value is None else str(value),
-        provenance=_enum(Provenance, d.get("provenance"), Provenance.USER),
+        provenance=_枚举保守(Provenance, d.get("provenance"), Provenance.LEAD_INFERRED),
     )
 
 

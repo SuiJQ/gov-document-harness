@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from zhengtong.adapters.state_codec import SCHEMA_VERSION, dumps, from_json, loads
+from zhengtong.domain.dcard import Provenance
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.run_state import RunState
 from zhengtong.domain.task import TaskSpec
@@ -134,6 +135,124 @@ class Test样本自身有效:
             f"档位 {坏档位!r} 竟被接受——回落会让编制被悄悄改掉（Pro→Consult 时 10 道门禁无人取证）"
         )
         assert "档位" in (结果.error.detail if 结果.error else ""), "提示没说清是什么问题"
+
+
+class Test回落的保守性:
+    """**D-148：回落的默认值不能比任何可能值更宽松。**
+
+    这一类不看「认不出的值被怎么处理」，而看**回落到哪个方向**。
+    实测缺陷：`provenance` 认不出回落 `USER`，
+    而 `USER` 的信任度**高于** `LEAD_INFERRED`——
+    于是 AI 推断与编造内容被静默标记成「用户提供」，
+    直接违反「严禁编造」这条最高数据纪律，且用户在成品里看不出来。
+    """
+
+    @pytest.mark.parametrize(
+        ("字段", "原始值", "期望", "说明"),
+        [
+            pytest.param("phase", "未来阶段", "intake", "阶段更早=更保守", id="phase"),
+            pytest.param(
+                "phase_state", "未来状态", "未开始", "状态更早=不会卡死", id="phase_state"
+            ),
+            pytest.param(
+                "role_states",
+                {"team-lead": "未来"},
+                "空闲",
+                "只影响自己不牵连他人",
+                id="role_state",
+            ),
+            pytest.param("artifact_kind", "未来类型", "note", "仅标签，中性", id="artifact_kind"),
+            pytest.param(
+                "provenance",
+                "AI",
+                "LEAD_INFERRED",
+                "**最关键**：认不出的来源必须按「推断」处理，不能按「用户提供」",
+                id="provenance_ai",
+            ),
+            pytest.param(
+                "provenance",
+                "MODEL_INFERRED",
+                "LEAD_INFERRED",
+                "同上",
+                id="provenance_model",
+            ),
+        ],
+    )
+    def test_认不出的值回落到保守方向(
+        self, 字段: str, 原始值: object, 期望: str, 说明: str
+    ) -> None:
+        """**逐字段确认回落方向，不靠「回落默认」这个做法本身背书。**
+
+        判据很具体：
+        - `phase` / `phase_state`：回落到更早的阶段（不会跳过门禁）
+        - `provenance`：回落到**推断**，而不是**用户提供**
+        """
+        原始: dict[str, object] = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": "r-conserv",
+            "task": {"tier": "pro", "requirement": "x", "user_files": []},
+        }
+        if 字段 == "role_states":
+            原始[字段] = 原始值
+        elif 字段 == "artifact_kind":
+            原始["artifacts"] = {"a": {"kind": 原始值, "path": "data/a.txt"}}
+        elif 字段 == "provenance":
+            原始["dcard"] = {"by_id": {"D1": {"provenance": 原始值, "value": "数据"}}}
+        else:
+            原始[字段] = 原始值
+
+        结果 = from_json(原始)
+        assert 结果.is_ok, f"{字段} 竟被拒绝：{结果.error.detail if 结果.error else ''}"
+        状态 = 结果.unwrap()
+
+        if 字段 == "phase":
+            实际 = 状态.phase.value
+        elif 字段 == "phase_state":
+            实际 = 状态.phase_state.value
+        elif 字段 == "role_states":
+            实际 = next(iter(状态.role_states.values())).value
+        elif 字段 == "artifact_kind":
+            实际 = next(iter(状态.artifacts.values())).kind.value
+        else:
+            实际 = next(iter(状态.dcard.by_id.values())).provenance.value
+
+        assert 实际 == 期望, f"{字段} 回落成 {实际!r}，应为 {期望!r}（{说明}）"
+
+    def test_推断内容绝不被标成用户提供(self) -> None:
+        """**这条把 D-148 的要害单独说清楚。**
+
+        「严禁编造」是本项目最高数据纪律。
+        D-Card 的 provenance 字段就是这条纪律的载体——
+        它让「这是用户说的」与「这是主理人推断的」在成品里可区分。
+
+        一旦 provenance 被静默破坏，用户拿到公文时会以为
+        其中每个数据都出自用户或权威文件，而实际上有的��模型编的。
+        **而用户从成品里看不出来。**
+        """
+        原始 = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": "r-prov",
+            "task": {"tier": "pro", "requirement": "x", "user_files": []},
+            "dcard": {"by_id": {"D1": {"provenance": "AI 编的", "value": "受灾面积 3 万亩"}}},
+        }
+        状态 = from_json(原始).unwrap()
+        字段 = next(iter(状态.dcard.by_id.values()))
+        assert 字段.provenance is not Provenance.USER, (
+            "认不出的来源被标成了 USER——这会把模型编造的数据伪装成用户提供的，严重违反「严禁编造」"
+        )
+        assert 字段.provenance is Provenance.LEAD_INFERRED
+
+    def test_合法provenance不受影响(self) -> None:
+        """**保守回落不得伤及正确数据。**"""
+        for 值, 期望 in [("USER", Provenance.USER), ("LEAD_INFERRED", Provenance.LEAD_INFERRED)]:
+            原始 = {
+                "schema_version": SCHEMA_VERSION,
+                "run_id": "r-prov2",
+                "task": {"tier": "pro", "requirement": "x", "user_files": []},
+                "dcard": {"by_id": {"D1": {"provenance": 值, "value": "x"}}},
+            }
+            状态 = from_json(原始).unwrap()
+            assert next(iter(状态.dcard.by_id.values())).provenance is 期望
 
 
 class Test更新版本必须拒绝:
