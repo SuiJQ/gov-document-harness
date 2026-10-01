@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
 
@@ -53,13 +54,53 @@ class JsonlJournal:
             fh.write(line + "\n")
 
     def read_all(self) -> tuple[Event, ...]:
+        """读回全部事件。**跳过损坏行，但一条好的都不丢**（审计 D-123）。
+
+        ## 为什么必须容错
+
+        追加写不是原子的：进程被强杀（断电、OOM、用户 Ctrl-C）
+        时缓冲里最后那行往往只写了一半。
+
+        **这不是异常情况，而是崩溃日志的常态**——
+        而断点续跑（D-027/D-082）恰恰只在崩溃之后才会用到。
+        架构 §8.6 承诺「内核是状态机而不是脚本，所以续跑天然是安全的」，
+        若这里一读到半行就抛 `JSONDecodeError`，
+        则**前 N-1 条完好记录也一并读不出来**，续跑在最需要它的时刻失效。
+
+        故：坏行跳过，好的留下。
+        解析本身仍走 `_from_json` 的严格校验——
+        **不因为容错就把「字段缺失」也一并放过**，
+        那是另一类问题（人为构造的坏数据），该暴露。
+        """
         if not self._path.exists():
             return ()
         out: list[Event] = []
-        for line in self._path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
+        for 行号, line in enumerate(self._path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
                 out.append(_from_json(_as_object(cast("object", json.loads(line)))))
+            except (ValueError, TypeError):
+                # ValueError 覆盖 JSONDecodeError 与「不是 JSON 对象」；
+                # TypeError 覆盖缺字段时的取值错误。
+                #
+                # **只跳过这一行**：末行半写是物理事实，前面每一行都完好，
+                # 丢掉它们等于让一次崩溃抹掉整段历史。
+                _记损坏行(行号)
+                continue
         return tuple(out)
+
+
+def _记损坏行(行号: int) -> None:
+    """记一条 warning：**跳过坏行这件事本身要被看见**。
+
+    静默跳过等于把数据损坏藏起来——用户以为续跑正常，
+    实际丢了若干条事件。用项目既有的 `logging` 惯例（见 `atomic.py`），
+    不另建一套。
+    """
+    logging.getLogger(__name__).warning(
+        "事件日志第 %d 行损坏，已跳过（常见于进程被强杀时末行只写了一半）", 行号
+    )
 
 
 def _as_object(value: object) -> dict[str, object]:
