@@ -3,7 +3,7 @@
 #   `Result[Any]` 是唯一可行解——三方案均已实测）。故拿它的结果去做成员访问时类型是未知的。
 # 这不影响断言有效性——未知只影响静态提示，不影响运行行为。
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnusedCallResult=false
-"""L0 行为测试：Result、D-Card 校验、配平铁律、ContextView 不可变性。"""
+"""L0 行为测试：Result、D-Card 校验、配平铁律、档位编制的不可变性。"""
 
 from __future__ import annotations
 
@@ -172,8 +172,20 @@ class Test配平铁律:
         assert not TIER_BY_ID[TierId.CONSULT].requires_user_questions
 
 
-class Test上下文视图不可变:
-    def test_不可变视图不含可变容器(self) -> None:
+class Test档位编制不可变:
+    """曾名为 `Test上下文视图不可变`——**那是句空承诺**（D-132 同型）。
+
+    原 docstring 与类名都声称测「ContextView 不可变性」，
+    但本类实际测的是 `Tier.roster` 是不是 tuple，而当时的
+    `ContextView` **根本不存在**（架构 §13 把它放在
+    `services/context/view.py`，第 9 步才落地）。
+
+    真实的 ContextView 不可变性测试在 `tests/test_context.py`
+    （含消息本身冻结、五字段全 tuple、改字段抛异常）。
+    此处按实际所测改名，不再冒领 ContextView。
+    """
+
+    def test_档位编制不含可变容器(self) -> None:
         """D-070：跨层只传值对象，故上下文视图里不得有 list/dict/set。"""
 
         def scan(obj: object, path: str, seen: set[int]) -> list[str]:
