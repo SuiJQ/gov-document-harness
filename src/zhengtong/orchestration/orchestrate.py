@@ -136,6 +136,20 @@ class _过程:
     def 推进一步(self, 进度: int) -> Result[Step[int]]:
         if 进度 >= len(self.序列):
             return Result.ok(Step(phase=PhaseId.DONE, state=进度, done=True))
+        if self.序列[进度] is PhaseId.DONE:
+            # **DONE 不是阶段，是终点**。
+            #
+            # 第一版只写了 `进度 >= len(序列)` 那一条，而 DONE **在序列里**，
+            # 于是进度 6 < 长度 7 时它被当成普通阶段走完整流程：
+            # 落盘一个 `done.md`、把状态存成 `phase=done`。
+            #
+            # 后果：续跑读到的是「已完成」，而**最后一段 FINAL 的状态被覆盖**——
+            # 而 FINAL 恰恰是交付前的那段。查出来的现象是
+            # 「读回的是 done」，第一眼看着像判据写错。
+            #
+            # 旧 `跑一次` 里有 `if 阶段 is DONE: break`，
+            # 重写成 `drive` 分步时**那一条没跟过来**。
+            return Result.ok(Step(phase=PhaseId.DONE, state=进度, done=True))
 
         阶段 = self.序列[进度]
         self.编排.发(EventKind.PHASE_STARTED, 阶段)
@@ -188,28 +202,60 @@ class _过程:
 
         档 = self.状态.task.tier
         if 阶段 is PhaseId.GATING:
+            # **门禁段也必须派发取证方**。
+            #
+            # 第一版在这里提前 return，GATING 段压根不派任何人——
+            # 于是文择体（G3 取证）在 Pro 档**编制内却不当值**，
+            # 门禁静默无人取证，比不做门禁更危险（D-049）。
+            #
+            # **这是第 13 步那个缺陷的同型复发**：那次是 `for` 循环
+            # 没覆盖 GATING，这次是重写成提前 return 时又漏了。
+            # 判据 `test_编制内必须当值` 在迁移后才暴露它。
+            派 = self._派发(档, 阶段)
+            if 派.is_error:
+                return _转为失败(派, "门禁段派发失败")
             门禁 = _该跑门禁(档)
             self.门禁.extend(门禁)
             return Result.ok(阶段产物(阶段, "gate-report.md", _门禁报告(self.门禁)))
 
+        派 = self._派发(档, 阶段)
+        if 派.is_error:
+            return _转为失败(派, f"{阶段.value} 段派发失败")
+        return Result.ok(阶段产物(阶段, f"{阶段.value}.md", _正文(阶段, self.回复)))
+
+    def _派发(self, 档: TierId, 阶段: PhaseId) -> Result[None]:
+        """按编制派发该段该动的人，问模型，记账。**幂等在此**。
+
+        抽成方法是因为 GATING 段与普通段都要派发，
+        写两遍必然有一处漏——**这次漏的就是 GATING**。
+        """
         for 角色 in _该段角色(档, 阶段):
             self.出现过的状态.append(RoleState.RUNNING)
+            # **状态必须写回 `RunState`**，不只是记一份「出现过」的列表。
+            # 迁移时漏了这一步，于是存盘的状态里 `role_states` 全是 IDLE——
+            # 而 D-042 的六态机是「成员状态要能查」的硬约束，
+            # 存回去等于没发生过。
+            self.状态 = self.状态.set_role_state(角色, RoleState.RUNNING)
             if not 该发请求(RoleState.RUNNING):
                 continue
-            cid = make_call_id("prompt", str(self.编排.运行号), 阶段.value, role=角色.value)
+            cid = make_call_id(
+                "prompt", str(self.编排.运行号), 阶段.value, role=角色.value
+            )
             if cid not in self.已完成:
                 问 = self._构造请求(角色, 阶段)
                 答 = self.llm.complete(问)
                 if 答.is_error:
                     错 = 答.error
                     assert 错 is not None
-                    return Result.fail(错.code, f"{阶段.value}/{角色.value} 调用失败：{错.detail}")
+                    return Result.fail(
+                        错.code, f"{阶段.value}/{角色.value} 调用失败：{错.detail}"
+                    )
                 self.回复[角色] = 答.unwrap().text
                 self.已完成 = (*self.已完成, cid)
             self.动过的.append(角色)
             self.出现过的状态.append(RoleState.DONE)
-
-        return Result.ok(阶段产物(阶段, f"{阶段.value}.md", _正文(阶段, self.回复)))
+            self.状态 = self.状态.set_role_state(角色, RoleState.DONE)
+        return Result.ok_none()
 
     def _构造请求(self, 角色: RoleId, 阶段: PhaseId) -> LlmRequest:
         """**走第 11 步的装配器**——不再手搓 Message。
@@ -438,6 +484,20 @@ class 编排器:
 def 阶段序列(档: TierId) -> tuple[PhaseId, ...]:
     """该档走的阶段线。**查 `is_consult` 不查人数**（D-206）。"""
     return 咨询序列 if TIER_BY_ID[档].is_consult else 成文序列
+
+
+def _转为失败(错: Result[None], 前缀: str) -> Result[阶段产物]:
+    """把 `Result[None]` 的失败转成 `Result[阶段产物]` 的失败。
+
+    **不能直接 `return 派`**——`Result` 不协变，
+    `Result[None]` 不是 `Result[阶段产物]`。
+    写 `return 派` 运行时没问题（只用到 `.is_error` / `.error`），
+    而类型检查器会拦；这里显式转换，**顺手把环节名写进 detail**，
+    排查时能直接看出是哪一段派发出问题。
+    """
+    内 = 错.error
+    assert 内 is not None
+    return Result.fail(内.code, f"{前缀}：{内.detail}")
 
 
 def _该跑门禁(档: TierId) -> tuple[GateId, ...]:

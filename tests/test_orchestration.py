@@ -34,10 +34,12 @@ import pytest
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
 from zhengtong.adapters.paths import Workspace, ensure_dirs
 from zhengtong.domain.errors import ErrorCode, Result
+from zhengtong.domain.ids import RunId
 from zhengtong.domain.phase import PhaseId, PhaseState
 from zhengtong.domain.role import RoleId, RoleState
 from zhengtong.domain.tier import TIER_BY_ID, TierId
-from zhengtong.orchestration import 咨询序列, 编排请求, 跑一次, 阶段序列
+from zhengtong.orchestration import 咨询序列, 阶段序列
+from zhengtong.orchestration.orchestrate import 编排器
 from zhengtong.ports.llm import FinishReason, TokenUsage
 
 
@@ -46,15 +48,31 @@ def ws(tmp_path: Path) -> Workspace:
     return ensure_dirs(tmp_path / "ws").unwrap()
 
 
-def _跑(档: TierId, *, llm: FakeLlm | None = None, storage: FakeStorage | None = None):
-    return 跑一次(
-        编排请求(
-            档位=档,
-            需求="就甲单位2026年第三季度安全生产工作起草一份通知",
-        ),
+#: 需求原文。**三档共用同一句**，否则「档位只影响角色与门禁」这条
+#: 判据会被「不同档位发不同需求」掩盖过去。
+需求 = "就甲单位2026年第三季度安全生产工作起草一份通知"
+
+
+def _跑(
+    档: TierId,
+    *,
+    llm: FakeLlm | None = None,
+    storage: FakeStorage | None = None,
+    运行号: str = "r-0001",
+):
+    """**已从 `跑一次` 迁到 `编排器`**（D-215 收敛）。
+
+    旧路径 `for` 循环直跑、零事件、无装配器、无幂等；
+    新路径 `drive` 分段、事件流、装配器、幂等。
+    迁移后这些判据查的是**当前唯一的那套实现**——
+    两套并存时，「测的是哪一套」本身就是个没人回答的问题。
+    """
+    return 编排器(
         llm=llm or FakeLlm(),
         storage=storage or FakeStorage(),
-    )
+        模型名="test-model",
+        运行号=RunId(运行号),
+    ).跑到终(档位=档, 需求=需求)
 
 
 # ═══ 判据一：三档都能跑通 ═══
@@ -437,21 +455,19 @@ class Test真调模型:
         故改为查真正该查的：**问的人不能超出编制**——
         这才是档位配平（D-029/D-049）关心的事。
         """
-        from zhengtong.adapters.fakes import FakeLlm
-        from zhengtong.ports.llm import LlmRequest, LlmResponse
 
-        被问: list[str] = []
+        编制 = set(TIER_BY_ID[TierId.CONSULT].roster)
+        动过 = set(_跑(TierId.CONSULT).unwrap().动过的角色)
+        assert 动过, "一次都没问——那这条判据就没验到东西"
+        assert 动过 <= 编制, f"问了编制外的角色：{动过 - 编制}"
 
-        class _记录Llm(FakeLlm):
-            def complete(self, request: LlmRequest) -> Result[LlmResponse]:
-                被问.extend(m.content for m in request.messages if m.role == "system")
-                return super().complete(request)
-
-        _跑(TierId.CONSULT, llm=_记录Llm())
-        编制外 = {r.value for r in RoleId} - {r.value for r in TIER_BY_ID[TierId.CONSULT].roster}
-        被问到的 = {r.value for 串 in 被问 for r in RoleId if f"你是{r.value}" in 串}
-        assert 被问到的, "一次都没问——那这条判据就没验到东西"
-        assert not (被问到的 & 编制外), f"问了编制外的角色：{被问到的 & 编制外}"
+        # **并查「不超编制」在三档上都成立**——
+        # 只查咨询档的话，Pro 档派错人也照样绿。
+        for 档 in (TierId.CONSULT, TierId.FLASH, TierId.PRO):
+            问到 = set(_跑(档).unwrap().动过的角色)
+            assert 问到 <= set(TIER_BY_ID[档].roster), (
+                f"{档.value} 问了编制外的角色：{问到 - set(TIER_BY_ID[档].roster)}"
+            )
 
     def test_咨询档序列里根本没有门禁段(self) -> None:
         """**补一条证伪漏掉的判据。**
