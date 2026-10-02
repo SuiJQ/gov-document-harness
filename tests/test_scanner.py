@@ -74,7 +74,7 @@ def test_读txt(user目录: Path) -> None:
     源 = LocalUserFiles(根=user目录)
     got = 源.read_text("a.txt")
     assert got.is_ok, got.error
-    assert got.unwrap() == "正文内容"
+    assert got.unwrap().text == "正文内容"
 
 
 def test_读docx(user目录: Path) -> None:
@@ -82,7 +82,7 @@ def test_读docx(user目录: Path) -> None:
     源 = LocalUserFiles(根=user目录)
     got = 源.read_text("b.docx")
     assert got.is_ok, got.error
-    assert "docx里的正文" in got.unwrap()
+    assert "docx里的正文" in got.unwrap().text
 
 
 def test_读pdf被拒(user目录: Path) -> None:
@@ -198,7 +198,7 @@ def test_子目录里的文件能按名读到(user目录: Path) -> None:
     assert any(f.name == "通知.docx" for f in 登记), "递归登记没生效"
     got = 源.read_text("通知.docx")
     assert got.is_ok, f"登记了却读不到：{got.error}"
-    assert "子目录里的正文" in got.unwrap()
+    assert "子目录里的正文" in got.unwrap().text
 
 
 def test_子目录里的txt也能读(user目录: Path) -> None:
@@ -246,7 +246,7 @@ def test_同名文件能被区分(user目录: Path) -> None:
     for f in 登记:
         got = 源.read_text(f.rel_path)
         assert got.is_ok, f"按 rel_path 读 {f.rel_path} 失败：{got.error}"
-        内容集.add(got.unwrap())
+        内容集.add(got.unwrap().text)
     assert 内容集 == {"二〇二五年的通知", "二〇二六年的通知"}, f"读回来是同一份：{内容集}"
 
     # ── fallback 判据：按**纯 name** 读 ──
@@ -261,10 +261,10 @@ def test_同名文件能被区分(user目录: Path) -> None:
     # 但**不得报错**——原实现这里直接报「未登记的文件」。
     按名 = 源.read_text("通知.docx")
     assert 按名.is_ok, f"按纯 name 读同名文件失败：{按名.error}"
-    assert 按名.unwrap() in {"二〇二五年的通知", "二〇二六年的通知"}
+    assert 按名.unwrap().text in {"二〇二五年的通知", "二〇二六年的通知"}
 
     # 确定性：连续两次读必须同一份（否则模型无从判断读到的是哪份）
-    assert 源.read_text("通知.docx").unwrap() == 按名.unwrap(), "按 name 读不确定"
+    assert 源.read_text("通知.docx").unwrap().text == 按名.unwrap().text, "按 name 读不确定"
 
 
 def test_按name仍能读到根目录文件(user目录: Path) -> None:

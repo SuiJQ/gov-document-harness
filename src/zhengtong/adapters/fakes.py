@@ -32,7 +32,7 @@ from ..domain.errors import ErrorCode, Result
 from ..domain.ids import RunId
 from ..domain.role import RoleId
 from ..domain.run_state import RunState
-from ..domain.task import UserFile
+from ..domain.task import UserFile, 读到的文件
 from ..ports.clock import ClockPort
 from ..ports.content_pack import ContentPackPort
 from ..ports.llm import (
@@ -340,9 +340,17 @@ class FakeUserFiles:
     def list_registered(self) -> tuple[UserFile, ...]:
         return self.registered
 
-    def read_text(self, name: str) -> Result[str]:
+    def read_text(self, name: str) -> Result[读到的文件]:
         if name in self.contents:
-            return Result.ok(self.contents[name])
+            文本 = self.contents[name]
+            return Result.ok(
+                读到的文件(
+                    text=文本,
+                    已截断=False,
+                    完整字数=len(文本),
+                    原始字数=len(文本),
+                )
+            )
         return Result.fail(ErrorCode.FILE_UNREADABLE, f"文件不存在：{name}")
 
 

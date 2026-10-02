@@ -33,6 +33,7 @@ from typing import IO, Protocol
 from xml.etree import ElementTree
 
 from ....domain.errors import ErrorCode, Result
+from ....domain.task import 单文件上限, 读到的文件
 
 #: Word 正文所在的 entry 名。
 _正文ENTRY = "word/document.xml"
@@ -60,6 +61,12 @@ MAX_TOTAL: int = 100 * 1024 * 1024
 MAX_RATIO: int = 100
 #: 条目数上限（D-131 缺口一 / D-022 第三重）。
 MAX_ENTRIES: int = 2000
+
+#: 单文件读取上限（D-053）。**从 domain 取**，与 txt/md 同一来源——
+#: 第 7 步复查实测过这个漏洞：原先只有 txt/md 截断，docx 不截断，
+#: 同一个「单文件 2 万字」变成两种行为。zip bomb 防护（20MB）
+#: 拦的是**解压字节**，不是**字数**——20MB 的 XML 解析出十几万字很平常。
+MAX_CHARS: int = 单文件上限
 
 
 class _像zip者(Protocol):
@@ -91,7 +98,7 @@ class 限额超出(Exception):
     """
 
 
-def read_docx(路径: Path) -> Result[str]:
+def read_docx(路径: Path) -> Result[读到的文件]:
     """读一个 docx 的正文纯文本。
 
     **任何畸形输入都返回 fail，绝不抛异常穿透**（D-108）。
@@ -116,9 +123,21 @@ def read_docx(路径: Path) -> Result[str]:
     except OSError as exc:
         return Result.fail(ErrorCode.FILE_UNREADABLE, f"读取失败：{type(exc).__name__}")
     if 拿到.is_error:
-        return 拿到
+        错 = 拿到.error
+        if 错 is None:  # 同上：不在这里压类型错误
+            return Result.fail(ErrorCode.DOCX_MALFORMED, "docx 读取失败")
+        return Result.fail(错.code, 错.detail)
 
-    return _正文转文本(拿到.unwrap())
+    转换 = _正文转文本(拿到.unwrap())
+    if 转换.is_error:
+        错 = 转换.error
+        # **不用 `# type: ignore` 压过去**：`error` 在 `is_error` 分支
+        # 静态类型上仍是 `None`，直接取 `.code` 会在运行期崩。
+        # 压类型错误的那条注释当初就是这么写的，检查器把它揪了出来。
+        if 错 is None:
+            return Result.fail(ErrorCode.DOCX_MALFORMED, "正文解析失败")
+        return Result.fail(错.code, 错.detail)
+    return Result.ok(_截断(转换.unwrap()))
 
 
 def 元数据检查(zf: zipfile.ZipFile) -> None:
@@ -179,6 +198,13 @@ def 流式限量解压(zf: _像zip者, name: str) -> Result[str]:
         # 加密条目 / 非 seekable 流
         return Result.fail(ErrorCode.DOCX_MALFORMED, f"docx 读取失败：{type(exc).__name__}")
     return Result.ok(已读.decode("utf-8", errors="replace"))
+
+
+def _截断(文本: str) -> 读到的文件:
+    """截断到上限并**标明**（D-053 的两条）。"""
+    if len(文本) <= MAX_CHARS:
+        return 读到的文件(text=文本, 已截断=False, 完整字数=len(文本), 原始字数=len(文本))
+    return 读到的文件(text=文本[:MAX_CHARS], 已截断=True, 完整字数=MAX_CHARS, 原始字数=len(文本))
 
 
 def _正文转文本(xml_text: str) -> Result[str]:

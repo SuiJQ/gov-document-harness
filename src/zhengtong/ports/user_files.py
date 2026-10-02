@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from ..domain.errors import Result
-from ..domain.task import UserFile
+from ..domain.task import UserFile, 读到的文件
 
 
 @runtime_checkable
@@ -32,6 +32,14 @@ class UserFilesPort(Protocol):
         """已登记文件的元信息。**不含内容。**"""
         ...
 
-    def read_text(self, name: str) -> Result[str]:
-        """按需读取内容。截断到上限由适配层负责（D-053 两万字）。"""
+    def read_text(self, name: str) -> Result[读到的文件]:
+        """按需读取内容。**返回的是内容 + 完整性，不是裸字符串**。
+
+        D-053 是「2 万字截断 **+ 事件标明**」——**两条**。
+        返回 `str` 时调用方拿不到「已被截断」，模型会把残缺材料
+        当完整材料用，**基于残缺事实做研判**，
+        这是「严禁编造」（D-007）的直接反例。
+
+        截断到上限由适配层负责（单文件 2 万字）。
+        """
         ...

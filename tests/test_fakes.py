@@ -344,7 +344,7 @@ def test_只给文件名不给内容() -> None:
 
 def test_内容须按需取且读不到时报错() -> None:
     f = fakes.FakeUserFiles(contents={"甲.txt": "内容"})
-    assert f.read_text("甲.txt").unwrap() == "内容"
+    assert f.read_text("甲.txt").unwrap().text == "内容"
     assert f.read_text("没有.txt").is_error
 
 

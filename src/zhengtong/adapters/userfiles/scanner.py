@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...domain.errors import ErrorCode, Result
-from ...domain.task import UserFile
+from ...domain.task import UserFile, 读到的文件
 from ..guard import ensure_within
 from .readers.docx import read_docx
 from .readers.txt_md import read_txt_md
@@ -67,7 +67,7 @@ class LocalUserFiles:
         """已登记文件的元信息。**不含内容**（D-023）。"""
         return self._已登记
 
-    def read_text(self, name: str) -> Result[str]:
+    def read_text(self, name: str) -> Result[读到的文件]:
         """按需读取内容。**截断到上限由 reader 负责**（D-053）。
 
         `name` 来自登记列表，**必须重新过路径守卫**——

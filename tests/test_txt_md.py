@@ -22,7 +22,7 @@ def test_读utf8(tmp_path: Path) -> None:
     p.write_text("这是UTF-8内容，标点：，。", encoding="utf-8")
     got = read_txt_md(p)
     assert got.is_ok, got.error
-    assert got.unwrap() == "这是UTF-8内容，标点：，。", "中文乱码或标点丢失"
+    assert got.unwrap().text == "这是UTF-8内容，标点：，。", "中文乱码或标点丢失"
 
 
 def test_读gb18030(tmp_path: Path) -> None:
@@ -31,7 +31,7 @@ def test_读gb18030(tmp_path: Path) -> None:
     p.write_bytes("这是GB18030内容。".encode("gb18030"))
     got = read_txt_md(p)
     assert got.is_ok, got.error
-    assert "GB18030内容" in got.unwrap(), f"GB18030 乱码：{got.unwrap()!r}"
+    assert "GB18030内容" in got.unwrap().text, f"GB18030 乱码：{got.unwrap()!r}"
 
 
 def test_带bom的utf8不乱码(tmp_path: Path) -> None:
@@ -41,7 +41,7 @@ def test_带bom的utf8不乱码(tmp_path: Path) -> None:
     p.write_bytes("﻿标题内容".encode())
     got = read_txt_md(p)
     assert got.is_ok, got.error
-    assert not got.unwrap().startswith("﻿"), "BOM 混进了正文"
+    assert not got.unwrap().text.startswith("﻿"), "BOM 混进了正文"
 
 
 def test_空文件返回空字符串而非报错(tmp_path: Path) -> None:
@@ -50,7 +50,7 @@ def test_空文件返回空字符串而非报错(tmp_path: Path) -> None:
     p.write_text("", encoding="utf-8")
     got = read_txt_md(p)
     assert got.is_ok, got.error
-    assert got.unwrap() == ""
+    assert got.unwrap().text == ""
 
 
 # ═══ 二、2 万字截断（D-053）═══
@@ -61,8 +61,8 @@ def test_超限被截断(tmp_path: Path) -> None:
     p.write_text("字" * (MAX_CHARS + 500), encoding="utf-8")
     got = read_txt_md(p)
     assert got.is_ok, got.error
-    文本 = got.unwrap()
-    assert len(文本) == MAX_CHARS, f"截断后长度应是 {MAX_CHARS}，实为 {len(文本)}"
+    r = got.unwrap()
+    assert len(r.text) == MAX_CHARS, f"截断后长度应是 {MAX_CHARS}，实为 {len(r.text)}"
 
 
 def test_恰好等于上限不截断(tmp_path: Path) -> None:
@@ -74,7 +74,7 @@ def test_恰好等于上限不截断(tmp_path: Path) -> None:
     p.write_text("字" * MAX_CHARS, encoding="utf-8")
     got = read_txt_md(p)
     assert got.is_ok
-    assert len(got.unwrap()) == MAX_CHARS, "边界值被误截断了"
+    assert len(got.unwrap().text) == MAX_CHARS, "边界值被误截断了"
 
 
 def test_截断保留前缀(tmp_path: Path) -> None:
@@ -83,7 +83,7 @@ def test_截断保留前缀(tmp_path: Path) -> None:
     p.write_text("标题：关于印发通知\n" + "字" * (MAX_CHARS + 100), encoding="utf-8")
     got = read_txt_md(p)
     assert got.is_ok
-    assert got.unwrap().startswith("标题：关于印发通知"), "截断丢了开头"
+    assert got.unwrap().text.startswith("标题：关于印发通知"), "截断丢了开头"
 
 
 # ═══ 三、异常输入（D-108：返回 fail 不抛异常）═══
@@ -111,7 +111,7 @@ def test_二进制垃圾不崩(tmp_path: Path) -> None:
     p = tmp_path / "bin.txt"
     p.write_bytes(bytes(range(256)) * 10)
     got = read_txt_md(p)
-    assert not got.is_ok or isinstance(got.unwrap(), str), "返回了非 Result[str]"
+    assert got.is_error or got.unwrap().已截断 is False, "返回结构不对"
 
 
 def test_不存在的后缀不被自动识别(tmp_path: Path) -> None:

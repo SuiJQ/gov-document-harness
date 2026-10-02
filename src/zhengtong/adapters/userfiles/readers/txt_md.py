@@ -11,9 +11,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from ....domain.errors import ErrorCode, Result
+from ....domain.task import 单文件上限, 读到的文件
 
-#: 单文件读取上限（D-053）。
-MAX_CHARS: int = 20_000
+#: 单文件读取上限（D-053）。**从 domain 取，不在此另写一个数**——
+#: docx 与 txt/md 若各写各的，同一条决策就有了两个上限，
+#: 读 txt 会截断而读 docx 不会，是不设防。
+MAX_CHARS: int = 单文件上限
 
 #: 识别为文本的后缀。**只有这两个**——D-032 明确 `.pdf`/`.doc`/图片
 #: 不实现解析，只登记文件名。给 `.txt` 之外的都放开就成了「偷偷支持」。
@@ -24,7 +27,7 @@ MAX_CHARS: int = 20_000
 _编码顺序: tuple[str, ...] = ("utf-8", "gb18030")
 
 
-def read_txt_md(路径: Path) -> Result[str]:
+def read_txt_md(路径: Path) -> Result[读到的文件]:
     """读一个 txt/md 文件，返回内容（可能已截断到 2 万字）。
 
     **编码自动探测**：先试 UTF-8，再试 GB18030，都不行则
@@ -47,9 +50,14 @@ def read_txt_md(路径: Path) -> Result[str]:
         return Result.fail(ErrorCode.FILE_UNREADABLE, f"读取失败：{type(exc).__name__}")
 
     文本 = _解码(原始)
-    if len(文本) > MAX_CHARS:
-        return Result.ok(文本[:MAX_CHARS])
-    return Result.ok(文本)
+    return Result.ok(_截断(文本))
+
+
+def _截断(文本: str) -> 读到的文件:
+    """截断到上限并**标明**（D-053 的两条，缺一不可）。"""
+    if len(文本) <= MAX_CHARS:
+        return 读到的文件(text=文本, 已截断=False, 完整字数=len(文本), 原始字数=len(文本))
+    return 读到的文件(text=文本[:MAX_CHARS], 已截断=True, 完整字数=MAX_CHARS, 原始字数=len(文本))
 
 
 #: UTF-8 BOM。Windows 记事本默认存 UTF-8 带 BOM，

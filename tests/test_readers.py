@@ -131,14 +131,14 @@ def test_读出正文(tmp_path: Path) -> None:
     p = 造docx(tmp_path / "a.docx", "这是正文内容")
     got = read_docx(p)
     assert got.is_ok, got.error
-    assert "这是正文内容" in got.unwrap()
+    assert "这是正文内容" in got.unwrap().text
 
 
 def test_多段落按顺序合并(tmp_path: Path) -> None:
     p = 造多段docx(tmp_path / "b.docx", 段数=5, 每段字=3)
     got = read_docx(p)
     assert got.is_ok, got.error
-    文本 = got.unwrap()
+    文本 = got.unwrap().text
     assert "第0段" in 文本 and "第4段" in 文本, "段落丢了"
     assert 文本.index("第0段") < 文本.index("第4段"), "段落顺序错了"
 
@@ -162,7 +162,7 @@ def test_表格里的文字也要读出来(tmp_path: Path) -> None:
         zf.writestr("word/document.xml", 文档)
     got = read_docx(p)
     assert got.is_ok, got.error
-    assert "发文机关名称" in got.unwrap(), "表格里的文字被漏掉了"
+    assert "发文机关名称" in got.unwrap().text, "表格里的文字被漏掉了"
 
 
 # ═══ 二、畸形输入必须返回 fail，绝不抛异常（D-108 纪律）═══
@@ -342,4 +342,4 @@ def test_流式解压读小文件正常通过(tmp_path: Path) -> None:
     p = 造多段docx(tmp_path / "ok.docx", 段数=100, 每段字=50)
     got = read_docx(p)
     assert got.is_ok, f"正常文件被误判：{got.error}"
-    assert "第99段" in got.unwrap()
+    assert "第99段" in got.unwrap().text
