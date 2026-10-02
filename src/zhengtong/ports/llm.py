@@ -108,6 +108,16 @@ class LlmResponse:
     tool_calls: tuple[ToolCall, ...] = ()
     call_id: str = ""
     raw_error_code: str = ""  # 服务端结构化错误码，供 error_map 映射中文
+    #: 服务端返回的**原始** `finish_reason` 字符串。
+    #:
+    #: 为什么已有 `finish_reason` 还要留原文：不同厂商用不同词表示同一件事
+    #: （OpenAI 用 `length`，部分服务商用 `max_tokens` / `model_length`）。
+    #: 归一化后无法区分「正常结束」与「输出被截断」，
+    #: 而后者若被当成正常完成，上层会认为内容完整而直接交付——**交付残稿**。
+    #: 排查时「服务端到底返回了什么」也是第一个要看的。
+    #:
+    #: **统一留痕**（不只未知值），否则调用方会遇到「有时有有时没有」。
+    raw_finish_reason: str = ""
 
 
 @runtime_checkable

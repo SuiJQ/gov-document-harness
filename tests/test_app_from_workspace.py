@@ -184,7 +184,12 @@ def test_装配后能跑完整个流程(tmp_path: Path) -> None:
     """
     根 = _工作区(tmp_path)
     _写配置(根)
-    with build_app_from_workspace(ensure_dirs(根).unwrap()).unwrap() as app:
+    # **显式传假实现**：第 6 步接线后，真实入口默认接真 LLM。
+    # 本条验的是「装配出来能跑」，不传就会真发请求到 example.invalid，
+    # 失败原因盖掉要验的东西。**一个测试只该验一件事。**
+    from zhengtong.adapters.fakes import FakeLlm
+
+    with build_app_from_workspace(ensure_dirs(根).unwrap(), llm=FakeLlm()).unwrap() as app:
         from zhengtong.app import run_once
 
         got = run_once(app)
@@ -223,7 +228,9 @@ def test_阶段仍按配置推进(tmp_path: Path) -> None:
     """接真实配置**不该改变状态机行为**——它是第 4 步就定好的。"""
     根 = _工作区(tmp_path)
     _写配置(根)
-    with build_app_from_workspace(ensure_dirs(根).unwrap()).unwrap() as app:
+    from zhengtong.adapters.fakes import FakeLlm
+
+    with build_app_from_workspace(ensure_dirs(根).unwrap(), llm=FakeLlm()).unwrap() as app:
         from zhengtong.app import run_once
 
         assert run_once(app).is_ok

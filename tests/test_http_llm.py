@@ -481,3 +481,101 @@ def test_错误信息不含密钥() -> None:
     got = llm.complete(_请求())
     assert got.error is not None
     assert "sk-fake" not in got.error.detail
+
+
+# ═══ 七、finish_reason 的未知值必须留痕（零信任复查补）═══
+#
+# 原注释写「未知原因保守记为 STOP，但在响应里留痕由上层判断」，
+# **实测代码里根本没有留痕**——`LlmResponse` 没有承载原始值的字段。
+#
+# 危险在于：部分服务商用 `max_tokens` 而非 `length` 表示截断。
+# 归成 STOP 意味着「输出被截断」被报告成「正常完成」，
+# 上层可能认为内容完整而直接交付——**交付残稿**。
+
+
+@pytest.mark.parametrize(
+    ("原始", "期望"),
+    [
+        ("max_tokens", FinishReason.LENGTH),  # 部分厂商的别名
+        ("MAX_TOKENS", FinishReason.LENGTH),
+        ("model_length", FinishReason.LENGTH),
+        ("content-filter", FinishReason.CONTENT_FILTER),
+        ("function_call", FinishReason.TOOL_CALLS),
+    ],
+)
+def test_常见别名归到正确的结束原因(原始: str, 期望: FinishReason) -> None:
+    响应 = _改首个选择(_正常响应(), finish_reason=原始)
+    got = _适配器(_假传输([(200, 响应)])).complete(_请求())
+    assert got.is_ok
+    assert got.unwrap().finish_reason is 期望, f"{原始!r} 被归错了"
+
+
+def test_未知值原样留痕() -> None:
+    """无法映射的也要**保留原文**——
+    排查时「服务端到底返回了什么」是第一个要看的。"""
+    响应 = _改首个选择(_正常响应(), finish_reason="某个没见过的值")
+    got = _适配器(_假传输([(200, 响应)])).complete(_请求())
+    r = got.unwrap()
+    assert r.raw_finish_reason == "某个没见过的值", "原始值没留下，排查无从下手"
+
+
+def test_已知值也留痕() -> None:
+    """不是只有未知值才留——**统一都留**，避免「有时有有时没有」"""
+    响应 = _改首个选择(_正常响应(), finish_reason="length")
+    got = _适配器(_假传输([(200, 响应)])).complete(_请求())
+    assert got.unwrap().raw_finish_reason == "length"
+
+
+def test_正常情况留空不影响既有字段() -> None:
+    got = _适配器(_假传输([(200, _正常响应())])).complete(_请求())
+    r = got.unwrap()
+    assert r.finish_reason is FinishReason.STOP
+    assert r.raw_finish_reason == "stop"
+
+
+# ═══ 八、异常信息不得携带第三方原文（零信任复查补）═══
+#
+# 第 6 步原实现：`f"连接失败：{exc}"` —— 把第三方异常原文嵌进错误详情。
+# 实测 httpx 1.x 当前的消息**不含 URL/密钥**（ConnectError 只带 errno、
+# ConnectTimeout 只带 "timed out"），**但那是第三方库当前版本的行为**。
+#
+# D-030 要求「任何日志不得含密钥」。若某个用户把 key 写进 URL query
+# （常见错误），而 httpx 换了版本、加了代理或开了 http2 后
+# 把 URL 放进异常消息——密钥就直接进日志了。
+#
+# **不能把密钥安全建立在第三方库的当前实现上。**
+
+
+def test_连接异常不嵌第三方原文() -> None:
+    class _抛异常(_假传输):
+        def post_json(
+            self, url: str, headers: dict[str, str], body: dict[str, object]
+        ) -> tuple[int, dict[str, object]]:
+            self.请求表.append(_请求记录(url=url, headers=headers, body=body, stream=False))
+            raise RuntimeError("failed to connect to https://x.invalid/v1?api_key=sk-LEAKED")
+
+    got = _适配器(_抛异常(), max_retries=0).complete(_请求())
+    assert got.is_error
+    assert got.error is not None
+    assert "sk-LEAKED" not in got.error.detail, "第三方异常原文把密钥带进了错误详情"
+    assert "x.invalid" not in got.error.detail, "错误详情里带了 URL"
+
+
+def test_但保留异常类型名便于排查() -> None:
+    """不能只说「连接失败」了事——**类型名是排查的第一线索**。
+
+    `ConnectError` 通常是端点地址错或断网，
+    `ConnectTimeout` 通常是网络不通。
+    丢掉类型名等于让用户自己猜。
+    """
+
+    class _抛类型(_假传输):
+        def post_json(
+            self, url: str, headers: dict[str, str], body: dict[str, object]
+        ) -> tuple[int, dict[str, object]]:
+            self.请求表.append(_请求记录(url=url, headers=headers, body=body, stream=False))
+            raise RuntimeError("噪音内容")
+
+    got = _适配器(_抛类型(), max_retries=0).complete(_请求())
+    assert got.error is not None
+    assert "RuntimeError" in got.error.detail, f"丢了异常类型名：{got.error.detail!r}"

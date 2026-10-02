@@ -2528,13 +2528,30 @@ Pyright 随即报 7 处 `object` 不能赋给协议。
     a = R1.ok(5)
     # reveal_type(a) → Result[Unknown]
 
-**试过并无效的三种改法**（都回滚了）：
-① `cls: type[Result[T]]` 显式标注——`cls` 本就无绑定，标注不解决问题；
-② 改 `@staticmethod`——`T` 仍推不出；
-③ 返回前加局部变量标注 `r: R2[T] = cls(...)`——照样 Unknown。
+**试过并无效的改法**（都回滚了）：
+① `cls: type[Result[T]]` 显式标注——直接报 `reportGeneralTypeIssues`；
+② 改 `@staticmethod`——`T` 仍推不出（实测 `S[Unknown]`）；
+③ 返回前加局部变量标注 `r: R2[T] = cls(...)`——**只是把 `Unknown`
+   从返回值搬到变量上**，`reveal_type(r)` 仍是 `R[响应]` 但报
+   `reportUnknownVariableType`，**warning 数一条没少**；
+④ 返回类型 `Self`（`typing.Self`）——同样 Unknown；
+⑤ 调用点给变量加类型标注 `r: R[响应] = R.ok(...)`——同③，只是搬家。
+
+**根因（实测确认，非猜测）**：BasedPyright 1.40 无法在
+**泛型类的 classmethod 内部**把类型参数绑定到 `value`，
+于是 `T` 落到 `Unknown`。而**模块级泛型函数**同样的写法
+（`def top(value: T) -> A[T]`）实测推得**完全正确** `A[int]`。
+**问题出在「classmethod」这个载体上，与 `Result` 的实现无关。**
+
+**第 6 步复查时我误判过一次**：以为「有返回类型上下文就行」
+（因为全项目 800+ 处 `Result.ok` 调用只有 4 处报警告），
+实测**返回上下文同样无效**，五种改法全试完才发现
+**D-163 当年的结论是对的**。改判过程留在
+`tests/test_llm_wiring.py` 的历史里，不再重复。
 
 **为什么接受**：`Result.ok` 是全项目 800+ 处的核心 API，
-为消 4 条 warning 而改它，**风险远大于收益**。
+为消 warning 而改它，**风险远大于收益**（载体是 classmethod，
+唯一可行的「解法」是**改掉调用方式**，等于动 800 处）。
 而 warning 不影响运行：862 测试全绿、真实端点五项全通。
 **如实记录比强行压平更诚实**——压平会让后来人以为这里没问题。
 

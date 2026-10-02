@@ -97,22 +97,36 @@ class Transport(Protocol):
         ...
 
 
-def _结束原因(原值: object) -> FinishReason:
-    """把服务端的 `finish_reason` 映射到本地枚举。
+#: 服务端 `finish_reason` → 本地枚举。
+#:
+#: **别名是实测来的**：OpenAI 用 `length`，部分服务商用
+#: `max_tokens` / `model_length` 表示同一件事。**只认 `length`
+#: 会把「输出被截断」判成「正常完成」**——上层认为内容完整而交付，
+#: 交付的是残稿。
+#:
+#: 键统一转小写后查，故大小写差异也能命中。
+_结束原因对照: dict[str, FinishReason] = {
+    "stop": FinishReason.STOP,
+    "length": FinishReason.LENGTH,
+    "max_tokens": FinishReason.LENGTH,  # 常见别名
+    "model_length": FinishReason.LENGTH,  # 常见别名
+    "content_filter": FinishReason.CONTENT_FILTER,
+    "content-filter": FinishReason.CONTENT_FILTER,  # 连字符变体
+    "tool_calls": FinishReason.TOOL_CALLS,
+    "function_call": FinishReason.TOOL_CALLS,  # 旧版工具调用
+}
 
-    **未知值不得一律归 `STOP`**：那样「服务端返回了不认识的原因」
-    会被当成「正常结束」，D-032 要求 `LENGTH` 与 `CONTENT_FILTER`
-    分流处理，混成 STOP 就丢掉了这个区分。
+
+def _结束原因(原值: object) -> FinishReason:
+    """把服务端的 `finish_reason` 归一化。
+
+    **未知值归 `STOP` 但原文另行留痕**（`LlmResponse.raw_finish_reason`）：
+    归一化是给分流逻辑用的，留痕是给排查与兜底判断用的，两者都要。
     """
-    对照 = {
-        "stop": FinishReason.STOP,
-        "length": FinishReason.LENGTH,
-        "content_filter": FinishReason.CONTENT_FILTER,
-        "tool_calls": FinishReason.TOOL_CALLS,
-    }
-    if isinstance(原值, str) and 原值 in 对照:
-        return 对照[原值]
-    # 未知原因保守记为 STOP，但在响应里留痕由上层判断
+    if isinstance(原值, str):
+        命中 = _结束原因对照.get(原值.lower())
+        if 命中 is not None:
+            return 命中
     return FinishReason.STOP
 
 
@@ -360,7 +374,23 @@ class HttpLlm:
             try:
                 状态码, 数据 = self._transport.post_json(self._endpoint, 头, 体)
             except Exception as exc:
-                末次 = (ErrorCode.LLM_REQUEST_FAILED, f"连接失败：{exc}")
+                # **只记异常类型名，不嵌 `str(exc)`**。
+                #
+                # 实测 httpx 1.x 当前的消息不含 URL/密钥
+                # （`ConnectError` 只带 errno、`ConnectTimeout` 只带 "timed out"），
+                # **但那是第三方库当前版本的行为**。若用户把 key 写进 URL query
+                # （常见错误），而 httpx 换版本、加代理或开了 http2 后
+                # 把 URL 放进异常消息——密钥就直接进日志了。
+                #
+                # D-030 要求「任何日志不得含密钥」，
+                # **不能把这条建立在第三方库的当前实现上**。
+                #
+                # 保留类型名是为了排查：`ConnectError` 多半是端点地址错或断网，
+                # `ConnectTimeout` 多半是网络不通。丢了它用户只能自己猜。
+                末次 = (
+                    ErrorCode.LLM_REQUEST_FAILED,
+                    f"连接失败：{type(exc).__name__}",
+                )
                 continue
 
             if 状态码 == 200:
@@ -396,9 +426,11 @@ class HttpLlm:
         if 消息 is None:
             return None
         标识 = 字典.get("id")
+        原始结束 = 首.get("finish_reason")
         return LlmResponse(
             text=_正文(消息),
-            finish_reason=_结束原因(首.get("finish_reason")),
+            finish_reason=_结束原因(原始结束),
+            raw_finish_reason=原始结束 if isinstance(原始结束, str) else "",
             usage=_用量(字典.get("usage")),
             tool_calls=_工具调用(消息.get("tool_calls")),
             call_id=标识 if isinstance(标识, str) else "",
@@ -410,6 +442,17 @@ class HttpLlm:
     # 那样它就成了「本模块的内部结构可以随便依赖」的先例，
     # 改字段名时不会有任何提示，直到运行期才炸。
     # 访问器是显式契约：改这里会改到类型检查。
+
+    def close(self) -> None:
+        """释放底层连接。
+
+        **真传输持有 HTTP 连接池**，长跑不关会耗尽。
+        传输层没有 `close` 时静默跳过——那说明用的是假传输，
+        本来就没连接可关。
+        """
+        关 = getattr(self._transport, "close", None)
+        if callable(关):
+            _ = 关()  # 有些 close 返回 client，丢弃即可
 
     @property
     def endpoint(self) -> str:

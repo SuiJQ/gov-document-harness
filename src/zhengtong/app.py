@@ -38,8 +38,11 @@ from .adapters.fakes import (
     FakeUserFiles,
     FakeValidators,
 )
+from .adapters.http_llm import HttpLlm
+from .adapters.httpx_transport import HttpxTransport
 from .adapters.local_secrets import LocalSecrets
 from .adapters.paths import Workspace
+from .adapters.system_clock import SystemClock
 from .domain.artifact import ArtifactKind, ArtifactRef
 from .domain.errors import ErrorCode, Result
 from .domain.event import Event, EventKind, Level
@@ -95,7 +98,18 @@ class App:
 
     def close(self) -> None:
         """收尾。**必须排空总线**（D-087）——
-        否则未处理的事件随进程退出消失，用户看不到、日志里也没有。"""
+        否则未处理的事件随进程退出消失，用户看不到、日志里也没有。
+
+        **并释放端口持有的资源**（第 6 步接线补上）：
+        真实 LLM 适配器持有 HTTP 连接池，**不关会耗尽**。
+        而 `App` 并不拥有端口——它只是持有引用。
+        故这里逐个「若能关则关」，而不是要求所有端口都实现 `close`
+        （假实现没有连接可关，强行要求只会逼出一堆空方法）。
+        """
+        for 端口 in (self.ports.llm, self.ports.clock):
+            关 = getattr(端口, "close", None)
+            if callable(关):
+                _ = 关()  # 有些 close 返回 client，丢弃即可
         self.bus.stop()
 
     def __enter__(self) -> App:
@@ -405,17 +419,38 @@ def build_app_from_workspace(
         assert err is not None
         return Result.fail(err.code, err.detail)
 
+    # **不传就接真实现，传了尊重调用方。**
+    #
+    # 第 6 步零信任复查查出的缺口：原先这里把 `llm=None` 直接转发，
+    # 而 `build_app` 见到 None 就装 `FakeLlm`——
+    # 于是**用户配好了真端点，程序却拿假模型作答**。
+    # 探测脚本能跑通，运行路径却是假的。
+    #
+    # 「真实运行入口」这个名字现在才名副其实。
+    真密钥 = LocalSecrets.from_workspace(ws)
+    真时钟 = clock_override if clock_override is not None else SystemClock()
+
+    if llm is None:
+        真传输 = HttpxTransport()
+        llm = HttpLlm(
+            endpoint=cfg.endpoint,
+            model=cfg.model,
+            transport=真传输,
+            secrets=真密钥,
+            clock=真时钟,
+        )
+
     return Result.ok(
         build_app(
             run_id,
             log_path=log_path,
             config=cfg,
             # 真实密钥源接在这里（D-030：唯一返回明文的端口）
-            secrets=LocalSecrets.from_workspace(ws),
+            secrets=真密钥,
             llm=llm,
             storage=storage,
             validators=validators,
-            clock_override=clock_override,
+            clock_override=真时钟,
             user_files=user_files,
             content_pack=content_pack,
             retriever=retriever,

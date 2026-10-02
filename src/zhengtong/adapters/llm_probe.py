@@ -145,4 +145,6 @@ def 探测五项(llm: _可探测) -> Result[TokenUsage]:
     with contextlib.suppress(Exception):
         _ = llm.探测流式()
 
+    # 这里没有类型标注可用：**实测过，标注只是把 `Unknown`
+    # 从返回值搬到变量上，消不掉**。理由见 D-163。
     return Result.ok(响应.usage)
