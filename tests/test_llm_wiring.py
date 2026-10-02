@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from zhengtong.adapters.config import Config, save
-from zhengtong.adapters.fakes import FakeLlm
+from zhengtong.adapters.fakes import FakeLlm, FakeUserFiles
 from zhengtong.adapters.http_llm import HttpLlm
 from zhengtong.adapters.local_secrets import LocalSecrets
 from zhengtong.adapters.paths import ensure_dirs
@@ -206,3 +206,36 @@ def test_传输层可关闭(工作区: Path) -> None:
     assert isinstance(llm, HttpLlm)
     # 没发过请求时关闭也必须安全
     llm.close()
+
+
+# ═══ 四、第 7 步：文件读取也必须接进真实入口 ═══
+#
+# D-165 的教训在第 7 步原样重演的风险：`build_app_from_workspace`
+# 原先对 `user_files` 走 `FakeUserFiles()`。
+#
+# **同型第三次**：每一次都是「适配器写好了，却没接进运行路径」。
+# 若不测这一条，第 7 步会重蹈第 6 步的覆辙——用户运行程序，
+# 放的 docx 根本不会被读取。
+
+
+def test_用户文件端口是真适配器(工作区: Path) -> None:
+    app = build_app_from_workspace(ensure_dirs(工作区).unwrap(), llm=FakeLlm()).unwrap()
+    assert not isinstance(app.ports.user_files, FakeUserFiles), (
+        "真实入口拿到的是假用户文件源——用户放的 docx 永远不会被读"
+    )
+
+
+def test_显式传假用户文件源不被覆盖(工作区: Path) -> None:
+    app = build_app_from_workspace(
+        ensure_dirs(工作区).unwrap(), llm=FakeLlm(), user_files=FakeUserFiles()
+    ).unwrap()
+    assert isinstance(app.ports.user_files, FakeUserFiles)
+
+
+def test_端口指向真实的user目录(工作区: Path) -> None:
+    """接上了还不够——**得指向真的 user/**。"""
+    app = build_app_from_workspace(ensure_dirs(工作区).unwrap(), llm=FakeLlm()).unwrap()
+    用户目录 = ensure_dirs(工作区).unwrap().dir("user")
+    用户目录.joinpath("放一个.txt").write_text("内容", encoding="utf-8")
+    登记 = app.ports.user_files.scan_and_register()
+    assert any(f.name == "放一个.txt" for f in 登记), "端口没指向真实 user/"

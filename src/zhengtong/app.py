@@ -43,6 +43,7 @@ from .adapters.httpx_transport import HttpxTransport
 from .adapters.local_secrets import LocalSecrets
 from .adapters.paths import Workspace
 from .adapters.system_clock import SystemClock
+from .adapters.userfiles.scanner import LocalUserFiles
 from .domain.artifact import ArtifactKind, ArtifactRef
 from .domain.errors import ErrorCode, Result
 from .domain.event import Event, EventKind, Level
@@ -439,6 +440,14 @@ def build_app_from_workspace(
             secrets=真密钥,
             clock=真时钟,
         )
+
+    if user_files is None:
+        # **同 D-165**：不传就接真适配器。原先这里直接转发 None，
+        # `build_app` 见到 None 装 FakeUserFiles——
+        # 用户放进 `user/` 的 docx 永远不会被读。
+        # 「用户文件读取」是唯一让用户材料进入系统的入口，
+        # 假实现意味着**整条材料链是断的**，而测试照样全绿。
+        user_files = LocalUserFiles(根=ws.dir("user"))
 
     return Result.ok(
         build_app(
