@@ -33,8 +33,8 @@ import pytest
 
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
 from zhengtong.adapters.paths import Workspace, ensure_dirs
-from zhengtong.domain.errors import Result
-from zhengtong.domain.phase import PhaseId
+from zhengtong.domain.errors import ErrorCode, Result
+from zhengtong.domain.phase import PhaseId, PhaseState
 from zhengtong.domain.role import RoleId, RoleState
 from zhengtong.domain.tier import TIER_BY_ID, TierId
 from zhengtong.orchestration import 咨询序列, 编排请求, 跑一次, 阶段序列
@@ -46,14 +46,14 @@ def ws(tmp_path: Path) -> Workspace:
     return ensure_dirs(tmp_path / "ws").unwrap()
 
 
-def _跑(档: TierId, *, llm: FakeLlm | None = None):
+def _跑(档: TierId, *, llm: FakeLlm | None = None, storage: FakeStorage | None = None):
     return 跑一次(
         编排请求(
             档位=档,
             需求="就甲单位2026年第三季度安全生产工作起草一份通知",
         ),
         llm=llm or FakeLlm(),
-        storage=FakeStorage(),
+        storage=storage or FakeStorage(),
     )
 
 
@@ -488,3 +488,231 @@ class Test真调模型:
         assert not TIER_BY_ID[TierId.CONSULT].gates_apply
         assert PhaseId.GATING not in 阶段序列(TierId.CONSULT)
         assert TIER_BY_ID[TierId.PRO].gates_apply
+
+
+# ═══ 判据七：产物真落进 storage（复查补上，原判据只查内存列表）═══
+
+
+class Test产物落进storage:
+    """**复查发现的核心缺陷。**
+
+    第 13 步的 `test_每段都有产物落地` 文档写着能抓
+    「产物没写进 storage」，**实际它查的是 `结果.产物` 这个内存列表**。
+
+    证伪：把 `storage.write_atomic` 整个删掉、把 `落盘` 调用改成 `pass`，
+    **36 条判据全绿**。
+
+    **判据的注释在描述它并不具备的能力。**
+    而我读自己写的注释就信了——这是「形状对但没接线」的变种：
+    注释写得对，代码没跟上，而自己正是最不容易发现这件事的人。
+    """
+
+    @pytest.mark.parametrize("档", [TierId.CONSULT, TierId.FLASH, TierId.PRO])
+    def test_storage里真有文件(self, 档: TierId) -> None:
+        仓 = FakeStorage()
+        结果 = _跑(档, storage=仓).unwrap()
+        assert 仓.files, "storage 里一个文件都没有——产物根本没落盘"
+        # 一并查「跑成了」：跑失败时产物可能只落了一部分，
+        # 那时 `仓.files` 非空却毫无意义。
+        assert 结果.终态阶段 is PhaseId.DONE
+
+    def test_内存列表与storage逐一对应(self) -> None:
+        """**两份账必须对得上**。
+
+        只查「storage 非空」也不够：可能只写了一份，
+        而内存里记着五份。故**逐条比对**，多一份少一份都算红。
+        """
+        仓 = FakeStorage()
+        结果 = _跑(TierId.PRO, storage=仓).unwrap()
+        记忆 = {p.名称 for p in 结果.产物}
+        实际 = {路径.rsplit("/", 1)[-1] for 路径 in 仓.files}
+        assert 记忆 == 实际, f"记忆 {记忆} 与实际 {实际} 对不上"
+
+    def test_落盘内容与内存一致(self) -> None:
+        """查内容不只查文件名——**存了空串也算落了**。"""
+        仓 = FakeStorage()
+        结果 = _跑(TierId.PRO, storage=仓).unwrap()
+        for 件 in 结果.产物:
+            路径 = next((k for k in 仓.files if k.endswith("/" + 件.名称)), None)
+            assert 路径 is not None, f"{件.名称} 不在 storage 里"
+            assert 仓.files[路径] == 件.内容, f"{件.名称} 内容对不上"
+
+    def test_完全不落盘必须抓红(self) -> None:
+        """**这条是自查**：本判据集自己经不经得起同样的退化。
+
+        与其指望以后有人想起证伪，不如现在就把退化写在测试里。
+        """
+
+        class _空转(FakeStorage):
+            def write_atomic(self, rel_path: str, content: str) -> Result[None]:
+                return Result.ok_none()  # 收下就丢，不真写
+
+        仓 = _空转()
+        _跑(TierId.PRO, storage=仓)
+        assert not 仓.files, "假实现没真写，却让上面几条判据全过了"
+
+
+# ═══ 判据八：交付物是终稿不是半成品（复查第 ② 条）═══
+
+
+class Test交付物:
+    def test_交付物取自FINAL段(self) -> None:
+        """第一版 `终稿` 只在 DRAFTING 赋值，于是交付物标着
+        「【正文起草】」——**终审段产出的内容被丢弃了**。
+
+        判据查的是交付物里**不含起草段的段标**，
+        而不是「它等于 FINAL 段产物」（那是复述实现）。
+        """
+        结果 = _跑(TierId.PRO).unwrap()
+        assert "【正文起草】" not in 结果.交付物, "交付的还是起草段内容"
+        assert "【终审交付】" in 结果.交付物
+
+    def test_FINAL段产物没被扔掉(self) -> None:
+        结果 = _跑(TierId.PRO).unwrap()
+        assert 结果.该段产物(PhaseId.FINAL), "FINAL 段没产物"
+        assert 结果.交付物 == 结果.该段产物(PhaseId.FINAL)[-1].内容, (
+            "交付物与 FINAL 段产物不一致——终审内容被换掉了"
+        )
+
+    def test_交付物带模型回复(self) -> None:
+        from zhengtong.adapters.fakes import FakeLlm
+        from zhengtong.ports.llm import FinishReason, LlmRequest, LlmResponse, TokenUsage
+
+        标记 = "【终稿标记】"
+
+        class _回标记Llm(FakeLlm):
+            def complete(self, request: LlmRequest) -> Result[LlmResponse]:
+                return Result.ok(
+                    LlmResponse(
+                        text=标记,
+                        tool_calls=(),
+                        finish_reason=FinishReason.STOP,
+                        usage=TokenUsage(0, 0, 0),
+                    )
+                )
+
+        assert 标记 in _跑(TierId.PRO, llm=_回标记Llm()).unwrap().交付物
+
+
+# ═══ 判据九：状态必须落盘（复查第 ④ 条）═══
+
+
+class Test状态落盘:
+    def test_状态被写进storage(self) -> None:
+        仓 = FakeStorage()
+        _跑(TierId.PRO, storage=仓)
+        assert 仓.states, "save_run_state 一次都没调用——状态只在局部变量里"
+
+    def test_读回来的状态是推进过的(self) -> None:
+        """**不只查「调用过」，查「读到的是推进后的」**。
+
+        存一份初始空状态也算调用过，但那等于没存。
+        """
+        仓 = FakeStorage()
+        _跑(TierId.PRO, storage=仓)
+        存下的 = list(仓.states.values())[-1]
+        assert 存下的.phase is PhaseId.FINAL, f"读回的是 {存下的.phase}"
+        assert 存下的.phase_state is PhaseState.APPROVED
+        assert any(s is RoleState.DONE for s in 存下的.role_states.values()), "成员状态没存进去"
+
+    def test_逐段存而非只在末尾存一次(self) -> None:
+        """**只查「存过」会放过「全程只在末尾存一次」**——
+        而那正是断点续跑最需要的那种存法：崩在中间就全丢。
+
+        `save_run_state` 按 run_id 存**一份**（覆盖式），
+        续跑读的正是最新那份——这是端口契约，不是缺陷。
+        故这里查的是**写入次数**：崩在任意一段，读回的都该是崩溃前那一刻。
+        """
+        计数 = {"n": 0}
+
+        class _计数仓(FakeStorage):
+            def save_run_state(self, state) -> Result[None]:
+                计数["n"] += 1
+                return super().save_run_state(state)
+
+        仓 = _计数仓()
+        _跑(TierId.PRO, storage=仓)
+        段数 = len(阶段序列(TierId.PRO)) - 2  # 去掉 DONE 与 GATING（门禁段 continue）
+        assert 计数["n"] >= 段数, f"只存了 {计数['n']} 次，段数 {段数}"
+
+    def test_中途崩了读回的是崩溃前的状态(self) -> None:
+        """**行为判据**：跑到一半就崩，读回的状态必须是崩前那一刻。
+
+        比「调用了几次 save_run_state」更直接——
+        前者查调用，后者查结果。
+        """
+        from zhengtong.domain.errors import ErrorCode
+        from zhengtong.ports.llm import FinishReason, LlmRequest, LlmResponse, TokenUsage
+
+        仓 = FakeStorage()
+        n = {"i": 0}
+
+        class _崩在第三段(FakeLlm):
+            def complete(self, request: LlmRequest) -> Result[LlmResponse]:
+                n["i"] += 1
+                if n["i"] > 3:
+                    return Result.fail(ErrorCode.LLM_REQUEST_FAILED, "模拟崩溃")
+                return Result.ok(
+                    LlmResponse(
+                        text="回复",
+                        tool_calls=(),
+                        finish_reason=FinishReason.STOP,
+                        usage=TokenUsage(0, 0, 0),
+                    )
+                )
+
+        got = _跑(TierId.PRO, llm=_崩在第三段(), storage=仓)
+        assert got.is_error, "该崩没崩"
+        assert 仓.states, "崩了却什么都没存——续跑无从谈起"
+        存下 = list(仓.states.values())[-1]
+        assert 存下.phase is not PhaseId.DONE, "存的是完成态——崩前状态没保住"
+
+    def test_落盘失败必须报错而非吞掉(self) -> None:
+        """**补一条证伪漏掉的判据。**
+
+        把 `落盘` 的错误处理整个删掉（`落  # 退化：丢弃错误`），
+        **零红**。查下来：路径守卫拒绝时错误确实传上来了
+        （`test_跑完不报错` 变红），但**没有一条判据说
+        「落盘失败必须报错」**——
+
+        错误被上报了，只是没人查它是否被上报。
+        这与第 13 步那个原始缺陷**完全同型**：
+        代码做了某件事，但没有判据确认它真的做了。
+
+        故必须钉死：**存储拒绝时，跑一次必须返回错误**。
+        用一个必定拒绝的 storage 来验——
+        不靠路径写错触发（那是间接的），直接用假实现拒绝。
+        """
+
+        class _只拒正文(FakeStorage):
+            """**只拒正文产物的写入**，门禁报告与状态保存照常。
+
+            为什么必须这么精确：前一版 `_必拒仓` 拒掉所有写入，
+            于是**门禁段**先触发错误，判据查到的永远是
+            「门禁报告落盘失败」——哪怕正文那条的错误处理被整个删掉，
+            它也照样通过。
+
+            这就是「同一个结果可以由不同原因产生，只查结果就分不出来」
+            的第二次现场教学。
+            """
+
+            def write_atomic(self, rel_path: str, content: str) -> Result[None]:
+                if rel_path.endswith("drafting.md"):
+                    return Result.fail(ErrorCode.STORAGE_WRITE_FAILED, "存储不可用")
+                return super().write_atomic(rel_path, content)
+
+        got = _跑(TierId.PRO, storage=_只拒正文())
+        assert got.is_error, "存储拒绝了却还返回成功——落盘失败被吞了"
+        assert got.error is not None
+        assert got.error.code is ErrorCode.STORAGE_WRITE_FAILED
+        assert "drafting.md" in got.error.detail, f"报的错不是正文落盘这条：{got.error.detail}"
+        # **关键：错因必须指名是「产物落盘」**。
+        #
+        # 第一版只查 `is_error` 与错误码——而 `_必拒仓` 只拒 `write_atomic`，
+        # 后面 `save_run_state` 那条路**也会报错**，
+        # 于是哪怕产物落盘那段被整个删掉，`is_error` 依然为真、
+        # 错误码恰好也是 `STORAGE_WRITE_FAILED`，判据照样全绿。
+        #
+        # **同一个结果可以由不同的原因产生，只查结果就分不出来。**
+        # 故必须查错误详情里点名的环节。
+        assert "落盘失败" in got.error.detail, f"报的错不是产物落盘这条：{got.error.detail}"

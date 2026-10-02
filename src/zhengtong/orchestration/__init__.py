@@ -39,7 +39,7 @@ from typing import Final
 from ..domain.errors import Result
 from ..domain.gate import FORMAL_GATES, GATES, GateId
 from ..domain.ids import RunId
-from ..domain.phase import PhaseId
+from ..domain.phase import PhaseId, PhaseState
 from ..domain.role import RoleId, RoleState
 from ..domain.run_state import RunState, new_run_state
 from ..domain.task import TaskSpec
@@ -203,17 +203,39 @@ def 跑一次(
                 + "\n".join(f"- {g}" for g in 走过门禁),
             )
             全部产物.append(报告)
-            落盘(storage, 状态, 报告)
+            落 = 落盘(storage, 状态, 报告)
+            if 落.is_error:
+                err = 落.error
+                assert err is not None
+                return Result.fail(err.code, f"门禁报告落盘失败：{err.detail}")
             continue
 
         件 = 产物(阶段=阶段, 名称=f"{阶段.value}.md", 内容=_产内容(阶段, 档.id, 需求, 回复))
         全部产物.append(件)
-        落盘(storage, 状态, 件)
-        if 阶段 is PhaseId.DRAFTING:
+        落 = 落盘(storage, 状态, 件)
+        if 落.is_error:
+            err = 落.error
+            assert err is not None
+            return Result.fail(err.code, f"{件.名称} 落盘失败：{err.detail}")
+        # **复查修掉的第 ③ 条**：交付物取 **FINAL 段**产物，不是 DRAFTING 段。
+        # 第一版 `终稿` 只在 DRAFTING 赋值，于是交付物标着「【正文起草】」，
+        # 而 FINAL 段（终审交付）产出的内容被丢掉了——
+        # **终审这一段跑了、产了、然后被扔掉**，用户拿到的是半成品。
+        if 阶段 is PhaseId.FINAL:
             终稿 = 件.内容
 
         for 角色 in _该段角色(档.id, 阶段):
             状态 = _流转(状态, 角色, RoleState.DONE, 出现过的状态)
+
+        # **复查修掉的第 ④ 条**：状态必须落盘。
+        # 第一版 `_流转` 的返回值接住了，但 `save_run_state` 一次都没调用——
+        # 状态只活在局部变量里，**断点续跑（D-065）无从谈起**：
+        # 续跑时读回来的还是最初那份空状态。
+        存 = storage.save_run_state(状态.with_phase(阶段, PhaseState.APPROVED))
+        if 存.is_error:
+            err = 存.error
+            assert err is not None
+            return Result.fail(err.code, f"状态落盘失败：{err.detail}")
 
     标注 = g3降级标注(请求.档位)
     if 标注:
@@ -344,10 +366,32 @@ def _产内容(阶段: PhaseId, 档: TierId, 需求: str, 回复: dict[RoleId, s
     return "\n".join(段落)
 
 
-def 落盘(storage: StoragePort, 状态: RunState, 件: 产物) -> None:
-    """把产物写进 storage。**写失败不上抛**——
-    本步的产物记录在内存里，写盘是第 15 步导出的事。"""
-    storage.write_atomic(f"{状态.run_id}/{件.名称}", 件.内容)
+def 产物路径(状态: RunState, 件: 产物) -> str:
+    """产物落在工作区的哪个路径。
+
+    ## 必须以 `data/` 开头（复查修掉的第 9 次 D-165）
+
+    第一版写的是 `f"{run_id}/{件.名称}"`——**顶层目录是运行号**，
+    而 `paths.AI_WRITABLE` 只认 `data/`（AI 只能写 `data/`）。
+    于是每一次落盘都被路径守卫拒绝。
+
+    **而错误还被吞了**（旧 `落盘` 声明 `-> None` 直接丢弃 `Result`），
+    于是「产物根本没写进去」这件事一路静默到没有任何判据发现。
+    两处凑在一起才是完整的失效：**路径写错 + 错误不上报**。
+
+    约定与架构一致：多文件产出按 `data/<run-id>/` 组织（D-038）。
+    """
+    return f"data/{状态.run_id}/{件.名称}"
+
+
+def 落盘(storage: StoragePort, 状态: RunState, 件: 产物) -> Result[None]:
+    """把产物写进 storage。**写失败必须上报，不得吞**。
+
+    第一版这里 `-> None` 丢弃了 `Result`——
+    「写盘失败」是正常处置（`Result` 而非异常，D-079），
+    吞掉它等于让「产物没落盘」这件事永远查不出来。
+    """
+    return storage.write_atomic(产物路径(状态, 件), 件.内容)
 
 
 __all__ = [
