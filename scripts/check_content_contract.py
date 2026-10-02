@@ -206,7 +206,7 @@ def check_gate_names(contracts: list[Contract]) -> list[str]:
 
 
 def check_phase_names() -> list[str]:
-    """内容包须与代码的架构阶段映射对得上（D-148）。
+    """内容包须与代码的架构阶段映射对得上（D-152）。
 
     **判据方向改过一次**：原先要求内容包逐个包含代码 `PhaseId` 的
     中文注释名（「需求采集」「门禁检查」…），结果全线红灯。
@@ -217,7 +217,7 @@ def check_phase_names() -> list[str]:
     而代码 `PhaseId` 是另一套自造编号。
     逼内容包去补八个自造编号的中文名，是把正确的改错。
 
-    D-148 的修法是加映射表（`PhaseId.architecture_phase`），
+    D-152 的修法是加映射表（`PhaseId.architecture_phase`），
     故此处只断言：**映射涉及的所有阶段，
     内容包要么用架构 Phase 号、要么用产物名，两者至少命中其一**——
     也就是「模型能从内容包推出这一步归谁管」。
@@ -249,12 +249,61 @@ def check_phase_names() -> list[str]:
     return problems
 
 
+def check_decision_ids_unique() -> list[str]:
+    """决策编号不得重复，且被引用处必须指向存在的决策（D-156）。
+
+    第六轮复盘时实测：第四轮起新写的 D-148~D-151 与审计批次
+    **撞号了三个**——两边都是 D-148/149/150。
+    后果：`state_codec.py`、三个测试文件、`content/prompts/team-lead.md`
+    里的 `D-149` 引用**指向歧义目标**，读的人不知道看哪一条。
+
+    撞号能溜过去，是因为**没有任何判据查编号唯一性**——
+    「决策齐全」「§14 双向一致」都不管重号。
+    这与 D-153 同型：**该有的约束没有**。
+
+    两件事一起查：
+    ① DECISIONS.md 内编号唯一
+    ② 全仓引用的决策号必须在 DECISIONS.md 里存在
+    """
+    import re as _re
+    dec = (ROOT / "DECISIONS.md").read_text(encoding="utf-8")
+    编号 = _re.findall(r"^### (D-\d+)", dec, _re.M)
+    problems = []
+    重号 = sorted({n for n in 编号 if 编号.count(n) > 1})
+    if 重号:
+        problems.append(f"决策编号重复：{重号}——引用会指向歧义目标")
+
+    存在 = set(编号)
+    # **叙述性引用白名单**：讲历史时会提到已改号的旧编号，
+    # 那不是「引用了一条决策」，不该判悬空。
+    # 证伪时实测：本判据上线第一版就把
+    # 「第四轮起新写的 D-148~D-151 与审计批次撞号了」这句**判成悬空**——
+    # 它是叙述（D-156 自己的由来），不是引用。
+    # 故白名单按「同一行内出现『撞号/已改号/当时』等叙述词」豁免。
+    叙述词 = ("撞号", "已改号", "当时", "新写的", "旧编号")
+    悬空: dict[str, list[str]] = {}
+    for p in sorted(ROOT.rglob("*.py")):
+        if ".venv" in str(p) or "__pycache__" in str(p):
+            continue
+        for 行号, 行 in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            for m in _re.finditer(r"\bD-(\d+)\b", 行):
+                号 = f"D-{m.group(1)}"
+                if 号 in 存在:
+                    continue
+                if any(w in 行 for w in 叙述词):
+                    continue
+                悬空.setdefault(号, []).append(f"{p.relative_to(ROOT)}:{行号}")
+    for 号, 处 in sorted(悬空.items()):
+        problems.append(f"代码引用了不存在的决策 {号}：{sorted(set(处))}")
+    return problems
+
+
 def check_decision_coverage() -> list[str]:
-    """几条**模型必须知道**的硬决策，内容包里不能没有（D-151）。
+    """几条**模型必须知道**的硬决策，内容包里不能没有(D-155)。
 
     ## 为什么要单列这一条
 
-    前六轮查出三处同型缺口（D-149、D-150、草稿纸上限）：
+    前六轮查出三处同型缺口（D-153、D-154、草稿纸上限）：
     **决策在、代码在、架构在，唯独模型读的那份提示词里没有**。
 
     但**不能把所有 D 决策都要求写进内容包**——
@@ -344,7 +393,7 @@ def check_gate_count() -> list[str]:
 
 
 def check_gate_ownership() -> list[str]:
-    """每道门禁的**唯一取证方**必须在自己的提示词里声明（D-149）。
+    """每道门禁的**唯一取证方**必须在自己的提示词里声明(D-153)。
 
     第五轮查出的问题：`language.md` 零次提及 G4、`doc-advisor.md`
     零次提及 G3——而这两人分别是 G4 与 G3 的唯一取证方。
@@ -393,7 +442,7 @@ def check_gate_ownership() -> list[str]:
 
 
 def check_revision_guidance() -> list[str]:
-    """四份成员提示词都必须说明「我被退回后该做什么」（D-149）。
+    """四份成员提示词都必须说明「我被退回后该做什么」(D-153)。
 
     第五轮查出：四份**只教「你能把别人退回去」**，
     没有一份讲「你被退回来该做什么」——
@@ -426,6 +475,7 @@ def main() -> int:
     results.append(("角色提示词路径 ↔ manifest", check_prompt_files(contracts)))
     results.append(("门禁中文名 ↔ 代码注释", check_gate_names(contracts)))
     results.append(("阶段中文名 ↔ 代码注释", check_phase_names()))
+    results.append(("决策编号唯一性", check_decision_ids_unique()))
     results.append(("模型必知决策覆盖", check_decision_coverage()))
     results.append(("门禁总数与编号", check_gate_count()))
     results.append(("门禁取证方声明", check_gate_ownership()))
