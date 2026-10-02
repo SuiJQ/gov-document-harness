@@ -69,7 +69,7 @@ from ..kernel.bus import EventBus
 from ..kernel.driver import Step, drive
 from ..kernel.scheduler import GateGroup, run_groups
 from ..ports.content_pack import ContentPackPort
-from ..ports.llm import LlmPort, LlmRequest, Message, ToolCall
+from ..ports.llm import LlmPort, LlmRequest, Message, ToolCall, ToolSchema
 from ..ports.storage import StoragePort
 from ..ports.validators import ValidatorPort
 from ..services.context import 压缩, 组装, 需要压缩
@@ -84,6 +84,31 @@ _产物根: Final = "data"
 #: 默认预算（D-189）。真跑时应来自配置里的上下文容量；
 #: 这里给保守值，**不给「无上限」**——无上限等于闸门不存在。
 _默认预算: Final = 20_000
+
+
+def _工具声明(角色: RoleId) -> tuple[ToolSchema, ...]:
+    """该角色**实际可调**的工具子集 → API 层声明（D-233）。
+
+    ## 为什么必须是子集而不是全集
+
+    提示词装配器早就按角色白名单渲染「本次可调用的工具」，
+    并明写着「调不到的工具不会出现在这里」。
+    若这里发全集，就与提示词**自相矛盾**：
+    模型会看到并尝试调用白名单外的工具，然后被工具层拒绝——
+    用户看到的现象是「模型说能调用却调不动」。
+
+    ## 为什么放在编排层而不是服务层
+
+    `ToolSpec`（工具层自己的规格）与 `ToolSchema`（端口的线格式）
+    字段同名但分属两层。跨层转换是这个位置独有的职责：
+    工具层不该知道端口，编排层是唯一同时看得见两者的层。
+    """
+    from zhengtong.services.tools.registry import 该角色可调
+
+    return tuple(
+        ToolSchema(name=t.name, description=t.description, parameters=t.parameters)
+        for t in 该角色可调(角色)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -647,7 +672,20 @@ class _过程:
                 阶段,
                 需求,
             )
-        请求 = LlmRequest(model=self.编排.模型名, messages=消息)
+        请求 = LlmRequest(
+            model=self.编排.模型名,
+            messages=消息,
+            # **工具必须真的发给模型**（D-233）。
+            #
+            # 此前只有提示词里那段「本次可调用的工具」文本，
+            # 请求的 `tools` 字段**全仓生产零填充**——
+            # 于是模型看清单却调不到任何工具，`tool_calls` 恒为空。
+            # 提示词层与请求层各自测试都绿，**因为没人在两层之间对账**。
+            tools=_工具声明(角色),
+            # 温度走配置基准（D-234）。此前 `LlmRequest.temperature`
+            # 用的是字段默认值 0.3，`Config.temperature` 从未影响任何请求。
+            temperature=self.编排.温度,
+        )
         # 并行取证时多线程共写这张表，故加锁（D-049）
         with self.编排.请求锁:
             self.编排.发出的请求.append(请求)
@@ -710,6 +748,7 @@ class 编排器:
         初始已完成: tuple[str, ...] = (),
         门禁取证: Callable[[tuple[GateId, ...]], dict[str, GateRecord]] | None = None,
         容量token: int = 128_000,
+        温度: float = 0.3,
         摘要器: Callable[[tuple[Message, ...]], Message] | None = None,
     ) -> None:
         self.llm = llm
@@ -735,6 +774,10 @@ class 编排器:
         #: 提示词文本里，真跑起来会走 D-192「入口未接线」失败。
         self.工具回调 = 编排回调(self)
         self.容量token = 容量token
+        #: 基准温度（D-234）。此前每次请求都吃 `LlmRequest` 的字段默认
+        #: 0.3，`Config.temperature` 从未影响任何真实请求——
+        #: 用户改配置里的温度**完全无效**。
+        self.温度 = 温度
         #: 压缩摘要器。为 None 时走「有界原文」兜底并标明未经摘要。
         self.摘要器 = 摘要器
 

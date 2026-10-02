@@ -158,6 +158,13 @@ class App:
             #
             # 本项目第五次同型缺口：一个参数被读了却没往下传。
             容量token=容量,
+            # **温度必须来自用户配置**（D-234）。
+            #
+            # `Config.temperature` 在全仓**零消费**——
+            # 请求吃的是 `LlmRequest` 的字段默认 0.3，
+            # 用户改配置里的温度完全无效。
+            # 与 D-231 同型：值在那里，没人往下传。
+            温度=self.config.temperature,
             运行号=self.run_id,
         )
 
@@ -560,7 +567,13 @@ def build_app_from_workspace(
         # 产物写进内存字典，**用户的工作区里一个文件都不会有**。
         # 症状与前几次完全一样：真配置、测试全绿、什么也没落盘。
         # 由 `tests/test_tool_path_guard.py::test_app装配出的工具层同样拦得住` 抓出。
-        storage = FsStorage(ws=ws)
+        # **同型第 6 次（D-235）**：这里还得把产物编码传下去。
+        # 用户要求「配置 `gb18030: true` 时产出改用 GB18030，
+        # 但日志和界面始终 UTF-8」——`EncodingConfig.name()` 算得出来，
+        # `FsStorage` 也有字段，但**没人往下传**，于是永远是默认 UTF-8。
+        # 注意只喂 `产物编码`：**不能**喂 `encoding`，
+        # 否则 `state.json` 与日志也变 GB18030，断点续跑与控制台会乱码。
+        storage = FsStorage(ws=ws, 产物编码=cfg.encoding.name())
 
     if validators is None:
         # **D-196 的欠账到此还清**。原先这里把 None 直接转发，

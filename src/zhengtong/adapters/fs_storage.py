@@ -49,6 +49,13 @@ class FsStorage:
 
     ws: Workspace
     encoding: str = "utf-8"
+    #: **产物**专用编码（D-235）。运行数据恒为 `encoding`（UTF-8）。
+    #:
+    #: 用户约束原文：「TXT 默认 UTF-8；配置 `gb18030: true` 时产出改用
+    #: GB18030，**但日志和界面始终使用 UTF-8**」。故这两个编码必须分开——
+    #: 把配置直接喂 `encoding` 会把 `state.json`（断点续跑要读）也写成
+    #: GB18030，UTF-8 工具与控制台读它会乱码。
+    产物编码: str = "utf-8"
 
     # ── 路径解析 ──
 
@@ -150,9 +157,9 @@ class FsStorage:
         return state_codec.loads(text.unwrap())
 
     def put_artifact(self, ref: ArtifactRef, content: str) -> Result[None]:
-        return self._写产物(f"{paths.DATA}/{ref.path}", content)
+        return self._写产物(f"{paths.DATA}/{ref.path}", content, 编码=self.产物编码)
 
-    def _写产物(self, rel_path: str, content: str) -> Result[None]:
+    def _写产物(self, rel_path: str, content: str, *, 编码: str | None = None) -> Result[None]:
         """写产物：**先建父目录，再原子写**。
 
         ## 审计 D-127：产物目录必须由程序自己创建
@@ -185,7 +192,7 @@ class FsStorage:
                 ErrorCode.STORAGE_WRITE_FAILED,
                 f"无法创建产物目录 {target.unwrap().parent}：{exc}",
             )
-        return write_atomic(target.unwrap(), content, encoding=self.encoding)
+        return write_atomic(target.unwrap(), content, encoding=编码 or self.encoding)
 
     def draft_paper_ok(self, role: str, current_count: int) -> bool:
         """草稿纸是否还能再放一个（D-042 上限 3）。

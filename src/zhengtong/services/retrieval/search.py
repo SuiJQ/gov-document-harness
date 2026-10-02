@@ -47,7 +47,7 @@ _拉丁折扣: Final[float] = 0.5
 class 中文检索:
     """`RetrieverPort` 的实现：n-gram 倒排为主 + FTS5 拉丁补充。"""
 
-    __slots__ = ("_db", "_上限", "_已降级", "_拉丁偏移", "_索引", "_降级原因")
+    __slots__ = ("_db", "_上限", "_已降级", "_索引", "_降级原因")
 
     def __init__(self) -> None:
         self._索引 = 倒排索引()
@@ -55,7 +55,6 @@ class 中文检索:
         self._已降级 = False
         self._降级原因 = ""
         self._db: sqlite3.Connection | None = None
-        self._拉丁偏移 = 0
 
     # ── 端口实现 ──
 
