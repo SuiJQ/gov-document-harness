@@ -93,6 +93,34 @@ def 需要压缩(视图: ContextView, *, 上下文容量: int) -> bool:
     return 估算视图(视图) >= 触发阈值(上下文容量)
 
 
+def _丢弃顺序(窗口: tuple[Message, ...]) -> list[int]:
+    """该丢哪些消息，返回下标，**从先丢到后丢**。
+
+    ## 为什么要分优先级（L-1）
+
+    原实现按位置切前 N 条，**不区分消息种类**。
+    材料经工具读入后是 `role="tool"` 的消息，与当前对话混在同一个窗口里，
+    被同一个杠杆无差别丢弃。
+
+    于是会出现这种情况：材料占八成体积，被丢的八成里大部分是刚读完、
+    正要用的材料，而真正该丢的早期讨论只占两成却毫发无伤。
+    **「压完变小」不等于「压得对」**——前者是体积问题，后者是取舍问题。
+
+    ## 排序规则
+
+    - `role="tool"` 优先丢（材料可重新读，对话不可重放）
+    - 同类内按原序（`enumerate` 下标）——**越早越先丢**
+    - `system` 不出现在 `recent_window` 里（它在 `system_and_role`，
+      压缩器够不着），故不必单列
+
+    用 `(级别, 原下标)` 做键而不是自定义比较器：
+    Python 的元组比较先比级别再比下标，一行说清两条规则。
+    """
+    带级 = [(0 if m.role == "tool" else 1, i) for i, m in enumerate(窗口)]
+    带级.sort()
+    return [i for _, i in 带级]
+
+
 def 压缩(
     视图: ContextView,
     *,
@@ -116,6 +144,12 @@ def 压缩(
     `pinned_facts` / `system_and_role` / `artifact_refs` 原样透传。
     所以「绝不丢弃」不是靠压缩算法**记得**保留，
     而是**结构上就够不着**——这正是 §7.2 的原话。
+
+    ## 丢弃按优先级，不按位置（L-1）
+
+    `role="tool"`（材料）先于对话被丢，同类内越早越先丢。
+    保留的因此**不一定是尾部连续一段**——这是有意的：
+    要保住「正在进行的讨论」，就得接受丢掉一条更早的材料。
     """
     from .view import 估算视图
 
@@ -124,14 +158,17 @@ def 压缩(
         return None
 
     窗口 = 视图.recent_window
-    保留 = 窗口[-保留条数:] if 保留条数 > 0 else ()
-    丢弃 = 窗口[: len(窗口) - len(保留)]
+    要丢 = len(窗口) - max(保留条数, 0)
 
-    if not 丢弃:
+    if 要丢 <= 0:
         # 没有可丢的了还不达标 → 不可丢的部分本身太大。
         # 此时返回 None 而非空转：反复压同样一份视图毫无意义，
         # 调用方应据 None 去报「窗口装不下」而非继续重试。
         return None
+
+    丢弃下标 = set(_丢弃顺序(窗口)[:要丢])
+    丢弃 = tuple(m for i, m in enumerate(窗口) if i in 丢弃下标)
+    保留 = tuple(m for i, m in enumerate(窗口) if i not in 丢弃下标)
 
     摘要 = _做摘要(丢弃, 摘要器)
     新视图 = ContextView(
@@ -167,7 +204,7 @@ def _做摘要(丢弃: tuple[Message, ...], 摘要器: 摘要器 | None) -> Mess
     诚实与可用不冲突——标了「未摘要且已截断」就既没说谎，也没失控。
     """
     if 摘要器 is not None:
-        return Message(role="system", content=f"{摘要前缀}{摘要器(丢弃).content}")
+        return Message(role="system", content=f"{摘要前缀}{_构成说明(丢弃)}{摘要器(丢弃).content}")
     原文 = "\n".join(m.content for m in 丢弃)
     上限字符 = int(未摘要原文上限token * 汉字除数)
     已截断 = len(原文) > 上限字符
@@ -177,5 +214,23 @@ def _做摘要(丢弃: tuple[Message, ...], 摘要器: 摘要器 | None) -> Mess
     return Message(
         role="system",
         content=f"{摘要前缀}【以下为已被移出上下文的早期讨论原文，{标注}】\n"
-        f"共 {len(丢弃)} 条。原文如下，请自行阅读：\n{原文}",
+        f"{_构成说明(丢弃)}\n"
+        f"原文如下，请自行阅读：\n{原文}",
     )
+
+
+def _构成说明(丢弃: tuple[Message, ...]) -> str:
+    """报出被丢的是什么构成。**判据第 3 条：无论谁被丢，必须标明。**
+
+    只报「共 N 条」不够——模型无从知道丢掉的到底是材料还是对话。
+    两者对它含义不同：材料可以重读，对话丢了就没了。
+    「标明」的最低标准，是让模型能据此判断自己手上还剩什么。
+    """
+    工具数 = sum(1 for m in 丢弃 if m.role == "tool")
+    对话数 = len(丢弃) - 工具数
+    段 = [f"共 {len(丢弃)} 条"]
+    if 工具数:
+        段.append(f"其中工具返回 {工具数} 条")
+    if 对话数:
+        段.append(f"对话 {对话数} 条")
+    return "（" + "，".join(段) + "）"
