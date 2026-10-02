@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .adapters.config import Config
 from .adapters.config import load as load_config
+from .adapters.content_pack import 本地内容包
 from .adapters.fakes import (
     STUB_MARK,
     FakeClock,
@@ -58,6 +59,7 @@ from .kernel.driver import DriveOutcome, Step, drive
 from .kernel.journal import JsonlJournal
 from .kernel.projection import DebugProjection, StandardProjection
 from .kernel.redactor import Redactor
+from .orchestration.orchestrate import 编排器
 from .ports.clock import ClockPort
 from .ports.content_pack import ContentPackPort
 from .ports.llm import LlmPort, LlmRequest, Message
@@ -71,6 +73,23 @@ from .services.retrieval.search import 中文检索
 from .services.tools import 工具运行器, 建工具运行器
 
 #: 三个阶段成果的名字（D-030）。标准模式只显示这三样（D-046）。
+#: 内容包目录名。**与程序放在一起、视为只读**（架构 §9）——
+#: `system/` 只放配置与日志，删掉不损失知识内容。
+内容包目录名 = "content"
+
+
+def 内容包根() -> Path:
+    """定位内容包根。**从包的安装位置往上找**——
+    内容包不在工作区里（工作区只有 data/user/system 三目录），
+    它与程序同级，故不能走 `ws.dir(...)`。
+
+    找法：`zhengtong/adapters/app.py` → 上溯到包根 → 取其父目录下的 `content/`。
+    找不到就返回该路径（后续 `verify_manifest` 会报「缺 manifest」，
+    **不静默退化成假内容包**——那正是本条要防的事）。
+    """
+    return Path(__file__).resolve().parent.parent.parent / 内容包目录名
+
+
 ARTIFACT_DIRECTION = "写作方向确认单"
 ARTIFACT_OUTLINE = "文章大纲"
 ARTIFACT_DRAFT = "正文初稿"
@@ -105,6 +124,33 @@ class App:
     config: Config = field(default_factory=Config)
     #: 收集全部事件，供测试与调试
     collected: list[Event] = field(default_factory=list)
+
+    def 编排器(self) -> 编排器:
+        """从装配根取出编排器，**端口全是真件**。
+
+        ## 为什么方法在 App 上而不是让调用方自己 new
+
+        真实运行路径必须走装配根：假实现接在真路径上是本项目
+        反复吃亏的地方（D-165 已九次，第 13 步第十次）。
+        由调用方自己 `编排器(llm=..., storage=...)` 就等于
+        「端口从哪来全凭调用方」——那正是接缝脱开的入口。
+
+        预算取自配置的上下文容量（D-189）：
+        **不给无上限**，无上限等于闸门不存在。
+        """
+        from .orchestration.orchestrate import 编排器 as 编排器类
+
+        容量 = max(1, self.config.context_k) * 1024
+        return 编排器类(
+            llm=self.ports.llm,
+            storage=self.ports.storage,
+            bus=self.bus,
+            content_pack=self.ports.content_pack,
+            validators=self.ports.validators,
+            模型名=self.config.model,
+            预算=容量 // 2,  # 一半给本次装配，另一半留给工具返回与追加
+            运行号=self.run_id,
+        )
 
     def close(self) -> None:
         """收尾。**必须排空总线**（D-087）——
@@ -514,6 +560,15 @@ def build_app_from_workspace(
         # 硬约束零沉降（D-040）是「缺则不得动笔」的唯一执行点，
         # 接假实现等于这条铁律在真实运行路径上不存在。
         validators = 硬约束校验器()
+
+    # **D-210（第十一次 D-165）**：真内容包适配器此前**根本不存在**——
+    # `adapters/` 里没有 `content_pack.py`，而本函数把 None 直接转发，
+    # `build_app` 见到 None 装 `FakeContentPack`。
+    # 于是真实运行路径上角色提示词是「【桩】xxx 的角色提示词」，
+    # 而第 11 步装配器按需装载的规则条目**全是桩**。
+    # 内容包本是「唯一不硬编码公文内容」的落点（D-055），它自己是假的。
+    if content_pack is None:
+        content_pack = 本地内容包(根=内容包根())
 
     return Result.ok(
         build_app(

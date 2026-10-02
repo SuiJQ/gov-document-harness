@@ -65,6 +65,10 @@ echo "── 内容包约束（红线 / 门禁 / D-Card / 专有名词）──"
 # 内容包是**软数据**，Ruff 与类型检查器都看不见它——
 # 一份把 E14 红线删掉、或漏掉三态标注的提示词，代码侧四项检查全绿。
 # 所以这里必须有一道单独的、针对内容本身的门禁。
+# 字节码缓存先查：源码比 .pyc 新时，**运行的是旧代码**，
+# 而 grep/sed/inspect 读文件全都看不出来（本项目踩过一次）
+.venv/bin/python scripts/check_stale_bytecode.py --清理
+
 python3 scripts/check_content_pack.py
 
 # 第四轮新增：内容包与代码侧契约一致性。
