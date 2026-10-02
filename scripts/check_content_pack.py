@@ -526,9 +526,35 @@ def check_g1_grouping() -> list[Check]:
     return checks
 
 
+def check_encoding() -> list[Check]:
+    """编码完整性：不得有替换字符（U+FFFD）。
+
+    **为什么单独查**：内容包是**要被模型当正文读**的文本，
+    一个 U+FFFD 会被模型当成正文里的一个怪字符照读或照抄。
+
+    编写内容包时用 Python 写中文长文本，
+    实测**两次**在字符串里混进 U+FFFD（编辑时字符被截断）——
+    肉眼在长段落里很难发现，grep 一下就出来了。
+    """
+    bad: list[str] = []
+    for p in sorted(CONTENT.rglob("*.md")):
+        text = _read(p)
+        for i, line in enumerate(text.splitlines(), 1):
+            if "\ufffd" in line:
+                bad.append(f"{p.relative_to(ROOT)}:{i}")
+    return [
+        Check(
+            "全仓无替换字符 U+FFFD",
+            not bad,
+            f"{len(bad)} 处：" + "、".join(bad[:5]) if bad else "无",
+        )
+    ]
+
+
 def main() -> int:
     groups = [
         ("文件齐备", check_file_presence()),
+        ("编码完整性", check_encoding()),
         ("红线 E1-E14", check_red_lines()),
         ("门禁 G0-G13", check_gates()),
         ("G1 分组口径", check_g1_grouping()),

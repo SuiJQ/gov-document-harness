@@ -49,11 +49,11 @@
     "doc-templates": "法定文种模板骨架：请示/通知/函/报告/纪要/总结 + 填写纪律"
   },
   "files": {
-    "prompts/compliance.md": "sha256:e9c613dcf329d43cceae486c92c565440eb388cdcb0d5b10b8ade4ec199138a0",
-    "prompts/doc-advisor.md": "sha256:8a460c036ffcff0e14d059e262f0d7f30c5bba0b2b1631480e800df09aae5880",
-    "prompts/language.md": "sha256:db7366c4e9fa0dc0ca9136e3614ecfd791f763cfd9955e99da4fc3e2488f9746",
-    "prompts/structure.md": "sha256:12388bc44db0e4eacac4f22770992c93187fd5ce5c48e7b76e7d3a317167fbe8",
-    "prompts/team-lead.md": "sha256:344d92c74aa8f8db96c7e9a469e10dc32e60b492a61b657b257b57847f098bdc",
+    "prompts/compliance.md": "sha256:3684714497a596bbf1adc1a937613b78c33b7dc0e5120a6788a676631b2844bb",
+    "prompts/doc-advisor.md": "sha256:a4e28496b797690b0f617c10aad4913a0a57e5d4e4760f12aa28d94480e5760f",
+    "prompts/language.md": "sha256:27973aa00867c817ef98df0ae86465bef4e9a1177123bde3fa06fe343c996d99",
+    "prompts/structure.md": "sha256:4798a418ac5a67daeacf3081522d727c29f4a997f70c941ca7c7c89a1a881b04",
+    "prompts/team-lead.md": "sha256:ce4c52b603a5efe79830a3201ebd1fc08428a290b37f2f4c0d91e1bc8ac08b4c",
     "references/admin-ordering-rules.md": "sha256:4d34a8df8cb0c409027bdda5e2c4d46790243b9c12b6c3472981d112228832c1",
     "references/compliance-rules.md": "sha256:cee2d4a21b8be906697cc3274182a1102bd02cd47a33a4a296dfb85e11d3030b",
     "references/deai-rules.md": "sha256:6e02633d7d87592a57d8765e65de0e1f964e3699c3851f437ff8667d010b1668",
@@ -62,13 +62,13 @@
     "references/gate-manual.md": "sha256:10cc01cd74bc1661356aeca1817fc8fd965058dcd8d2bee975ddf0743dce189c",
     "references/gbt9704-format.md": "sha256:c14584f08643de16d0cef5d157a0d55cd6cd1e0a464325dbc3c9b53032f78bd3",
     "references/punctuation.md": "sha256:514dfeb45eba41d51de0569c34501696005a8091cd66df9db35b932874b145bb",
-    "references/writing-techniques.md": "sha256:39612d9ea45439a007b211a0853f2a73ed47ceb42e56b53ad913e340368d7447",
+    "references/writing-techniques.md": "sha256:e9fc9eca783b3cdccc8bd8d7bad3b5eb5175690c99cc006e6929f319eec5dcc3",
     "references/cognition-dna.md": "sha256:ce934c296aad659e4f987b897dc9348ef5f184859a62d03771e3607e7a675b5f",
     "references/language-dna.md": "sha256:ee2efb4eb5d6137f7b59d28541df817af33e6b67e50fb0366634afe648ff505f",
     "references/param-card.md": "sha256:bd7d1ca62a584239c99c11ada2185a8096427191bba696fd9c7af9711208c5b2",
     "references/stats-baseline.md": "sha256:edbceae98f22203c7ab0bae6778a19ca5e54688c4b64ff7d6f5ede6069b9f488",
     "references/title-techniques.md": "sha256:bb414aa79d22f2b4df64d867d68bd2f97fa6fde696f4ed208cf76ca2b63c5272",
     "references/cognition-baseline.md": "sha256:0e0dba0e3797b12177b662a86f13d2db3e68a3058a17fafdcdfce6a8e85431ef",
-    "references/doc-templates.md": "sha256:af5b0a3ba454c0a4683952a8a0c4def40a576dfe2042e5ca2306d20c36d64ec9"
+    "references/doc-templates.md": "sha256:59c19cd4cfa32edeb5262fca9824df4c4e7d842013a32b1bf023f144db522099"
   }
 }
