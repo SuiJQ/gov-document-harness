@@ -1,0 +1,60 @@
+{
+  "name": "zhengtong-core",
+  "version": "1.0.0",
+  "description": "政通公文内容包：五角色提示词 + 按需装载的规则库",
+  "requires_zhengtong": ">=0.1,<0.3",
+  "roles": {
+    "team-lead": {
+      "display_name": "范正章",
+      "duty": "主理人 / 方向锁 / 终审",
+      "prompt": "prompts/team-lead.md"
+    },
+    "structure": {
+      "display_name": "陈纲举",
+      "duty": "因果与结构",
+      "prompt": "prompts/structure.md"
+    },
+    "language": {
+      "display_name": "辞达意",
+      "duty": "语言起草",
+      "prompt": "prompts/language.md"
+    },
+    "compliance": {
+      "display_name": "骆准绳",
+      "duty": "合规与格式",
+      "prompt": "prompts/compliance.md"
+    },
+    "doc-advisor": {
+      "display_name": "文择体",
+      "duty": "文种判定",
+      "prompt": "prompts/doc-advisor.md"
+    }
+  },
+  "references": {
+    "gate-manual": "门禁详判手册（主理人首次过 Gate 前读 1 次）",
+    "error-memory": "红线抑制清单 E1-E14（判定存疑或用户质询时读 1 次）",
+    "compliance-rules": "合规规则库（政策必引 + 三段论 + 定级纪律）",
+    "doc-type-patterns": "非常用文种 8 种范式 + 模态映射表（遇该文种时读）",
+    "admin-ordering-rules": "行政主体排序规则库（枚举 ≥3 主体时读）",
+    "deai-rules": "去 AI 味规则（无条件执行，G4 判定依据）",
+    "writing-techniques": "公文写作技法库（语言层 + 结构层骨架）",
+    "gbt9704-format": "GB/T 9704-2012 版式规范（G1 格式门禁依据）",
+    "punctuation": "标点与序号规范（G4 语言门禁依据）"
+  },
+  "files": {
+    "prompts/compliance.md": "sha256:6b16f1041e5c4d69d08ed2547e29ffc385a862ef4ed8129e6ddde72699085a7f",
+    "prompts/doc-advisor.md": "sha256:76dc0eb2064c6ac05c261010fe581b6b453ce2f3b1fbce9a1680b7c7c9cb26c8",
+    "prompts/language.md": "sha256:8932a9a48f1d6beaadc0c852a46abad81724105d0a1a6a1b3c678f3a59071354",
+    "prompts/structure.md": "sha256:515db12a428014d186c5cef6dff64ca303db56564e5173d27ec26ac824defc25",
+    "prompts/team-lead.md": "sha256:519a3e320b4eeaecfefbf73b523153b452d35c4fa25f771feffcf669be1891ba",
+    "references/admin-ordering-rules.md": "sha256:4d34a8df8cb0c409027bdda5e2c4d46790243b9c12b6c3472981d112228832c1",
+    "references/compliance-rules.md": "sha256:cee2d4a21b8be906697cc3274182a1102bd02cd47a33a4a296dfb85e11d3030b",
+    "references/deai-rules.md": "sha256:fb0a5f4636a56d2010eecee9e7fc3b81fc6f9a675db086be6a0b6324296085fd",
+    "references/doc-type-patterns.md": "sha256:88eadf9fb403934f648e9c17869abe8a89ec05ec506919557142ce76d7c38ce4",
+    "references/error-memory.md": "sha256:6cdd72b284a06986cb3c8f2b386abd46a7d2835be3fdc552244e22ef855dec45",
+    "references/gate-manual.md": "sha256:9bcf94d068d10eda974a5ae7e87281eaac8b5ac4778cadb0f2ab640ecd05580a",
+    "references/gbt9704-format.md": "sha256:c14584f08643de16d0cef5d157a0d55cd6cd1e0a464325dbc3c9b53032f78bd3",
+    "references/punctuation.md": "sha256:514dfeb45eba41d51de0569c34501696005a8091cd66df9db35b932874b145bb",
+    "references/writing-techniques.md": "sha256:f980250144cb4b61629b8f41adeb1364286de4271eaf94f85fc25b9a8c0e1f93"
+  }
+}

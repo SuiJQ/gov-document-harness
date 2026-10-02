@@ -61,4 +61,11 @@ if [ "$1" = "--audit" ]; then
 fi
 
 echo ""
+echo "── 内容包约束（红线 / 门禁 / D-Card / 专有名词）──"
+# 内容包是**软数据**，Ruff 与类型检查器都看不见它——
+# 一份把 E14 红线删掉、或漏掉三态标注的提示词，代码侧四项检查全绿。
+# 所以这里必须有一道单独的、针对内容本身的门禁。
+python3 scripts/check_content_pack.py
+
+echo ""
 echo "全部通过。"
