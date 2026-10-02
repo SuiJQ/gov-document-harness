@@ -66,6 +66,8 @@ class ErrorCode(StrEnum):
 
     # ── 文件与路径 ──
     PATH_ESCAPE = "E060"  # 越出允许的根（D-076）
+    TOOL_NOT_ALLOWED = "E065"  # 角色不在该工具白名单内（D-042 双重白名单）
+    TOOL_UNKNOWN = "E066"  # 调用了不存在的工具名（D-042 已砍除的 fs.* 也走这里）
     FILE_UNREADABLE = "E061"
     FILE_TOO_LARGE = "E062"
     DOCX_MALFORMED = "E063"  # 非合法 zip（D-078）
