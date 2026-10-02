@@ -36,6 +36,7 @@ from zhengtong.domain.role import RoleId
 from zhengtong.ports.retriever import SearchHit
 from zhengtong.ports.validators import ValidationIssue, ValidationResult
 from zhengtong.services.tools import TOOL_SPECS, 审计器, 工具依赖, 工具运行器
+from zhengtong.services.tools.calllog import 调用存档
 
 _RUN = RunId("r-ok")
 
@@ -87,6 +88,10 @@ class _可编排校验:
         return Result.ok(ValidationResult(script="structure", passed=True))
 
 
+_存档 = 调用存档()
+_存档.记("call-demo", "材料正文：关于做好稳增长工作的通知……")
+
+
 def _依赖(tmp_path: Path, *, 真存储: bool = False) -> tuple[工具依赖, _可编排检索, _可编排校验]:
     存储: FakeStorage | FsStorage
     if 真存储:
@@ -106,6 +111,7 @@ def _依赖(tmp_path: Path, *, 真存储: bool = False) -> tuple[工具依赖, _
         content_pack=FakeContentPack(),
         validators=校验,
         run_id=_RUN,
+        调用存档=_存档,
     )
     return d, 检索, 校验
 
@@ -381,6 +387,8 @@ def test_每个工具都至少被本文件走到一次(tmp_path: Path) -> None:
         "flow.ask_user": {"fields": []},
         "flow.rollback": {"step": "s"},
         "flow.inject_directive": {"text": "t"},
+        # tool.result 查回 call-demo（见上方 _存档）
+        "tool.result": {"call_id": "call-demo"},
     }
     for s in TOOL_SPECS:
         r = 跑.调用(s.name, 角色=RoleId.TEAM_LEAD, 参数=cast(dict[str, object], 参数表[s.name]))

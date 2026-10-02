@@ -245,6 +245,23 @@ FLOW_INJECT_DIRECTIVE = ToolSpec(
 )
 
 #: **工具全集**。顺序固定，便于测试逐个比对，也便于打印给人看。
+#: 第 14.5 步新增（D-226）：对话序列只记工具**动作**不记结果，
+#: 模型需要一条查回途径，否则要么撑爆上下文、要么重复查询。
+TOOL_RESULT = ToolSpec(
+    name="tool.result",
+    description=(
+        "取回某次工具调用的完整返回。call_id 见历史里的工具调用动作。"
+        "对话里只记动作不记结果，需要原文时用本工具查回。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"call_id": {"type": "string", "description": "那次调用的 id"}},
+        "required": ["call_id"],
+    },
+    allowed_roles=frozenset(RoleId),
+    effect=Effect.READ,
+)
+
 TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
     SHARED_WRITE,
     SHARED_READ,
@@ -262,9 +279,9 @@ TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
     FLOW_ASK_USER,
     FLOW_ROLLBACK,
     FLOW_INJECT_DIRECTIVE,
+    TOOL_RESULT,
 )
 
-#: 按名字索引。**构建期校验重复**，不让两份同名工具静默共存。
 _SPEC_BY_NAME: Final[dict[str, ToolSpec]] = {}
 for _spec in TOOL_SPECS:
     if _spec.name in _SPEC_BY_NAME:

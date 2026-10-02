@@ -69,9 +69,10 @@ from ..kernel.bus import EventBus
 from ..kernel.driver import Step, drive
 from ..kernel.scheduler import GateGroup, run_groups
 from ..ports.content_pack import ContentPackPort
-from ..ports.llm import LlmPort, LlmRequest, Message
+from ..ports.llm import LlmPort, LlmRequest, Message, ToolCall
 from ..ports.storage import StoragePort
 from ..ports.validators import ValidatorPort
+from ..services.context import 压缩, 组装, 需要压缩
 from ..services.prompting import 装配提示词, 装配请求, 预算闸门
 from .machine import 该发请求
 
@@ -93,6 +94,38 @@ class 阶段产物:
     阶段: PhaseId
     名称: str
     内容: str
+
+
+class 编排回调:
+    """工具层需要的编排侧回调（第 14.5 步接）。
+
+    ## 为什么单独一个类
+
+    工具层的 `工具依赖.汇报` 等回调需要一个「知道编排器」的载体。
+    早先把它们写成编排器的方法会让编排器背上工具层的全部职责，
+    故这里用一个薄壳，只持有一个编排器引用。
+
+    ## 汇报：成员的话进**主理人**的上下文
+
+    `msg.report_to_lead` 的回调签名是 `(内容, 依据) -> str`，
+    主理人答复**即返即弃**——不进任何历史。成员汇报完就失忆了：
+    主理人下一轮看不到谁报过什么。
+
+    故汇报成对记进主理人历史：成员的报告（user 角色，标为背景）
+    + 主理人的答复（assistant 角色）。**成对记**，否则读到答复时
+    不知道它是在回应什么。
+    """
+
+    __slots__ = ("编排",)
+
+    def __init__(self, 编排: 编排器) -> None:
+        self.编排 = 编排
+
+    def 汇报(self, 内容: str, 依据: dict[str, object]) -> str:  # noqa: ARG002  # 统一签名的一部分
+        """成员向主理人汇报。返回主理人答复，并**两侧都记进历史**。"""
+        答复 = f"（主理人已收到：{内容[:40]}）"
+        self.编排.记汇报(内容, 答复)
+        return 答复
 
 
 @dataclass(slots=True)
@@ -144,6 +177,12 @@ class _过程:
         #: 而重试不得重复问（D-065）；差异由阶段（REVISION vs DRAFTING）承担，
         #: **不掺进 call_id**——架构 §8.6 判「轮次」是第几次尝试而非哪一件事。
         self.轮次 = 0
+        #: 每角色一份对话历史（D-041「每角色一个 ContextView」）。
+        #: **第 14.5 步接线**：此前 `self.回复` 存了却从不进下一次请求，
+        #: 模型每轮从零开始——只知用户为啥，不知自己干了什么。
+        self.历史: dict[RoleId, list[Message]] = {}
+        #: 主理人收到的汇报（D-041：汇报进主理人上下文）。
+        self.汇报: list[Message] = []
 
     # ── drive 回调：一次一阶段 ──
 
@@ -424,6 +463,7 @@ class _过程:
                         assert 错 is not None
                         return Result.fail(错.code, f"{g.owner.value} 取证失败：{错.detail}")
                     self.回复[g.owner] = 答.unwrap().text
+                    self._记入历史(g.owner, PhaseId.GATING, 答.unwrap().text)
                     self.已完成 = (*self.已完成, cid)
                 self.动过的.append(g.owner)
                 self.出现过的状态.append(RoleState.DONE)
@@ -466,11 +506,115 @@ class _过程:
                     assert 错 is not None
                     return Result.fail(错.code, f"{阶段.value}/{角色.value} 调用失败：{错.detail}")
                 self.回复[角色] = 答.unwrap().text
+                self._记入历史(角色, 阶段, 答.unwrap().text)
                 self.已完成 = (*self.已完成, cid)
             self.动过的.append(角色)
             self.出现过的状态.append(RoleState.DONE)
             self.状态 = self.状态.set_role_state(角色, RoleState.DONE)
         return Result.ok_none()
+
+    def 记工具动作(self, 角色: RoleId, 调用: ToolCall) -> None:
+        """把一次**工具调用动作**记进该角色历史（第 14.5 步）。
+
+        只记动作、**不记结果**（用户定）：结果用 `tool.result(call_id)` 查回。
+        全记则上下文被材料正文撑爆，全不记则模型不知道自己查过什么、重复查询。
+
+        消息 `content` 留空而只挂 `tool_calls`——它是「我做過什么」，
+        不是「我看到了什么」。两者混在一处，模型会把结果当既成事实。
+        """
+        条 = self.历史.setdefault(角色, [])
+        条.append(Message(role="assistant", content="", tool_calls=(调用,)))
+
+    def 记汇报(self, 内容: str, 答复: str) -> None:
+        """把一次汇报成对记进**主理人**历史（第 14.5 步）。
+
+        成员的报告标成 `user` 角色并打上「背景」标签——
+        它是**别人说的话**，不是主理人的指令；不标的话模型会
+        把它当成对自己的要求。
+        """
+        条 = self.历史.setdefault(RoleId.TEAM_LEAD, [])
+        条.append(Message(role="user", content=f"【背景·成员汇报】{内容}"))
+        条.append(Message(role="assistant", content=答复))
+
+    def _记入历史(self, 角色: RoleId, 阶段: PhaseId, 回复: str) -> None:
+        """把这一轮的**提问与回复**记进该角色的上下文（第 14.5 步）。
+
+        ## 为什么必须记
+
+        接线前 `self.回复` 存了却从不进下一次请求：模型每轮从零开始，
+        只知道用户要什么，不知道**自己上一轮干了什么**。退回重写时更糟——
+        第 14 步的门禁退回让角色重起草，但它拿不到上一版为什么被打回。
+
+        ## 提问也记，否则「它干了什么」是断的
+
+        只记回复的话，历史是一串没有上下文的答案。模型读到第 5 条回复时
+        不知道它是在回应什么。故**成对记**（user 问 / assistant 答）。
+
+        ## 用户消息要打背景标签
+
+        历史里的 user 消息前缀「【背景·用户先前说明】」——
+        否则模型会把它们与末位那条「本轮任务」同等对待，
+        于是每轮都想回答所有以前提过的要求。
+        """
+        条 = self.历史.setdefault(角色, [])
+        条.append(
+            Message(
+                role="user",
+                content=f"【背景·{阶段.value}】{self.状态.task.requirement}",
+            )
+        )
+        条.append(Message(role="assistant", content=回复))
+
+    def _接入上下文(
+        self, 静态: tuple[Message, ...], 角色: RoleId, 阶段: PhaseId, 需求: str
+    ) -> tuple[Message, ...]:
+        """把历史、工具清单、本轮任务接到装配器产出的静态消息之后（第 14.5 步）。
+
+        ## 接线前是什么样
+
+        装配器只发**一条** system（角色提示词 + 规则 + D-Card 全拼在一起），
+        编排层再补一条裸需求。实测每次请求**恒 2 条消息**、零历史——
+        前一角色写的正文、上一轮的审核意见，模型每轮都看不见。
+        那不是效率问题，是质量问题：`self.回复` 存了却从不进下一次请求。
+
+        ## 装配器产出的静态块**整体前置**，不拆
+
+        装配器已经按预算闸门截断过五块（角色提示词/规则条目/D-Card/产物契约/工具），
+        拆开会打乱那个闸门的语义。此处只做**追加**，让静态块保持
+        连续前缀——前缀缓存只匹配从头开始的连续前缀，拆了就击穿缓存。
+
+        故「六层显式化」在 `ContextView` 那一层做（`system_and_role` /
+        `dynamic_rules` / `tool_manifest` 各归各位），而这里保证它们
+        在**实际发出的序列**里也是这个顺序。
+
+        ## 本轮任务恒为末位
+
+        末位 user 写成祈使句并自带「以上均为背景资料」——
+        模型的指令跟随对近端更敏感，末位能让「这轮要回答什么」
+        压过「背景资料是什么」。这不是暗示，是结构性强化。
+        """
+        历史 = tuple(self.历史.get(角色, ()))
+        视图 = 组装(
+            系统与角色=静态,
+            动态规则=(Message(role="system", content=f"【当前阶段】{阶段.value}"),),
+            工具清单=(
+                Message(
+                    role="system",
+                    content=f"【本次可调用工具】{_工具清单(角色, 阶段)}",
+                ),
+            ),
+            对话=历史,
+            本轮任务=_本轮任务(需求, 角色, 阶段),
+        )
+        序列 = 视图.messages()
+        if 需要压缩(视图, 上下文容量=self.编排.容量token):
+            # 压缩接在这里——此前整个压缩模块**生产零引用**（第 14.5 步接线）
+            压后 = 压缩(视图, 上下文容量=self.编排.容量token, 摘要器=self.编排.摘要器)
+            if 压后 is not None:
+                序列 = 压后.视图.messages()
+            # 压不动（恒定段就超限）就照发——由服务端判它超限，
+            # 比本地悄悄截断掉上下文更诚实
+        return 序列
 
     def _构造请求(self, 角色: RoleId, 阶段: PhaseId) -> LlmRequest:
         """**走第 11 步的装配器**——不再手搓 Message。
@@ -487,17 +631,21 @@ class _过程:
                 内容包=self.编排.内容包,
                 闸门=预算闸门(上限=self.编排.预算),
             )
-            消息 = 装配.消息
+            消息 = self._接入上下文(装配.消息, 角色, 阶段, 需求)
         else:
-            消息 = (
-                Message(
-                    role="system",
-                    content=(
-                        f"[内容包未接入] 你{角色.value}，当前阶段 {阶段.value}。"
-                        "**这是降级提示，不是完整角色提示词。**"
+            消息 = self._接入上下文(
+                (
+                    Message(
+                        role="system",
+                        content=(
+                            f"[内容包未接入] 你{角色.value}，当前阶段 {阶段.value}。"
+                            "**这是降级提示，不是完整角色提示词。**"
+                        ),
                     ),
                 ),
-                Message(role="user", content=需求),
+                角色,
+                阶段,
+                需求,
             )
         请求 = LlmRequest(model=self.编排.模型名, messages=消息)
         # 并行取证时多线程共写这张表，故加锁（D-049）
@@ -561,6 +709,8 @@ class 编排器:
         运行号: RunId | None = None,
         初始已完成: tuple[str, ...] = (),
         门禁取证: Callable[[tuple[GateId, ...]], dict[str, GateRecord]] | None = None,
+        容量token: int = 128_000,
+        摘要器: Callable[[tuple[Message, ...]], Message] | None = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
@@ -579,6 +729,14 @@ class 编排器:
         self.门禁取证 = 门禁取证 or (lambda _门禁: {})  # noqa: ARG005
         #: 门禁并行取证（D-049）时保护共享可变的锁。
         self.请求锁 = Lock()
+        #: 上下文容量（token）。用于 85% 压缩兜底阈值。
+        #: 工具层的编排回调（第 14.5 步接）。
+        #: **此前工具层与编排器完全没连**——`msg.report_to_lead` 只存在于
+        #: 提示词文本里，真跑起来会走 D-192「入口未接线」失败。
+        self.工具回调 = 编排回调(self)
+        self.容量token = 容量token
+        #: 压缩摘要器。为 None 时走「有界原文」兜底并标明未经摘要。
+        self.摘要器 = 摘要器
 
         #: **发出去过的请求**。刻意保留而非丢掉——
         #: 「模型到底收到了什么」是最难查的问题之一。
@@ -616,6 +774,10 @@ class 编排器:
         不会经过 `跑到终`，故这里就地建一次。
         """
         return self._建过程().推进一步
+
+    def 记汇报(self, 内容: str, 答复: str) -> None:
+        """转给当前推进过程记账（见 `_过程.记汇报`）。"""
+        self._建过程().记汇报(内容, 答复)
 
     def _建过程(self) -> _过程:
         """建立（或复用）推进过程。**幂等**——
@@ -732,6 +894,34 @@ def _该跑门禁(档: TierId) -> tuple[GateId, ...]:
     这里查 `gates_apply`（数据，不是档位名），咨询档自然落空。
     """
     return FORMAL_GATES if TIER_BY_ID[档].gates_apply else ()
+
+
+def _本轮任务(需求: str, 角色: RoleId, 阶段: PhaseId) -> Message:
+    """末位 user 消息：**祈使句** + 显式背景声明（第 14.5 步）。
+
+    「刻意突出用户指令」不靠位置暗示，靠两件事同时做：
+    写成祈使句（模型看到的是待办，不是一段素材），
+    并明说「以上均为背景资料，本轮任务以本条为准」。
+
+    没有第二句时，模型会把历史里那些需求陈述也当成待办——
+    于是每轮都在试图回答所有以前提过的要求，这正是「岔子」。
+    """
+    return Message(
+        role="user",
+        content=(
+            "## 本轮任务\n"
+            f"你是{角色.value}，当前处于「{阶段.value}」阶段。\n"
+            "请依据以上全部背景，**只回答这一件事**：\n"
+            f"{需求}\n"
+            "\n"
+            "**以上均为背景资料。本轮任务以本条为准。**"
+        ),
+    )
+
+
+def _工具清单(角色: RoleId, 阶段: PhaseId) -> str:  # noqa: ARG001  # 统一签名；清单暂按角色白名单恒定
+    """本次实际可调用的工具（供模型知道边界）。"""
+    return "shared.read / shared.write / shared.list / kb.search / kb.read / msg.report_to_lead"
 
 
 def _该段角色(档: TierId, 阶段: PhaseId) -> tuple[RoleId, ...]:

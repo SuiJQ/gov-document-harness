@@ -33,6 +33,7 @@ from ...ports.retriever import RetrieverPort
 from ...ports.storage import StoragePort
 from ...ports.user_files import UserFilesPort
 from ...ports.validators import ValidatorPort
+from .calllog import 调用存档 as 调用存档类
 
 # ── 编排回调（由第 13 步 L5 注入；此处只定义签名）──
 
@@ -75,6 +76,9 @@ class 工具依赖:
     状态: 状态回调 | None = None
     #: 各角色当前草稿纸文件数。**由编排层记账**（D-042，见 `draft_paper_ok` 注释）。
     草稿计数: dict[RoleId, int] = field(default_factory=dict)
+    #: 工具调用存档（第 14.5 步）：`tool.result` 据此查回。
+    #: **只在内存**——落盘会把一个查回的便利变成产物生命周期管理问题。
+    调用存档: 调用存档类 | None = None
 
 
 def _未接线(工具名: str, 缺哪个: str) -> Result[str]:
@@ -346,6 +350,24 @@ def flow_inject_directive(d: 工具依赖, role: RoleId, p: dict[str, object]) -
     return Result.ok("已转达用户插话")
 
 
+def tool_result(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[str]:  # noqa: ARG001  # role 是统一签名的一部分，删了会让处理器表类型不一致
+    """取回某次工具调用的完整返回（第 14.5 步）。
+
+    对话序列里**只记动作不记结果**，模型需要一条查回途径。
+    查不到就说查不到——**不得返回空串**：那会让模型以为
+    「我查过了，确实没有」，于是不再重查（编造证据的另一种形态）。
+    """
+    call_id = str(p.get("call_id", "")).strip()
+    if not call_id:
+        return Result.fail(ErrorCode.TOOL_UNKNOWN, "tool.result 需要 call_id")
+    if d.调用存档 is None:
+        return _未接线("tool.result", "调用存档")
+    结果 = d.调用存档.取(call_id)
+    if 结果 is None:
+        return Result.fail(ErrorCode.TOOL_UNKNOWN, f"没有 call_id={call_id} 的调用结果")
+    return Result.ok(结果)
+
+
 #: 工具名 → 实现。**注册表与实现必须一一对应**，由测试守住。
 处理器表: Final[dict[str, Callable[[工具依赖, RoleId, dict[str, object]], Result[str]]]] = {
     "shared.write": shared_write,
@@ -364,4 +386,5 @@ def flow_inject_directive(d: 工具依赖, role: RoleId, p: dict[str, object]) -
     "flow.ask_user": flow_ask_user,
     "flow.rollback": flow_rollback,
     "flow.inject_directive": flow_inject_directive,
+    "tool.result": tool_result,
 }

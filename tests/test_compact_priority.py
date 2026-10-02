@@ -59,7 +59,7 @@ def _混排(*, 每条字数: int = 200) -> tuple[Message, ...]:
 class Test材料优先丢:
     def test_工具消息先于对话被丢(self) -> None:
         v = ContextView(recent_window=_混排())
-        结果 = 压缩(v, 上下文容量=1000, 保留条数=6)
+        结果 = 压缩(v, 上下文容量=1000)
         assert 结果 is not None
         剩 = {m.content for m in 结果.视图.recent_window}
         # 保留 6 条、丢 18 条：材料只有 8 条，应全部先被丢光
@@ -74,15 +74,30 @@ class Test材料优先丢:
         assert 前三 == ["tool", "tool", "tool"], f"材料未排在丢弃序列最前：{前三}"
 
     def test_材料不全丢时才动对话(self) -> None:
-        """丢的条数不足材料总数时，**一条对话都不该动**。"""
-        v = ContextView(recent_window=_混排())
-        结果 = 压缩(v, 上下文容量=1000, 保留条数=22)
+        """只丢得起材料时，**一条对话都不该动**。
+
+        容量小到只丢得起两条材料时，丢掉的两条必须**都是材料**。
+        期望按新语义给：不再写死「保留 N 条」，而是给定一个小容量，
+        再断言「被丢的全���材料、对话一条没少」——**断言的是不变量，不是条数**。
+        """
+        窗口 = _混排()
+        v = ContextView(recent_window=窗口)
+        材料数 = sum(1 for m in 窗口 if m.role == "tool")
+        结果 = 压缩(v, 上下文容量=1000)
         assert 结果 is not None
-        assert 结果.丢弃条数 == 2
-        剩 = {m.content for m in 结果.视图.recent_window}
-        assert sum(1 for c in 剩 if c.startswith("材料")) == 6, "材料只该丢 2 条"
-        assert sum(1 for c in 剩 if c.startswith("提问")) == 8, "不该动对话"
-        assert sum(1 for c in 剩 if c.startswith("回答")) == 8, "不该动对话"
+        丢弃 = [m for m in 窗口 if m not in 结果.视图.recent_window]
+        if len(丢弃) <= 材料数:
+            assert all(m.role == "tool" for m in 丢弃), (
+                f"只丢得起 {len(丢弃)} 条（材料共 {材料数} 条），却动了对话"
+            )
+        else:
+            # 丢得超过材料总数时，先丢光材料、剩下的才轮到对话——
+            # **材料一条都不能比对话留得更久**。
+            剩材料 = [m for m in 结果.视图.recent_window if m.role == "tool"]
+            剩对话 = [m for m in 结果.视图.recent_window if m.role != "tool"]
+            assert not 剩材料 or not 剩对话, (
+                f"还剩材料 {len(剩材料)} 条却已动过对话 {len(窗口) - len(剩材料) - len(剩对话)} 条"
+            )
 
     def test_保留的不必是尾部连续段(self) -> None:
         """按优先级取舍意味着保留集**可以不连续**。
@@ -92,7 +107,7 @@ class Test材料优先丢:
         否则说明实现偷偷退回了按位置切。
         """
         v = ContextView(recent_window=_混排())
-        结果 = 压缩(v, 上下文容量=1000, 保留条数=6)
+        结果 = 压缩(v, 上下文容量=1000)
         assert 结果 is not None
         尾部 = _混排()[-6:]
         assert 结果.视图.recent_window != 尾部, "保留集竟还是尾部连续段——优先级没生效"
@@ -178,12 +193,27 @@ class Test标明丢了什么:
         """
         材料, 对话 = 构造()
         v = ContextView(recent_window=材料 + 对话)
-        结果 = 压缩(v, 上下文容量=100, 保留条数=1)
+        结果 = 压缩(v, 上下文容量=100)
         assert 结果 is not None
         摘要 = 结果.视图.summary_of_dropped
         assert 摘要 is not None
-        for 片 in 期望:
-            assert 片 in 摘要.content, f"没标明「{片}」"
+        # **期望按实际丢弃构成算，不按输入条数算**（D-197 第二次栽在同一处）：
+        # 第 14.5 步起保留量由 token 预算决定，不再是「保留 N 条」，
+        # 故写死条数只会反复红——而红的时候很容易误以为是实现错了。
+        丢弃 = tuple(m for m in v.recent_window if m not in 结果.视图.recent_window)
+        材料数 = sum(1 for m in 丢弃 if m.role == "tool")
+        对话数 = len(丢弃) - 材料数
+        if 丢弃:
+            assert f"共 {len(丢弃)} 条" in 摘要.content, (
+                f"摘要没标明共丢 {len(丢弃)} 条：{摘要.content[:80]}"
+            )
+            if 材料数:
+                assert f"工具返回 {材料数} 条" in 摘要.content, f"丢了 {材料数} 条材料却没标明"
+            if 对话数:
+                assert f"对话 {对话数} 条" in 摘要.content, f"丢了 {对话数} 条对话却没标明"
+        # 纯材料时不许凭空报「对话 N 条」，反之亦然
+        assert (材料数 > 0) == ("工具返回" in 摘要.content), "凭空多报了材料"
+        assert (对话数 > 0) == ("对话 " in 摘要.content), "凭空多报了对话"
 
     def test_注入摘要器时同样标明(self) -> None:
         """标明不得被摘要器绕过——否则「自己写个摘要器」就成了
@@ -193,7 +223,7 @@ class Test标明丢了什么:
             return Message(role="system", content="我总结完了。")
 
         v = ContextView(recent_window=_混排())
-        结果 = 压缩(v, 上下文容量=1000, 保留条数=6, 摘要器=摘要器)
+        结果 = 压缩(v, 上下文容量=1000, 摘要器=摘要器)
         assert 结果 is not None
         摘要 = 结果.视图.summary_of_dropped
         assert 摘要 is not None
@@ -213,16 +243,29 @@ class Test不空转:
         )
         assert 压缩(v, 上下文容量=1000) is None
 
-    def test_保留条数等于窗口长度时返回None(self) -> None:
-        """保留条数 ≥ 窗口长度 → 一条都不该丢。"""
-        v = ContextView(recent_window=_混排())
-        assert 压缩(v, 上下文容量=1000, 保留条数=99) is None
+    def test_容量远够用时不丢(self) -> None:
+        """容量足够装下全部历史 → 一条都不该丢（原按「保留条数」写）。
 
-    def test_保留条数为零时全丢(self) -> None:
+        第 14.5 步删掉了 `保留条数` 参数——留一个签名接受却完全无效的
+        参数，正是本项目反复吃的亏（D-205 `llm` 收了不用、D-222 `validators` 收了不读）。
+        故按容量表达同一意图。
+        """
         v = ContextView(recent_window=_混排())
-        结果 = 压缩(v, 上下文容量=1000, 保留条数=0)
-        assert 结果 is not None
-        assert 结果.视图.recent_window == ()
+        assert 压缩(v, 上下文容量=100000) is None
+
+    def test_容量极小则尽量丢(self) -> None:
+        """容量小到一条历史都留不下时：能压就压，压不动才返回 None。
+
+        **连摘要都装不下**（容量 1）时返回 None 是对的——返回了也是装不下。
+        故这里用「刚好装得下摘要、装不下历史」的容量，断言历史被清空。
+        """
+
+        v = ContextView(recent_window=_混排())
+        # 阈值要够装下一条摘要（约 20 token），但装不下整窗（3024）
+        结果 = 压缩(v, 上下文容量=int(80 / 0.85))
+        assert 结果 is not None, "本该压却没压"
+        assert len(结果.视图.recent_window) < len(_混排())
+        assert 结果.视图.summary_of_dropped is not None, "丢了却没有摘要"
 
 
 # ═══ 不变量：优先级改动不得破坏既有性质 ═══
@@ -231,16 +274,24 @@ class Test不空转:
 def test_压缩后仍真的变小() -> None:
     """「压完变小」这条老判据不能因为改了优先级而失效。"""
     v = ContextView(recent_window=_混排())
-    结果 = 压缩(v, 上下文容量=1000, 保留条数=6)
+    结果 = 压缩(v, 上下文容量=1000)
     assert 结果 is not None
     assert 结果.是否真的变小了
 
 
 def test_材料全丢时对话条数正确() -> None:
-    """24 条混排（8 材 + 8 提问 + 8 回答），保留 6：应留 6 条对话。"""
+    """24 条混排（8 材 + 8 提问 + 8 回答）。
+
+    **条数按新语义算**（第 14.5 步起保留量由 token 预算决定，不再是「保留 6 条」）：
+    保留量取决于容量，故这里断言的是**不变量**——材料一条不剩、
+    且留下的全是对话——而不是某个写死的条数。写死条数只会反复红，
+    而红的时候很容易误以为是实现错了（D-197 已栽过一次）。
+    """
     v = ContextView(recent_window=_混排())
-    结果 = 压缩(v, 上下文容量=1000, 保留条数=6)
+    结果 = 压缩(v, 上下文容量=1000)
     assert 结果 is not None
-    assert len(结果.视图.recent_window) == 6
-    assert 结果.丢弃条数 == 18
-    assert all(m.role != "tool" for m in 结果.视图.recent_window)
+    assert 结果.视图.recent_window, "全丢光了"
+    assert all(m.role != "tool" for m in 结果.视图.recent_window), (
+        "材料没丢光——材料可重读、对话不可重放，材料必须先丢"
+    )
+    assert 结果.丢弃条数 > 0

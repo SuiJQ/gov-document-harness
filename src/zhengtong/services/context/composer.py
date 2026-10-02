@@ -27,14 +27,24 @@ from .view import ContextView
 def 组装(
     *,
     系统与角色: tuple[Message, ...],
+    动态规则: tuple[Message, ...] = (),
+    工具清单: tuple[Message, ...] = (),
+    本轮任务: Message | None = None,
     绝不丢弃: tuple[Message, ...] = (),
     产物引用: tuple[str, ...] = (),
     对话: tuple[Message, ...] = (),
     已被压缩摘要: Message | None = None,
 ) -> ContextView:
-    """拼出一个视图。**纯函数**：同样输入必得同样视图。"""
+    """拼出一个视图。**纯函数**：同样输入必得同样视图。
+
+    `动态规则` / `工具清单` / `本轮任务` 是第 14.5 步新增的三个入参，
+    都有默认值——五参数的旧调用照样成立，不必逐处改。
+    """
     return ContextView(
         system_and_role=系统与角色,
+        dynamic_rules=动态规则,
+        tool_manifest=工具清单,
+        本轮任务=本轮任务,
         pinned_facts=绝不丢弃,
         artifact_refs=_渲染产物引用(产物引用),
         recent_window=对话,

@@ -817,6 +817,7 @@ idf(t)   = ln(1 + (N − df(t) + 0.5) / (df(t) + 0.5))     k₁ = 1.2   b = 0.25
 | `flow.ask_user(fields)` | **仅主理人** | `ASK_USER` | 弹结构化表单（D-040） |
 | `flow.rollback(step, keep)` | **仅主理人** | `REWORK` | 保留 D-Card，重做指定步骤 |
 | `flow.inject_directive(text)` | 仅主理人 | `SIGNAL` | 用户插话，转达为 `user_directive` |
+| `tool.result(call_id)` | 全体 | `READ` | **取回某次工具调用的完整返回**（D-226）。对话序列只记工具**动作**不记结果，此工具供模型查回 |
 
 **已砍除**（D-042，且代码里不允许复活）：`fs.list` / `fs.write` / `fs.delete`
 及公共区外的一切文件读写。砍掉之后路径校验只需回答一个问题
@@ -1351,7 +1352,7 @@ src/zhengtong/
 │   │   ├── spec.py                  ToolSpec 数据定义
 │   │   ├── registry.py              工具注册表
 │   │   ├── guard.py                 WorkspaceGuard：realpath+D-076 六条用例
-│   │   ├── handlers.py              14 个工具的实现
+│   │   ├── handlers.py              工具的实现（16 + `tool.result` = 17，D-226）
 │   │   └── audit.py                 审计记录
 │   ├── validators/runner.py        调 ValidatorPort
 │   └── telemetry/ledger.py          耗时/token 台账（D-031 唯一数据源）
@@ -1534,7 +1535,7 @@ grep -oE '^### D-[0-9]{3}' DECISIONS.md | sort -u
 | **7** | L2 适配：文件读取 | 5 | txt/md/docx 读通；2 万字截断（D-053）；**docx zip bomb 元数据拦截（D-078）** |
 | **8** | L4 检索 | 5 | 中文 n-gram 倒排 + 加权 TF-IDF 主路径（D-073）；top-k 召回 ≥95%；FTS5 仅拉丁补充 |
 | **9** | L4 上下文管理 | 3, 5 | 85% 触发压缩；D-039 四类绝不丢弃有测试；**跨层只传值对象**（§3.5） |
-| **10** | L4 工具层 | 3, 5 | 14 个工具 + 双重白名单 + 审计 + 草稿纸 3 文件上限（D-042） |
+| **10** | L4 工具层 | 3, 5 | 14 个工具（+ 第 14.5 步 `tool.result`，共 17）+ 双重白名单 + 审计 + 草稿纸 3 文件上限（D-042） |
 | **11** | L4 提示词装配 | 8, 9 | 按需装载与结果直传可验证（上下文占用可测） |
 | **12** | **内容包**（**与 6–11 并行**） | — | 5 份角色提示词改写完成；门禁细则 / 红线 E1–E14 / D-Card **零丢失** |
 | **13** | L5 编排 | 4–11 | 脚本化假 LLM 跑通咨询 / Flash / Pro 三条全流程 |

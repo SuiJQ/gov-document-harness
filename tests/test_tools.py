@@ -83,11 +83,13 @@ def _运行器(d: 工具依赖) -> 工具运行器:
 
 
 class Test工具清单:
-    def test_共十六个(self) -> None:
-        """架构 §7.4 正文说「14 个」是**表格行数**——
-        两行各含两个工具（`shared.read`/`shared.list`、`kb.search`/`kb.read_pack`）。
-        逐行落实是 16 个（D-190）。"""
-        assert len(TOOL_SPECS) == 16
+    def test_共十七个(self) -> None:
+        """架构 §7.4 正文说「14 个」是**表格行数**——逐行落实是 16 个（D-190）。
+
+        第 14.5 步新增 `tool.result`（对话序列只记工具动作不记结果，
+        模型需要一条查回途径）→ 17 个。**架构表已同步**。
+        """
+        assert len(TOOL_SPECS) == 17
 
     def test_名字与架构表格一致(self) -> None:
         期望 = {
@@ -107,6 +109,7 @@ class Test工具清单:
             "flow.ask_user",
             "flow.rollback",
             "flow.inject_directive",
+            "tool.result",
         }
         assert {s.name for s in TOOL_SPECS} == 期望
 
@@ -150,6 +153,8 @@ class Test角色白名单:
             "flow.rollback",
             "flow.inject_directive",
         }
+        # `tool.result` **不是**仅主理人工具：全体都要能查回自己那次调用的
+        # 结果（D-226），把它划进主理人专属等于让成员查不回自己的东西。
 
     @pytest.mark.parametrize(
         "工具名",
@@ -170,7 +175,7 @@ class Test角色白名单:
     def test_主理人可调全部(self, tmp_path: Path) -> None:
         d, _ = _依赖(tmp_path)
         运行 = _运行器(d)
-        assert len(运行.可调清单(RoleId.TEAM_LEAD)) == 16
+        assert len(运行.可调清单(RoleId.TEAM_LEAD)) == 17  # 16 + tool.result（D-226）
 
     def test_成员可调子集不含仅主理人工具(self) -> None:
         for 角色 in ROLES:
@@ -178,7 +183,7 @@ class Test角色白名单:
                 continue
             清单 = {s.name for s in 该角色可调(角色.id)}
             assert "flow.ask_user" not in 清单
-            assert len(清单) == 12
+            assert len(清单) == 13  # 12 + tool.result（D-226，全体可调）
 
     def test_白名单为空意味着无人可调(self) -> None:
         """**默认方向**：空集是"没人能调"，不是"所有人都能调"。

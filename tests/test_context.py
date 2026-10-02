@@ -28,7 +28,7 @@ from zhengtong.services.context import (
     组装,
     需要压缩,
 )
-from zhengtong.services.context.compactor import 摘要前缀, 默认保留条数
+from zhengtong.services.context.compactor import 摘要前缀
 from zhengtong.services.context.estimate import 估算文本, 触发阈值
 
 # ═══ 夹具 ═══
@@ -169,7 +169,7 @@ class Test八五触发:
     def test_压完必须真的变小(self) -> None:
         """压缩若没减小体积就是纯亏——白丢上下文还占更多位置。
         这是能抓住「摘要器返回超长文本」的唯一判据。"""
-        结果 = 压缩(_视图(对话条数=40), 上下文容量=1000, 保留条数=2)
+        结果 = 压缩(_视图(对话条数=40), 上下文容量=1000)
         assert 结果 is not None
         assert 结果.是否真的变小了, "压缩后 token 未减少"
         assert 结果.压缩后token < 结果.压缩前token
@@ -265,7 +265,7 @@ class Test摘要可识别:
 
     def test_拍平后模型仍能分辨摘要(self) -> None:
         """这是前缀的**唯一目的**，故直接断言拍平后的结果。"""
-        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000, 保留条数=3)
+        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000)
         assert 结果 is not None
         带前缀 = [m for m in 结果.视图.messages() if m.content.startswith(摘要前缀)]
         assert len(带前缀) == 1, f"拍平后应恰有一条带前缀的消息，实得 {len(带前缀)}"
@@ -312,15 +312,28 @@ class Test摘要纪律:
             seen.append(tuple(m.content[:4] for m in 丢弃))
             return Message(role="system", content="摘")
 
-        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000, 保留条数=5, 摘要器=摘要器)
+        视图 = _视图(对话条数=30)
+        结果 = 压缩(视图, 上下文容量=1000, 摘要器=摘要器)
         assert 结果 is not None
-        assert seen and len(seen[0]) == 25, "被摘要的应是 30-5 条"
+        # 摘要器收到的**就是被丢的那些**——按实际丢弃量断言，不写死条数
+        # （第 14.5 步起保留量由 token 预算决定，D-197 已栽过一次「期望按旧语义写」）
+        assert seen and len(seen[0]) == 结果.丢弃条数, (
+            f"摘要器收到 {len(seen[0])} 条，实际丢弃 {结果.丢弃条数} 条"
+        )
+        assert 结果.丢弃条数 > 0
 
     def test_丢弃条数与实际一致(self) -> None:
-        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000, 保留条数=5)
+        视图 = _视图(对话条数=30)
+        结果 = 压缩(视图, 上下文容量=1000)
         assert 结果 is not None
-        assert 结果.丢弃条数 == 25
-        assert len(结果.视图.recent_window) == 5
+        # 用**长度**差算，不能用 `m not in 视图.recent_window`：
+        # 测试数据内容全相同，`in` 按值比较会把保留的 2 条当成
+        # 「没丢」而算错（本次就踩了，报 5 而非 28）。
+        实际丢 = len(视图.recent_window) - len(结果.视图.recent_window)
+        assert 结果.丢弃条数 == 实际丢, f"丢了 {实际丢} 条却报 {结果.丢弃条数} 条——台账与实际不符"
+        # 保留量按新语义（容量定），只断言「没全丢」与「摘要存在」
+        assert 结果.视图.recent_window, "全丢光了"
+        assert 结果.视图.summary_of_dropped is not None, "丢了却没有摘要"
 
 
 # ═══ 六、压缩可观测（§7.2：报「保留了 X/Y/Z」）═══
@@ -329,11 +342,16 @@ class Test摘要纪律:
 class Test压缩可观测:
     def test_保留概览报出各栏条数(self) -> None:
         钉 = (Message(role="system", content="x"),)
-        结果 = 压缩(_视图(绝不丢弃=钉, 对话条数=30), 上下文容量=1000, 保留条数=4)
+        结果 = 压缩(_视图(绝不丢弃=钉, 对话条数=30), 上下文容量=1000)
         assert 结果 is not None
         概览 = 结果.保留概览
         assert 概览["绝不丢弃"] == 1
-        assert 概览["近期窗口"] == 4
+        # 条数按新语义给（保留量由 token 预算定，不再是写死的 N）：
+        # 概览报的条数必须与实际视图**一致**——概览是给人和台账看的，
+        # 报错了就等于给了个假的压缩账本。
+        assert 概览["近期窗口"] == len(结果.视图.recent_window), (
+            f"概览报 {概览['近期窗口']} 条，实际 {len(结果.视图.recent_window)} 条"
+        )
         assert 概览["已摘要"] == 1
 
     def test_度量三元组齐备(self) -> None:
@@ -343,7 +361,7 @@ class Test压缩可观测:
         只知压缩后变小，不知摘要多大，则无法区分
         「有效压缩」与「把窗口换成一大段摘要」。
         """
-        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000, 保留条数=4)
+        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000)
         assert 结果 is not None
         assert 结果.压缩前token > 0
         assert 结果.压缩后token > 0
@@ -355,14 +373,23 @@ class Test压缩可观测:
         assert isinstance(结果, 压缩结果 | type(None))
 
 
-# ═══ 七、默认保留条数 ═══
+# ═══ 七、按 token 预算保留，不再按条数（第 14.5 步 D-224）═══
 
 
-def test_默认保留条数为六() -> None:
-    assert 默认保留条数 == 6
-    结果 = 压缩(_视图(对话条数=30), 上下文容量=1000)
-    assert 结果 is not None
-    assert len(结果.视图.recent_window) == 6
+def test_保留量由容量决定不由条数决定() -> None:
+    """原 `test_默认保留条数为六` **已删**：那条锁的是一个被实测否决的设计。
+
+    它断言「固定保留 6 条」，而按条数保留实测两个方向都错
+    （长消息压完仍超限、短消息白丢）。改为断言真正要保的性质：
+    **压完装得下**，且保留量随容量变化。
+    """
+    小 = 压缩(_视图(对话条数=30), 上下文容量=1000)
+    大 = 压缩(_视图(对话条数=30), 上下文容量=4000)
+    assert 小 is not None and 大 is not None
+    assert 小.压缩后token <= 触发阈值(1000)
+    assert len(大.视图.recent_window) > len(小.视图.recent_window), (
+        "容量更大却保留得更少——保留量没有跟随预算"
+    )
 
 
 # ═══ 八、估算视图与 messages 一致 ═══
