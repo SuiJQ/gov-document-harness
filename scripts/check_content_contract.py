@@ -249,6 +249,100 @@ def check_phase_names() -> list[str]:
     return problems
 
 
+def check_decision_coverage() -> list[str]:
+    """几条**模型必须知道**的硬决策，内容包里不能没有（D-151）。
+
+    ## 为什么要单列这一条
+
+    前六轮查出三处同型缺口（D-149、D-150、草稿纸上限）：
+    **决策在、代码在、架构在，唯独模型读的那份提示词里没有**。
+
+    但**不能把所有 D 决策都要求写进内容包**——
+    重试次数、压缩阈值、基准温度、断点续跑这些是**程序侧机制**，
+    模型管不着也不该管。写进去只会稀释提示词。
+
+    故只挑「**模型的行为会因此改变**」的几条：
+
+    - D-011 草稿纸 3 文件上限 → 决定成员要不要收敛草稿
+    - D-053 单文件 2 万字截断 → 决定模型遇截断时是推断还是申报
+
+    ## 判据的可执行性
+
+    这两条**代码里都还没实现完**（`draft_paper_ok` 有、截断没有），
+    所以判据只能查「内容包是否声明」，不能查「代码是否兑现」——
+    后者是第 5、6 步的事。**这里只锁内容包侧。**
+    """
+    # **锚点必须选唯一词，不能用「上限」「3 个」这类通用词**。
+    # 证伪时实测：删掉整段草稿纸说明，脚本仍全绿——
+    # 因为「上限」还出现在「退回上限」「重试上限」，
+    # 「3 个」还出现在「≥3 个并列行政主体」。两个词都被别人占用了。
+    必写 = {
+        "草稿纸 3 文件上限（D-011）": ("草稿纸",),
+        "单文件 2 万字截断（D-053）": ("2 万字",),
+    }
+    text = content_text()
+    problems = []
+    for 名, 锚点组 in 必写.items():
+        if not any(w in text for w in 锚点组):
+            problems.append(
+                f"内容包未声明「{名}」——模型不知道有这条约束，行为就不会收敛"
+            )
+    return problems
+
+
+def check_gate_count() -> list[str]:
+    """门禁总数与编号必须与代码 `FORMAL_GATES` 一致（D-150）。
+
+    第六轮查出的问题：内容包写「G1–G13 共 12 道」。
+    **数字对，记法有歧义**——`G1–G13` 是 13 个格，
+    扣掉自检的 G6 才剩 12 道。照区间理解会以为是连续 13 道。
+    team-lead 的档位表更写成「G1–G13 + 交付一致性核」，
+    Flash 档照此理解会以为文择体也要跑 G3——而他并未编入。
+
+    判据从代码 `FORMAL_GATES` 抽，**不靠数数**：
+    人工数一遍 12 道，早晚会数错或漏。
+    """
+    import re as _re
+    text = content_text()
+    problems = []
+    # 从代码抽正式门禁编号
+    src = (SRC / "gate.py").read_text(encoding="utf-8")
+    m = _re.search(r"FORMAL_GATES: tuple\[GateId, \.\.\.\] = \((.*?)\n\)", src, _re.S)
+    if not m:
+        return ["代码侧读不到 FORMAL_GATES——判据失效，须修脚本"]
+    正式 = _re.findall(r"GateId\.(G\d+)", m.group(1))
+    if len(正式) != 12:
+        problems.append(f"代码侧正式门禁数变了：{len(正式)} 道（判据写死 12，须同步）")
+
+    # 内容包若写「N 道」，N 必须等于代码侧门禁数
+    for 文, 位置 in ((c, f) for f, c in
+                     ((p.relative_to(CONTENT).as_posix(), p.read_text(encoding="utf-8"))
+                      for p in sorted(CONTENT.rglob("*.md")))):
+        # **只查断言句式，不查任何「N 道」**。
+        # 证伪时实测：裸 `\d+\s*道` 会把解释性文字也判进来——
+        # 我自己写的「`G1–G13` 是 13 个格」被判成「13 道门禁」不符。
+        # 解释数字是给人看的，断言数字才是契约。
+        断言 = _re.compile(
+            r"(成品门禁|正式门禁|门禁)[^。\n]{0,12}?(\d+)\s*道"   # 「12 道门禁」
+            r"|(\d+)\s*道[^。\n]{0,6}?(成品门禁|正式门禁)"          # 「12 道成品门禁」
+            # 档位表里的「11 道（G1/G2/…）+ 交付一致性核」——
+            # **证伪时实测这条原本漏判**：括号里是编号清单，
+            # 「道」后面跟的是「（」不是「门禁」，上面两条都吃不到。
+            r"|(?<![\d])(\d+)\s*道（(?=[G0-9/])"                  # 「11 道（」
+        )
+        for mo in 断言.finditer(文):
+            # 三个分支的数字分别在 group 2/3/4。**不能用 `or` 链**：
+            # 前两个分支命中时 group(4) 是 None，`a or b or c` 在
+            # b 为 None 时会返回 c（None），`int(None)` 直接抛 TypeError。
+            数字 = int(next(x for x in mo.groups()[1:] if x is not None))
+            # 12 = 全部正式门禁；11 = Flash 档（无 G3）
+            if 数字 in (11, 12, len(正式)):
+                continue
+            上下文 = 文[max(0, mo.start() - 40):mo.end() + 20].replace("\n", " ")
+            problems.append(f"{位置} 断言「{数字} 道门禁」，与代码侧 {len(正式)} 道不符：…{上下文}…")
+    return problems
+
+
 def check_gate_ownership() -> list[str]:
     """每道门禁的**唯一取证方**必须在自己的提示词里声明（D-149）。
 
@@ -332,6 +426,8 @@ def main() -> int:
     results.append(("角色提示词路径 ↔ manifest", check_prompt_files(contracts)))
     results.append(("门禁中文名 ↔ 代码注释", check_gate_names(contracts)))
     results.append(("阶段中文名 ↔ 代码注释", check_phase_names()))
+    results.append(("模型必知决策覆盖", check_decision_coverage()))
+    results.append(("门禁总数与编号", check_gate_count()))
     results.append(("门禁取证方声明", check_gate_ownership()))
     results.append(("被退回后处置（revision 闭环）", check_revision_guidance()))
     results.append(("产物中文名（结构判定，自动跳过）", check_artifact_kind_names(contracts)))
