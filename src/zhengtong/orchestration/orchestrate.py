@@ -43,16 +43,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
 from ..domain.errors import ErrorCode, Result
 from ..domain.event import Event, EventKind, Level, make_call_id
-from ..domain.gate import FORMAL_GATES, GATES, GateId
+from ..domain.gate import FORMAL_GATES, GATES, GateId, 处置, 门禁判定
 from ..domain.ids import RunId
 from ..domain.phase import PhaseId, PhaseState
 from ..domain.role import RoleId, RoleState
-from ..domain.run_state import RunState, new_run_state
+from ..domain.run_state import GateRecord, RunState, new_run_state
 from ..domain.task import TaskSpec
 from ..domain.tier import TIER_BY_ID, TierId
 from ..domain.validation import g3降级标注, validate_task
@@ -130,6 +130,10 @@ class _过程:
         self.回复: dict[RoleId, str] = {}
         self.交付物 = ""
         self.标注: tuple[str, ...] = ()
+        #: **门禁退回的轮次**。退回重写必须重新问模型、
+        #: 而重试不得重复问（D-065）；差异由阶段（REVISION vs DRAFTING）承担，
+        #: **不掺进 call_id**——架构 §8.6 判「轮次」是第几次尝试而非哪一件事。
+        self.轮次 = 0
 
     # ── drive 回调：一次一阶段 ──
 
@@ -211,17 +215,145 @@ class _过程:
             # **这是第 13 步那个缺陷的同型复发**：那次是 `for` 循环
             # 没覆盖 GATING，这次是重写成提前 return 时又漏了。
             # 判据 `test_编制内必须当值` 在迁移后才暴露它。
-            派 = self._派发(档, 阶段)
-            if 派.is_error:
-                return _转为失败(派, "门禁段派发失败")
-            门禁 = _该跑门禁(档)
-            self.门禁.extend(门禁)
-            return Result.ok(阶段产物(阶段, "gate-report.md", _门禁报告(self.门禁)))
+            return self._门禁循环(档)
 
+        校验 = self._提问前校验(阶段)
+        if 校验.is_error:
+            self.编排.发(EventKind.PHASE_EXITED, 阶段, ok=False)
+            return _转为失败(校验, f"{阶段.value} 段提问前校验失败")
         派 = self._派发(档, 阶段)
         if 派.is_error:
             return _转为失败(派, f"{阶段.value} 段派发失败")
         return Result.ok(阶段产物(阶段, f"{阶段.value}.md", _正文(阶段, self.回复)))
+
+    def _提问前校验(self, 阶段: PhaseId) -> Result[None]:
+        """**提问前**跑硬约束（D-040 / D-069）。
+
+        `self.validators` 从构造日起就存着却**从未被读**——真校验器接上了，
+        没人调它，于是「必填字段零沉降」这条只存在于类型与文档里。
+        这是第 11 步 D-196 的同型缺口：装配对了，调用没跟上。
+
+        方向确认（DIRECTION）之前必须校验：拿着缺字段的 D-Card 去问用户，
+        问出来的答案填不进去，等于白问一轮。故不通过即拦，不设放行出口
+        （D-028 无绕过）。
+
+        无 `validators` 时**不拦**：那是没接校验器的降级运行，与
+        「接了但没调」不是一回事——后者才是本条欠账。
+        """
+        if 阶段 is not PhaseId.DIRECTION:
+            return Result.ok_none()
+        if self.编排.validators is None:
+            return Result.ok_none()
+        卡 = self.状态.dcard
+        got = self.编排.validators.run_hard_constraint(
+            {
+                "phase": 阶段.value,
+                "dcard": {
+                    编号.value: (字段.value or "")
+                    for 编号, 字段 in sorted(卡.by_id.items(), key=lambda kv: kv[0].value)
+                },
+            }
+        )
+        if got.is_error:
+            错 = got.error
+            assert 错 is not None
+            return Result.fail(错.code, 错.detail)
+        结 = got.unwrap()
+        self.编排.发(
+            EventKind.GATE_PASSED if 结.passed else EventKind.GATE_FAILED,
+            阶段,
+            script="hard",
+        )
+        if not 结.passed:
+            问题 = "；".join(i.message for i in 结.issues) or "硬约束不通过"
+            return Result.fail(ErrorCode.GATE_FAILED, f"提问前硬约束不通过：{问题}")
+        return Result.ok_none()
+
+    def _门禁循环(self, 档: TierId) -> Result[阶段产物]:
+        """门禁段主体：真跑判定，不通过则退回重写（D-028/D-050）。
+
+        ## 为什么退回是**内部循环**而不是让 `drive` 重跑
+
+        `drive` 一次性走完静态序列、中途不可改线。退回重写要「回到起草
+        再回门禁」，塞进静态序列就只能预先写死若干次重跑——而该跑几次
+        取决于门禁结果，事前不可知。故退回循环放在 GATING 段**内部**：
+        这也贴合语义——退回是门禁的反馈回路，不是编排主线的一部分。
+
+        ## 为什么退回重写**不吃幂等**
+
+        架构 §8.6 裁决：**「旧口径角色+轮次+序号是错的」**——轮次是
+        「第几次尝试」而非「哪一件事」，掺进 `call_id` 会让网络重试也
+        命中不了幂等。故重起草**派发 `REVISION` 而非复用 `DRAFTING`**：
+        `call_id` 因 `phase_id` 不同而自然不同，正合「退回重写因 phase_id
+        不同而不命中」（架构 D-065 表格）。
+
+        ## 无证据 ≠ 通过（D-221）
+
+        原先只遍历裁定**给了**结论的门禁，对**没给**的一律放行——12 道门禁
+        若一道结论都没交，整轮却「全部通过」。那正是 E041「无证据不通过」
+        的反面：无库/无网导致取证失败时，系统会把「查不了」当成
+        「查过了没问题」。
+
+        故按 `该跑门禁` 全集核对，缺席者即**环境性缺失**：一次性升级用户
+        决策（gate-manual 反死循环铁律），不消耗退回数、不空转。
+        """
+        while True:
+            派 = self._派发(档, PhaseId.GATING)
+            if 派.is_error:
+                return _转为失败(派, "门禁段派发失败")
+            门禁 = _该跑门禁(档)
+            self.门禁.extend(门禁)
+            裁定 = self.编排.门禁取证(门禁)
+            # 结论落进 RunState——续跑、取证台账、用户裁决都要看它
+            for 记 in 裁定.values():
+                self.状态 = self.状态.put_gate(记)
+            # **缺席即无证据**（D-221）：按该跑门禁全集核对
+            缺席 = [g.value for g in 门禁 if g.value not in 裁定]
+            if 缺席:
+                self.编排.发(
+                    EventKind.GATE_ESCALATED,
+                    PhaseId.GATING,
+                    detail=f"取证无结论：{'、'.join(缺席)}",
+                )
+                self.编排.发(EventKind.PHASE_EXITED, PhaseId.GATING, ok=False)
+                return Result.fail(
+                    ErrorCode.GATE_NO_EVIDENCE,
+                    f"门禁无取证结论：{'、'.join(缺席)}（无库/无网？），转用户处理",
+                )
+            驳回 = [记 for 记 in 裁定.values() if not 记.passed]
+            if not 驳回:
+                return Result.ok(阶段产物(PhaseId.GATING, "gate-report.md", _门禁报告(self.门禁)))
+            for 记 in 驳回:
+                # 退回数以**编排实际经手的轮次**为准（`self.轮次`），
+                # 不轻信裁定方自报的 attempt——否则上限只在脚本配合时才成立。
+                真实记 = replace(记, attempt=max(记.attempt, self.轮次))
+                判 = 门禁判定(真实记, 环境性缺失=False)
+                self.编排.发(
+                    EventKind.GATE_REJECTED,
+                    PhaseId.GATING,
+                    detail=f"{真实记.gate}：{真实记.rejection_reason}",
+                )
+                if 判 is 处置.升级裁决:
+                    self.编排.发(
+                        EventKind.GATE_ESCALATED,
+                        PhaseId.GATING,
+                        detail=f"{真实记.gate} 退回 {真实记.attempt} 次仍未过，转用户裁决",
+                    )
+                    self.编排.发(EventKind.PHASE_EXITED, PhaseId.GATING, ok=False)
+                    return Result.fail(
+                        ErrorCode.GATE_REWRITE_EXHAUSTED,
+                        f"{真实记.gate} 退回 {真实记.attempt} 次仍未过"
+                        f"（{真实记.rejection_reason}），转用户裁决",
+                    )
+            # 全部判退回 → 轮次 +1，以 REVISION 阶段重起草（call_id 天然不同）
+            self.轮次 += 1
+            self.编排.发(EventKind.GATE_REWORK, PhaseId.GATING, detail=f"第 {self.轮次} 轮重写")
+            self.编排.发(EventKind.PHASE_STARTED, PhaseId.REVISION)
+            重跑 = self._派发(档, PhaseId.REVISION)
+            if 重跑.is_error:
+                self.编排.发(EventKind.PHASE_EXITED, PhaseId.REVISION, ok=False)
+                return _转为失败(重跑, "退回后重起草失败")
+            self.编排.发(EventKind.PHASE_EXITED, PhaseId.REVISION, ok=True)
 
     def _派发(self, 档: TierId, 阶段: PhaseId) -> Result[None]:
         """按编制派发该段该动的人，问模型，记账。**幂等在此**。
@@ -238,18 +370,14 @@ class _过程:
             self.状态 = self.状态.set_role_state(角色, RoleState.RUNNING)
             if not 该发请求(RoleState.RUNNING):
                 continue
-            cid = make_call_id(
-                "prompt", str(self.编排.运行号), 阶段.value, role=角色.value
-            )
+            cid = make_call_id("prompt", str(self.编排.运行号), 阶段.value, role=角色.value)
             if cid not in self.已完成:
                 问 = self._构造请求(角色, 阶段)
                 答 = self.llm.complete(问)
                 if 答.is_error:
                     错 = 答.error
                     assert 错 is not None
-                    return Result.fail(
-                        错.code, f"{阶段.value}/{角色.value} 调用失败：{错.detail}"
-                    )
+                    return Result.fail(错.code, f"{阶段.value}/{角色.value} 调用失败：{错.detail}")
                 self.回复[角色] = 答.unwrap().text
                 self.已完成 = (*self.已完成, cid)
             self.动过的.append(角色)
@@ -343,6 +471,7 @@ class 编排器:
         初始状态: RunState | None = None,
         运行号: RunId | None = None,
         初始已完成: tuple[str, ...] = (),
+        门禁取证: Callable[[tuple[GateId, ...]], dict[str, GateRecord]] | None = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
@@ -354,6 +483,11 @@ class 编排器:
         self.初始状态 = 初始状态
         self.运行号 = 运行号 or RunId("r-0001")
         self.初始已完成 = 初始已完成
+        #: 门禁取证：给一组门禁，返回各门禁结论。
+        #: 未注入时返回**空结论**而非「全部通过」——按 `FORMAL_GATES`
+        #: 全集核对时空结论即缺席，会判无证据（E041/D-221）。
+        #: 「没人取证」与「取过了都没问题」必须是两回事。
+        self.门禁取证 = 门禁取证 or (lambda _门禁: {})  # noqa: ARG005
 
         #: **发出去过的请求**。刻意保留而非丢掉——
         #: 「模型到底收到了什么」是最难查的问题之一。
@@ -522,6 +656,11 @@ def _该段角色(档: TierId, 阶段: PhaseId) -> tuple[RoleId, ...]:
         return (RoleId.STRUCTURE,) if RoleId.STRUCTURE in 编制 else ()
     if 阶段 is PhaseId.DRAFTING:
         # §8.3：Phase 1 起草是辞达意，Phase 2 格式壳是骆准绳。
+        return tuple(r for r in (RoleId.LANGUAGE, RoleId.COMPLIANCE) if r in 编制)
+    if 阶段 is PhaseId.REVISION:
+        # **退回修正 = 重起草**，动笔人是起草人（§8.3 Phase 1 辞达意）
+        # + 格式壳（骆准绳）。用 REVISION 这个 phase 而非复用 DRAFTING，
+        # 是为了让 `call_id` 自然不同（架构 D-065：退回靠 phase 区分、不靠轮次）。
         return tuple(r for r in (RoleId.LANGUAGE, RoleId.COMPLIANCE) if r in 编制)
     if 阶段 is PhaseId.GATING:
         # 该段取证方 = 各门禁 owners 里在本档编制内的那些，

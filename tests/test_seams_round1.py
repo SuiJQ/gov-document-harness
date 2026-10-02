@@ -36,10 +36,28 @@ from zhengtong.adapters.paths import Workspace, ensure_dirs
 from zhengtong.app import 内容包根
 from zhengtong.domain.errors import Result
 from zhengtong.domain.event import EventKind, make_call_id
+from zhengtong.domain.gate import GateId
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.role import RoleId
+from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TierId
+from zhengtong.orchestration.orchestrate import 编排器
 from zhengtong.ports.llm import LlmRequest, LlmResponse
+
+
+def _全过(门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
+    """门禁全过的取证脚本。"""
+    return {g.value: GateRecord(gate=g.value, passed=True) for g in 门禁}
+
+
+def _全过编排器() -> 编排器:
+    """门禁全部通过的编排器。
+
+    第 14 步起编排按全集核对取证结论，**缺席即无证据**（D-221/E041）。
+    本文件这批接缝判据关心事件流与幂等，不关心门禁判定，故统一注入
+    全过结论——不是放宽，驳回与无证据由 test_step14_* 覆盖。
+    """
+    return 编排器(llm=FakeLlm(), storage=FakeStorage(), 门禁取证=_全过)
 
 
 @pytest.fixture
@@ -76,9 +94,8 @@ class Test编排发射事件:
         而架构 §8.1 要求编排层产事件流、第 16 步 TUI 靠它拿进度。
         零事件意味着 TUI 接不上。
         """
-        from zhengtong.orchestration.orchestrate import 编排器
 
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage())
+        器 = _全过编排器()
         器.跑到终(档位=TierId.PRO, 需求="测试需求")
         assert 器.事件, "编排跑完了却一个事件都没发"
 
@@ -87,9 +104,8 @@ class Test编排发射事件:
 
         重复会让回放错乱，空洞会让「漏了一条」查不出来。
         """
-        from zhengtong.orchestration.orchestrate import 编排器
 
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage())
+        器 = _全过编排器()
         器.跑到终(档位=TierId.PRO, 需求="测试需求")
         序号 = [e.seq for e in 器.事件]
         assert 序号 == list(range(1, len(序号) + 1)), f"seq 不连续：{序号[:20]}"
@@ -99,9 +115,8 @@ class Test编排发射事件:
 
         只发 started 的阶段在界面上永远转圈。
         """
-        from zhengtong.orchestration.orchestrate import 编排器
 
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage())
+        器 = _全过编排器()
         器.跑到终(档位=TierId.PRO, 需求="测试需求")
         起点 = [e for e in 器.事件 if e.kind is EventKind.PHASE_STARTED]
         终点 = [e for e in 器.事件 if e.kind is EventKind.PHASE_EXITED]
@@ -109,9 +124,8 @@ class Test编排发射事件:
         assert 起点, "一个阶段都没开始过"
 
     def test_运行有始有终(self) -> None:
-        from zhengtong.orchestration.orchestrate import 编排器
 
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage())
+        器 = _全过编排器()
         器.跑到终(档位=TierId.PRO, 需求="测试需求")
         种类 = [e.kind for e in 器.事件]
         assert EventKind.RUN_STARTED in 种类
@@ -120,9 +134,8 @@ class Test编排发射事件:
     def test_阶段成果事件载全文(self) -> None:
         """D-072/D-046：`ARTIFACT_READY` **必须带成果全文**，
         不是摘要——界面拿到的与落盘的要是同一份。"""
-        from zhengtong.orchestration.orchestrate import 编排器
 
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage())
+        器 = _全过编排器()
         器.跑到终(档位=TierId.PRO, 需求="测试需求")
         成果 = [e for e in 器.事件 if e.kind is EventKind.ARTIFACT_READY]
         assert 成果, "没有成果事件"
@@ -146,7 +159,7 @@ class Test可被drive驱动:
         from zhengtong.orchestration.orchestrate import 编排器
 
         总线 = EventBus(Redactor())
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage(), bus=总线)
+        器 = 编排器(llm=FakeLlm(), storage=FakeStorage(), bus=总线, 门禁取证=_全过)
         got = drive(
             run_id=RunId("r-drive"),
             bus=总线,
@@ -166,9 +179,8 @@ class Test可被drive驱动:
         若 `step` 里一口气跑完全部阶段，`drive` 就退化成空壳，
         而续跑（`resume_from`）与 TUI 的检查点插话全部失效。
         """
-        from zhengtong.orchestration.orchestrate import 编排器
 
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage())
+        器 = _全过编排器()
         一步 = 器.取一步()
         第一次 = 一步(0)
         assert 第一次.is_ok
@@ -222,9 +234,8 @@ class Test用装配器:
         判据查的是：没内容包时**必须明说这是降级提示**。
         否则「有没有装配」这件事在日志里看不出来。
         """
-        from zhengtong.orchestration.orchestrate import 编排器
 
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage())
+        器 = _全过编排器()
         器.跑到终(档位=TierId.PRO, 需求="测试需求")
         发出的 = [r.messages[0].content for r in 器.发出的请求]
         assert any("内容包未接入" in m for m in 发出的), (
@@ -270,9 +281,8 @@ class Test幂等:
 
         判据查的是状态里有 `completed_call_ids` 记录。
         """
-        from zhengtong.orchestration.orchestrate import 编排器
 
-        器 = 编排器(llm=FakeLlm(), storage=FakeStorage())
+        器 = _全过编排器()
         got = 器.跑到终(档位=TierId.PRO, 需求="测试需求")
         assert got.is_ok, got.error
         assert got.unwrap().已完成调用, "没有任何 call_id 记账——续跑会重复执行"
@@ -289,7 +299,7 @@ class Test幂等:
                 计数["n"] += 1
                 return super().complete(request)
 
-        第一次 = 编排器(llm=_计数Llm(), storage=FakeStorage())
+        第一次 = 编排器(llm=_计数Llm(), storage=FakeStorage(), 门禁取证=_全过)
         第一次.跑到终(档位=TierId.PRO, 需求="测试需求")
         首轮 = 计数["n"]
         assert 首轮 > 0
@@ -304,6 +314,7 @@ class Test幂等:
             storage=FakeStorage(),
             初始状态=状态,
             初始已完成=已完成,
+            门禁取证=_全过,
         )
         第二次.跑到终(档位=TierId.PRO, 需求="测试需求")
         assert 计数["n"] < 首轮, f"续跑又问了 {计数['n']} 次（首轮 {首轮}）——已完成的事重做了"
@@ -378,9 +389,7 @@ class Test编排层不碰适配层:
                     # `..kernel.redactor` 里的 Redactor 属「最小可用总线」，
                     # 不是构造业务真件，故只豁免这一个模块；
                     # `adapters` 一律不允许。
-                    豁免 = 文件.name == "orchestrate.py" and 模块.endswith(
-                        "kernel.redactor"
-                    )
+                    豁免 = 文件.name == "orchestrate.py" and 模块.endswith("kernel.redactor")
                     if "adapters" in 模块 or ("kernel.redactor" in 模块 and not 豁免):
                         违例.append(f"{文件.name}: from {模块}")
                 elif isinstance(节点, ast.Import):

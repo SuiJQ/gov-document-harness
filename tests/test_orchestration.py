@@ -37,6 +37,7 @@ from zhengtong.domain.errors import ErrorCode, Result
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.phase import PhaseId, PhaseState
 from zhengtong.domain.role import RoleId, RoleState
+from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TIER_BY_ID, TierId
 from zhengtong.orchestration import 咨询序列, 阶段序列
 from zhengtong.orchestration.orchestrate import 编排器
@@ -67,11 +68,15 @@ def _跑(
     迁移后这些判据查的是**当前唯一的那套实现**——
     两套并存时，「测的是哪一套」本身就是个没人回答的问题。
     """
+    # 第 14 步起门禁必须给结论：编排按全集核对，缺席即无证据（D-221/E041）。
+    # 本文件这批判据关心派发/状态机/落盘/交付物，故统一注入「全部通过」。
+    # **不是放宽**：门禁判定的驳回与无证据由 tests/test_step14_* 专门覆盖。
     return 编排器(
         llm=llm or FakeLlm(),
         storage=storage or FakeStorage(),
         模型名="test-model",
         运行号=RunId(运行号),
+        门禁取证=lambda 门禁: {g.value: GateRecord(gate=g.value, passed=True) for g in 门禁},
     ).跑到终(档位=档, 需求=需求)
 
 

@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Final
 
 from .role import ROLES, RoleId
+from .run_state import GateRecord
 
 
 class GateId(StrEnum):
@@ -145,3 +147,69 @@ def gate_groups() -> tuple[tuple[RoleId, ...], ...]:
             for spec in GATES.values()
         )
     )
+
+
+def 并行门禁组() -> tuple[tuple[RoleId, ...], ...]:
+    """与主理人终闸无关、可真并行的取证组（D-049）。
+
+    **返回的不含 TEAM_LEAD 组**：G0/G6/G12 是主理人独占终闸
+    （架构 §8.3 阶段图：主理人独占 DG-X + G12），按定义不与其他门禁并行。
+    `gate_groups()` 把终闸组也一并列出（那是对全部独立取证角色的完整枚举，
+    审计 D-143 据此补回了 TEAM_LEAD 组）——但**并行调度的调用方要的是
+    「哪几组可以同时跑」**，把终闸组混进来会让并行退化成「终闸也和别的组
+    一起跑」，违反架构「不与其他门禁并行」的明文。故这里显式剔除终闸组。
+
+    架构 §8.3 的分组是：骆准绳 / 陈纲举 / 辞达意 / 文择体 = 4 组。
+    """
+    return tuple(组 for 组 in gate_groups() if RoleId.TEAM_LEAD not in 组)
+
+
+def 终闸组() -> tuple[tuple[RoleId, ...], ...]:
+    """主理人独占终闸（架构 §8.3：DG-X + G12），不与其他门禁并行。
+
+    **返回形状与 `gate_groups()` 保持一致（组是元组的元组）**，
+    这样 `并行门禁组() | 终闸组() == gate_groups()` 才能做集合比较。
+    """
+    return ((RoleId.TEAM_LEAD,),)
+
+
+# ═══ 门禁判定（D-028/D-050/反死循环铁律）═══
+
+#: 同一门禁退回上限（D-050）：退回 2 次后不再自动重写，转用户裁决。
+退回上限: Final = 2
+
+
+class 处置(StrEnum):
+    """一道门禁失败（或通过）之后的**唯一合法去向**。
+
+    三个值穷尽架构 §8.3 的门禁失败分支，没有第四条路——
+    尤其**没有「警告后放行」**：那正是 D-028 禁止的绕过出口。
+    """
+
+    放行 = "放行"
+    退回 = "退回"
+    升级裁决 = "升级裁决"
+
+
+def 门禁判定(记录: GateRecord, 环境性缺失: bool) -> 处置:
+    """把一道门禁的取证结论映射为**唯一**处置（纯函数，可单测）。
+
+    规则（架构 §8.3 + D-050 + gate-manual 反死循环铁律）：
+
+    1. `记录.passed` → **放行**。建议类不阻断，归档即可（D-016）。
+    2. `环境性缺失`（无库/无网导致取证失败）→ **一次性升级裁决**，
+       **不消耗退回数**。反复退回本身就是缺陷，这是代码里的显式分支，
+       不靠提示词记得。
+    3. 不通过且 `记录.attempt >= 退回上限` → **升级裁决**（D-050）。
+    4. 其余不通过 → **退回**重写（红线无绕过出口，D-028）。
+
+    `环境性缺失` 是显式入参而非从 `记录` 推断：无网络与「事实编造」
+    在文字上无法可靠区分，混在一起判就会把环境问题当成文稿问题退 2 次。
+    """
+    if 记录.passed:
+        return 处置.放行
+    if 环境性缺失:
+        return 处置.升级裁决
+    if 记录.attempt >= 退回上限:
+        return 处置.升级裁决
+    return 处置.退回
