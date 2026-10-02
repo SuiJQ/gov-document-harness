@@ -42,6 +42,17 @@ from .view import ContextView
 #: 故兜底必须比「被丢掉的东西」小一个量级，否则压缩失去意义。
 未摘要原文上限token = 600
 
+#: 摘要的标记前缀（Codex 的 `SUMMARY_PREFIX` 同型做法）。
+#:
+#: `ContextView.summary_of_dropped` 已经是独立字段，
+#: **下游按字段就能区分**摘要与真实历史——这是结构带来的。
+#: 但 `messages()` 会把五栏拍平成一个消息序列发给模型，
+#: **模型看到的是拍平后的结果**：那里摘要与真实对话长得一样，
+#: 模型可能以为「历史就这么多」，从而误判当前局面。
+#:
+#: 故凡摘要一律带此前缀，让模型自己也能分辨。
+摘要前缀 = "【早期讨论摘要】"
+
 
 @dataclass(frozen=True, slots=True)
 class 压缩结果:
@@ -156,7 +167,7 @@ def _做摘要(丢弃: tuple[Message, ...], 摘要器: 摘要器 | None) -> Mess
     诚实与可用不冲突——标了「未摘要且已截断」就既没说谎，也没失控。
     """
     if 摘要器 is not None:
-        return 摘要器(丢弃)
+        return Message(role="system", content=f"{摘要前缀}{摘要器(丢弃).content}")
     原文 = "\n".join(m.content for m in 丢弃)
     上限字符 = int(未摘要原文上限token * 汉字除数)
     已截断 = len(原文) > 上限字符
@@ -165,8 +176,6 @@ def _做摘要(丢弃: tuple[Message, ...], 摘要器: 摘要器 | None) -> Mess
     标注 = "未经摘要，且以下原文已截断" if 已截断 else "未经摘要"
     return Message(
         role="system",
-        content=(
-            f"【以下为已被移出上下文的早期讨论原文，{标注}】\n"
-            f"共 {len(丢弃)} 条。原文如下，请自行阅读：\n{原文}"
-        ),
+        content=f"{摘要前缀}【以下为已被移出上下文的早期讨论原文，{标注}】\n"
+        f"共 {len(丢弃)} 条。原文如下，请自行阅读：\n{原文}",
     )

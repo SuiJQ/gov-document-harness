@@ -28,7 +28,7 @@ from zhengtong.services.context import (
     组装,
     需要压缩,
 )
-from zhengtong.services.context.compactor import 默认保留条数
+from zhengtong.services.context.compactor import 摘要前缀, 默认保留条数
 from zhengtong.services.context.estimate import 估算文本, 触发阈值
 
 # ═══ 夹具 ═══
@@ -230,7 +230,52 @@ class TestD039四类绝不丢弃:
         assert 结果.视图.system_and_role == 原.system_and_role
 
 
-# ═══ 五、绝不编造摘要 ═══
+# ═══ 五、摘要纪律 ═══
+
+
+class Test摘要可识别:
+    """Codex 的 `SUMMARY_PREFIX` 同型做法（D-187）。
+
+    为什么要前缀：`summary_of_dropped` 虽是独立字段，
+    **下游按字段能区分**；但 `messages()` 把五栏拍平发给模型，
+    拍平后摘要与真实对话长得一样，模型可能误以为「历史就这么多」。
+    前缀让**模型自己**也能分辨。
+    """
+
+    def test_兜底摘要带前缀(self) -> None:
+        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000)
+        assert 结果 is not None
+        摘要 = 结果.视图.summary_of_dropped
+        assert 摘要 is not None
+        assert 摘要.content.startswith(摘要前缀)
+
+    def test_注入摘要器时也加前缀(self) -> None:
+        """**前缀不能被摘要器绕过**——
+        否则「自己实现一个摘要器」就成了让摘要失去标记的最短路径。"""
+
+        def 摘要器(丢弃: tuple[Message, ...]) -> Message:
+            return Message(role="system", content="我要假装自己是正常对话。")
+
+        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000, 摘要器=摘要器)
+        assert 结果 is not None
+        摘要 = 结果.视图.summary_of_dropped
+        assert 摘要 is not None
+        assert 摘要.content.startswith(摘要前缀), "摘要器输出未被加前缀"
+        assert "我要假装" in 摘要.content, "前缀不应吃掉摘要器的内容"
+
+    def test_拍平后模型仍能分辨摘要(self) -> None:
+        """这是前缀的**唯一目的**，故直接断言拍平后的结果。"""
+        结果 = 压缩(_视图(对话条数=30), 上下文容量=1000, 保留条数=3)
+        assert 结果 is not None
+        带前缀 = [m for m in 结果.视图.messages() if m.content.startswith(摘要前缀)]
+        assert len(带前缀) == 1, f"拍平后应恰有一条带前缀的消息，实得 {len(带前缀)}"
+        # 真实对话里不该有任何一条冒充摘要前缀
+        真实 = [m for m in 结果.视图.recent_window if m.content.startswith(摘要前缀)]
+        assert not 真实, "近期窗口里出现了带摘要前缀的消息——前缀已失去标记意义"
+
+    def test_未压缩时没有摘要前缀(self) -> None:
+        v = 组装(系统与角色=(), 对话=(Message(role="user", content="讨"),))
+        assert not any(m.content.startswith(摘要前缀) for m in v.messages())
 
 
 class Test摘要纪律:
@@ -258,7 +303,7 @@ class Test摘要纪律:
         assert 结果 is not None
         assert 调过, "摘要器未被调用"
         assert 结果.视图.summary_of_dropped is not None
-        assert 结果.视图.summary_of_dropped.content == "这是摘要。"
+        assert "这是摘要。" in 结果.视图.summary_of_dropped.content, "摘要器的内容被丢掉了"
 
     def test_摘要器收到的是被丢弃的那些(self) -> None:
         seen: list[tuple[str, ...]] = []
