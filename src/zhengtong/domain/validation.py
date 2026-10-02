@@ -126,3 +126,44 @@ def validate_run_state(state: RunState) -> Result[None]:
         if gate not in {g.value for g in FORMAL_GATES}:
             return Result.fail(ErrorCode.STATE_UNKNOWN_GATE, f"未知门禁：{gate}")
     return Result.ok_none()
+
+
+def g3降级标注(tier: TierId) -> tuple[str, ...]:
+    """G3 降级时**必须展示**给用户的标注（D-116）。
+
+    ## 架构原文（§8.7）
+
+    > 唯一例外是 G3（Flash 时降级给主理人，且成果里**必须带
+    > "文种由主理人研判"这一行，要向用户展示**，因为文种判错整篇翻车）。
+
+    同节强调：「这条**要写成代码里的显式分支，不能靠提示词记得**」。
+
+    ## 为什么必须是函数而不是提示词里的一句话
+
+    提示词里的「记得标注」对本项目无效——
+    本项目反复吃亏的地方正是「靠模型自觉」：
+    换个模型、降个档、上下文一压缩，那句话就没了。
+    而文种判错整篇翻车，是全流程代价最大的单点。
+
+    故**降级这个事实必须由代码算出来**，
+    标注是这个计算的输出，不是模型的可选项。
+    调用方（编排层/接入层）拼进成果即可。
+
+    ## 与 `validate_gate_balance` 的关系
+
+    那里的 `continue` 负责**放行**（否则门禁配平校验会误报 Flash 档）；
+    本函数负责**留痕**。两处必须一致：
+    放行却不留痕 = 悄悄降级；留痕却不放行 = 门禁卡死。
+    `tests/test_step11_debts.py::test_编排用得上这个判定` 双向锁死。
+
+    ## 返回空元组而非空串
+
+    拼接方可以直接 `*标注` 展开，不必写 `if 标注:`——
+    少一个分支就少一处「忘了拼」。
+    """
+    spec = TIER_BY_ID[tier]
+    if not spec.gates_apply:
+        return ()  # 咨询档不过门禁，无从降级
+    if RoleId.DOC_ADVISOR in spec.roster:
+        return ()  # 文择体在编制内，G3 正常取证
+    return (f"文种由主理人研判（{spec.display_name} 档未编入文择体，G3 降级由主理人取证）",)

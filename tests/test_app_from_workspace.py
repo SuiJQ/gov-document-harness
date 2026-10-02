@@ -38,6 +38,60 @@ from zhengtong.ports.llm import LlmRequest, LlmResponse
 假密钥 = "sk-test0123456789abcdefghijklmnopqrstuvwxyz"
 
 
+def _填卡(ws, 运行号, **填: str) -> None:
+    """把一份**字段齐备**的 D-Card 写进运行状态。
+
+    ## 为什么第 11 步之后必须调它
+
+    第 11 步把 `validators` 从假实现换成真校验器后，
+    **空 D-Card 会被正确地拦下**（硬约束零沉降，D-040），
+    于是原先「随便跑跑」的冒烟测试全部变红。
+
+    这不是回归，是**校验器终于在干活了**。
+    修法是**让场景合法**（填好必填字段），
+    而不是把校验器改松——后者等于为了绿灯拆掉刚装上的防线。
+    """
+    import dataclasses
+
+    from zhengtong.domain.dcard import (
+        DCard,
+        DCardField,
+        DCardFieldId,
+        Provenance,
+        empty_dcard,
+    )
+    from zhengtong.domain.run_state import new_run_state
+    from zhengtong.domain.task import TaskSpec
+    from zhengtong.domain.tier import TierId
+
+    必填 = ("D1", "D2", "D3", "D4", "D5", "D6", "D7", "D9")
+    卡 = empty_dcard()
+    新 = dict(卡.by_id)
+    for 键 in 必填:
+        新[DCardFieldId(键)] = DCardField(
+            id=DCardFieldId(键),
+            label=键,
+            value=填.get(键, f"{键} 的测试值"),
+            provenance=Provenance.USER,
+        )
+    # **状态文件可能还不存在**——`run_once` 才是创建它的那一步。
+    # 这里只管把卡填进去，不预支运行步骤。
+    已存 = ws.load_run_state(运行号)
+    st = (
+        已存.unwrap()
+        if 已存.is_ok
+        else new_run_state(
+            运行号,
+            TaskSpec(
+                requirement="测试需求",
+                tier=TierId.PRO,
+            ),
+        )
+    )
+    # **RunState 是 frozen**：只能整体替换，不能就地赋值。
+    assert ws.save_run_state(dataclasses.replace(st, dcard=DCard(by_id=新))).is_ok
+
+
 def _工作区(tmp_path: Path) -> Path:
     return ensure_dirs(tmp_path / "ws").unwrap().root
 
@@ -192,6 +246,7 @@ def test_装配后能跑完整个流程(tmp_path: Path) -> None:
     with build_app_from_workspace(ensure_dirs(根).unwrap(), llm=FakeLlm()).unwrap() as app:
         from zhengtong.app import run_once
 
+        _填卡(app.ports.storage, app.run_id)
         got = run_once(app)
         assert got.is_ok, got.error
         # 配置里的模型名应当被真正用上（假 LLM 会回显）
@@ -218,6 +273,7 @@ def test_模型名真的进了请求(tmp_path: Path) -> None:
     with build_app_from_workspace(ensure_dirs(根).unwrap(), llm=_记录Llm()).unwrap() as app:
         from zhengtong.app import run_once
 
+        _填卡(app.ports.storage, app.run_id)
         assert run_once(app).is_ok
 
     assert seen, "一次模型调用都没发生，断言无从谈起"
@@ -233,6 +289,7 @@ def test_阶段仍按配置推进(tmp_path: Path) -> None:
     with build_app_from_workspace(ensure_dirs(根).unwrap(), llm=FakeLlm()).unwrap() as app:
         from zhengtong.app import run_once
 
+        _填卡(app.ports.storage, app.run_id)
         assert run_once(app).is_ok
         # **不加 `if e.phase is not None`**——类型检查器指出
         # `phase` 字段本就非空，那个条件恒真。

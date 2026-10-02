@@ -45,7 +45,9 @@ from .adapters.local_secrets import LocalSecrets
 from .adapters.paths import Workspace
 from .adapters.system_clock import SystemClock
 from .adapters.userfiles.scanner import LocalUserFiles
+from .adapters.validators import 硬约束校验器
 from .domain.artifact import ArtifactKind, ArtifactRef
+from .domain.dcard import DCard
 from .domain.errors import ErrorCode, Result
 from .domain.event import Event, EventKind, Level
 from .domain.ids import ArtifactId, RunId
@@ -307,7 +309,21 @@ def run_once(app: App) -> Result[DriveOutcome]:
             # 只发终局事件的话，日志里分不清"这次门禁跑了"与
             # "这次根本没轮到门禁"——而这两者的处置完全不同。
             app.bus.emit(_ev(app, PhaseId.GATING, EventKind.GATE_STARTED, script="hard"))
-            got = app.ports.validators.run_hard_constraint({"phase": phase.value})
+            # **D-196 接线补漏**：原先只传 `{"phase": ...}`，
+            # 而真校验器要看的是 D-Card（硬约束零沉降 D-040）。
+            # 假校验器不挑入参，于是这个缺口一直没人发现——
+            # **接真件才暴露的接线缺口，正是 D-196 要还这笔债的理由**。
+            状态 = st.load_run_state(app.run_id)
+            卡 = 状态.unwrap().dcard if 状态.is_ok else DCard(by_id={})
+            got = app.ports.validators.run_hard_constraint(
+                {
+                    "phase": phase.value,
+                    "dcard": {
+                        编号.value: (字段.value or "")
+                        for 编号, 字段 in sorted(卡.by_id.items(), key=lambda kv: kv[0].value)
+                    },
+                }
+            )
             if got.is_error:
                 err = got.error
                 assert err is not None
@@ -491,9 +507,13 @@ def build_app_from_workspace(
         # 由 `tests/test_tool_path_guard.py::test_app装配出的工具层同样拦得住` 抓出。
         storage = FsStorage(ws=ws)
 
-    # `validators` **故意仍接假实现**：真实校验器属第 11 步，尚未实现。
-    # 到那时须把这一行改掉——**留假实现不是权宜之计，是一笔明确的欠账**，
-    # 记在 D-196，故此处不写「暂无真实现」的含糊注释。
+    if validators is None:
+        # **D-196 的欠账到此还清**。原先这里把 None 直接转发，
+        # `build_app` 见到 None 装 FakeValidators——
+        # 症状与 D-165 五次完全一样：**真配置、测试全绿、校验根本没跑**。
+        # 硬约束零沉降（D-040）是「缺则不得动笔」的唯一执行点，
+        # 接假实现等于这条铁律在真实运行路径上不存在。
+        validators = 硬约束校验器()
 
     return Result.ok(
         build_app(
