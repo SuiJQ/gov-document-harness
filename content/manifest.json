@@ -49,12 +49,12 @@
     "doc-templates": "法定文种模板骨架：请示/通知/函/报告/纪要/总结 + 填写纪律"
   },
   "files": {
-    "prompts/compliance.md": "sha256:3684714497a596bbf1adc1a937613b78c33b7dc0e5120a6788a676631b2844bb",
-    "prompts/doc-advisor.md": "sha256:a4e28496b797690b0f617c10aad4913a0a57e5d4e4760f12aa28d94480e5760f",
-    "prompts/language.md": "sha256:27973aa00867c817ef98df0ae86465bef4e9a1177123bde3fa06fe343c996d99",
-    "prompts/structure.md": "sha256:4798a418ac5a67daeacf3081522d727c29f4a997f70c941ca7c7c89a1a881b04",
-    "prompts/team-lead.md": "sha256:af36be83ea8fe44c163fac4abcd632859320e68930633e0e7697098c8845e1ba",
-    "references/admin-ordering-rules.md": "sha256:4d34a8df8cb0c409027bdda5e2c4d46790243b9c12b6c3472981d112228832c1",
+    "prompts/compliance.md": "sha256:f0c38ddf75e32fafda965699979a5f4046a781f81141af0e7bb76b338bb1ac61",
+    "prompts/doc-advisor.md": "sha256:b40d7b6f2ae7e0385b88ee6658cc92fe6d64ca9ad1ef626cb8b0bce0089095f4",
+    "prompts/language.md": "sha256:b7c59d01ccc1640a54bc5cca084435949db823180425e28155877d1b6466141d",
+    "prompts/structure.md": "sha256:c45cedca2f5387430b883b264ef37d71785b8122e701bdf053fbf8adbb30f1ec",
+    "prompts/team-lead.md": "sha256:1b4d51ca34e9bb716083ed63afc0ded58816e2e8e519f2fd064a80708105654f",
+    "references/admin-ordering-rules.md": "sha256:b4c41fb9cb5fdd39a1222479be07ee791879033b8ca4abcde7051bcc99d3a718",
     "references/compliance-rules.md": "sha256:cee2d4a21b8be906697cc3274182a1102bd02cd47a33a4a296dfb85e11d3030b",
     "references/deai-rules.md": "sha256:6e02633d7d87592a57d8765e65de0e1f964e3699c3851f437ff8667d010b1668",
     "references/doc-type-patterns.md": "sha256:88eadf9fb403934f648e9c17869abe8a89ec05ec506919557142ce76d7c38ce4",

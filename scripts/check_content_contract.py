@@ -249,6 +249,72 @@ def check_phase_names() -> list[str]:
     return problems
 
 
+def check_gate_ownership() -> list[str]:
+    """每道门禁的**唯一取证方**必须在自己的提示词里声明（D-149）。
+
+    第五轮查出的问题：`language.md` 零次提及 G4、`doc-advisor.md`
+    零次提及 G3——而这两人分别是 G4 与 G3 的唯一取证方。
+    门禁手册里写着「G4（辞达意）」，但**模型只读自己的提示词**，
+    职责不在自己的提示词里声明，就等于没告知。
+
+    ## 判据为什么不是「文件里出现过该编号」
+
+    证伪时实测：删掉 `language.md` 的认领声明后，它仍有 4 处 `G4`
+    （全是「G4 给了你」这类**反例句**），脚本照样全绿。
+    故须匹配**认领句式**——句中同时出现触发词与编号才算。
+
+    ## 为什么按句切分而不是一条正则
+
+    试过 `(取证责任|…)(G1|G2|…)(?:…(G1|G2|…))*`，两处坑：
+    ① 非贪婪只吃第一个编号 → G2/G7/G10 全漏判；
+    ② 改贪婪后，**Python 重复捕获组只保留末次结果**，
+       `G1` 被重复匹配到，`G2/G7/G10` 仍然丢。
+    同一句声明多条门禁是常态，用一条正则表达不了。
+    按句切开后逐句取并集，最直白也不会漏。
+    """
+    归属 = {
+        "compliance.md": ("G1", "G2", "G7", "G10"),
+        "structure.md": ("G5", "G8"),
+        "language.md": ("G4",),
+        "doc-advisor.md": ("G3",),
+    }
+    全部编号 = {g for gs in 归属.values() for g in gs}
+    触发词 = ("取证责任", "由你独自取证", "由你取证",
+              "属第 4 组", "属第4组", "独占此项", "归你负责")
+
+    problems: list[str] = []
+    for 名, 门禁组 in 归属.items():
+        text = (CONTENT / "prompts" / 名).read_text(encoding="utf-8")
+        已认领: set[str] = set()
+        for 句 in re.split(r"[。\n]", text):
+            if any(w in 句 for w in 触发词):
+                已认领 |= {g for g in 全部编号 if g in 句}
+        for g in 门禁组:
+            if g not in 已认领:
+                problems.append(
+                    f"{名} 未以认领句式声明自己负责 {g}"
+                    f"——裸编号不算（反例句里也会出现该编号）"
+                )
+    return problems
+
+
+def check_revision_guidance() -> list[str]:
+    """四份成员提示词都必须说明「我被退回后该做什么」（D-149）。
+
+    第五轮查出：四份**只教「你能把别人退回去」**，
+    没有一份讲「你被退回来该做什么」——
+    主理人侧有 `revision` 阶段，成员侧没有接，闭环缺一半。
+    """
+    问题 = []
+    for p in sorted(CONTENT.glob("prompts/*.md")):
+        if p.name == "team-lead.md":
+            continue  # 主理人是派退回的一方，不是接的一方
+        text = p.read_text(encoding="utf-8")
+        if "被退回" not in text:
+            问题.append(f"{p.name} 未说明被退回后的处置（`revision` 阶段闭环缺失）")
+    return 问题
+
+
 def main() -> int:
     print("=" * 72)
     print("内容包 · 代码侧契约一致性（第四轮新增）")
@@ -266,6 +332,8 @@ def main() -> int:
     results.append(("角色提示词路径 ↔ manifest", check_prompt_files(contracts)))
     results.append(("门禁中文名 ↔ 代码注释", check_gate_names(contracts)))
     results.append(("阶段中文名 ↔ 代码注释", check_phase_names()))
+    results.append(("门禁取证方声明", check_gate_ownership()))
+    results.append(("被退回后处置（revision 闭环）", check_revision_guidance()))
     results.append(("产物中文名（结构判定，自动跳过）", check_artifact_kind_names(contracts)))
 
     total_problems = 0
