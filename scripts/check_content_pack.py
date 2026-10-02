@@ -89,6 +89,13 @@ def check_file_presence() -> list[Check]:
         "writing-techniques.md",
         "gbt9704-format.md",
         "punctuation.md",
+        "stats-baseline.md",
+        "language-dna.md",
+        "param-card.md",
+        "title-techniques.md",
+        "cognition-dna.md",
+        "cognition-baseline.md",
+        "doc-templates.md",
     )
     for name in required_refs:
         p = REFERENCES / name
