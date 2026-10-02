@@ -18,7 +18,7 @@ from zhengtong.domain.dcard import (
 )
 from zhengtong.domain.errors import ErrorCode, Result
 from zhengtong.domain.role import RoleId
-from zhengtong.domain.tier import TIERS, TierId
+from zhengtong.domain.tier import TIER_BY_ID, TIERS, ReasoningPolicy, TierId
 from zhengtong.domain.validation import (
     validate_dcard,
     validate_gate_balance,
@@ -204,3 +204,73 @@ class Test上下文视图不可变:
         from zhengtong.domain.gate import FORMAL_GATES
 
         assert isinstance(FORMAL_GATES, tuple)
+
+
+# ═══ D-150：档位的深度思考策略（用户明确指定，不可漂移）═══
+
+
+class Test深度思考由档位决定:
+    """用户原话：
+
+    > 「深度思考由档位决定，Flash 模式不深度思考，Pro 模式深度思考，
+    >  但是传入的上下文不包含深度思考的内容。」
+
+    **这三个取值是用户定的，不是推导出来的**，所以必须逐档锁死——
+    反证实测：把 Flash 改成 `ON` 时，全套测试无一处变红。
+
+    另一半「上下文不含深度思考的内容」由 D-052 管
+    （适配器层丢弃 `reasoning_content`），不属本处；
+    这里留一句指针，避免后人以为本枚举管了那件事。
+    """
+
+    @pytest.mark.parametrize(
+        ("档位", "期望"),
+        [
+            pytest.param(TierId.CONSULT, ReasoningPolicy.OFF, id="咨询"),
+            pytest.param(TierId.FLASH, ReasoningPolicy.OFF, id="Flash"),
+            pytest.param(TierId.PRO, ReasoningPolicy.ON, id="Pro"),
+        ],
+    )
+    def test_各档思考策略固定(self, 档位: TierId, 期望: ReasoningPolicy) -> None:
+        spec = TIER_BY_ID[档位]
+        assert spec.reasoning_policy is 期望, (
+            f"{档位.value} 的深度思考策略被改了——"
+            "这是用户明确指定的（Flash 不深度、Pro 深度），不是可推导项"
+        )
+
+    def test_策略由档位定而非用户手填(self) -> None:
+        """**没有可手填的入口，故没有「填错就静默降级」的风险。**
+
+        D-146 的教训：新增配置项必须先想清楚「填错了会静默变成什么」。
+        深度思考若做成用户可填的开关，填错就是静默降级——
+        用户以为在深度思考，实际没有，且界面与日志都不会提示。
+        """
+        import dataclasses
+
+        from zhengtong.adapters.config import Config
+
+        字段 = {f.name for f in dataclasses.fields(Config)}
+        assert not any("reason" in n or "think" in n for n in 字段), (
+            f"配置里出现了思考相关字段：{sorted(字段)}——思考策略应由档位决定，不给用户手填入口"
+        )
+
+    def test_本枚举只管要不要不管怎么开(self) -> None:
+        """**职责边界**：本枚举回答「要不要」，`reasoning_probe` 回答「怎么开」。
+
+        架构 §6.2 探测四种关闭写法（`thinking: {"type":"disabled"}` /
+        `chat_template_kwargs: {"enable_thinking": false}` /
+        `reasoning_effort: "none"` / 提示词前缀），
+        那是第 6 步 `adapters/llm/reasoning_probe.py` 的事。
+
+        判据：domain 层不得出现任何后端烙印。
+        """
+        import pathlib
+
+        源码 = (
+            pathlib.Path(__file__).resolve().parents[1] / "src" / "zhengtong" / "domain" / "tier.py"
+        ).read_text(encoding="utf-8")
+        for 烙印 in ("reasoning_effort", "enable_thinking", "no_think", 'thinking"'):
+            assert 烙印 not in 源码, (
+                f"domain 层出现了后端烙印 {烙印!r}——"
+                "怎么开关是第 6 步适配器层的事，domain 只该知道要不要"
+            )

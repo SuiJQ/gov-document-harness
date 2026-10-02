@@ -189,6 +189,10 @@ def run_once(app: App) -> Result[DriveOutcome]:
                     EventKind.RUN_STARTED,
                     at=_started_at,
                     user_files=len(files),
+                    # 用户要求「讲一下识别到几个文件和文件名即可」。
+                    # **限长**：用户说「不要占太大空间」，故只带前若干个名字，
+                    # 由投影层负责折行与省略号。发射端不做显示决策。
+                    file_names=tuple(f.name for f in files),
                 )
             )
 

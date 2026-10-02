@@ -13,6 +13,33 @@ from enum import StrEnum
 from .role import RoleId
 
 
+class ReasoningPolicy(StrEnum):
+    """档位的深度思考策略（用户定：**由档位决定，不由用户手填**）。
+
+    ## 为什么不给用户手填
+
+    D-146 的教训：新增配置项必须先想清楚「填错了会静默变成什么」。
+    思考深度若做成可手填的开关，填错就是**静默降级**——
+    用户以为在深度思考，实际没有，而界面与日志都不会提示。
+
+    而档位本来就是用户已经明确选的，思考策略随档位自动确定，
+    就没有这个入口，也就没有这个风险。
+
+    ## 与 D-052 的分工
+
+    本枚举只回答「**要不要**深度思考」；
+    「**怎么**开关」由 `adapters/llm/reasoning_probe.py` 按后端烙印处理
+    （架构 §6.2 探测四种写法）。
+
+    而无论开关成功与否，**推理内容一律不进上下文**（D-052）：
+    `reasoning_content` 丢弃，不写进成员消息历史、不落盘。
+    本枚举管不了也管不着那件事——那是适配器层的硬约束。
+    """
+
+    OFF = "off"  # 不启用深度思考
+    ON = "on"  # 启用深度思考
+
+
 class TierId(StrEnum):
     """档位内部标识（英文，仅用于配置键与日志）。"""
 
@@ -37,6 +64,7 @@ class TierSpec:
     policy_retrieval: bool  # 是否做政策依据检索
     gates_apply: bool  # 门禁是否适用
     allows_rewrite: bool  # 是否允许退回重写
+    reasoning_policy: ReasoningPolicy = ReasoningPolicy.OFF
 
     @property
     def is_consult(self) -> bool:
@@ -53,6 +81,8 @@ TIERS: tuple[TierSpec, ...] = (
         policy_retrieval=False,
         gates_apply=False,  # 门禁不适用
         allows_rewrite=False,
+        # 咨询只有主理人一人、且不产出成文，深度思考没有收益
+        reasoning_policy=ReasoningPolicy.OFF,
     ),
     TierSpec(
         id=TierId.FLASH,
@@ -68,6 +98,8 @@ TIERS: tuple[TierSpec, ...] = (
         policy_retrieval=True,  # 简单检索
         gates_apply=True,
         allows_rewrite=True,
+        # 用户定：Flash **不**深度思考
+        reasoning_policy=ReasoningPolicy.OFF,
     ),
     TierSpec(
         id=TierId.PRO,
@@ -83,6 +115,8 @@ TIERS: tuple[TierSpec, ...] = (
         policy_retrieval=True,
         gates_apply=True,
         allows_rewrite=True,
+        # 用户定：Pro **深度**思考
+        reasoning_policy=ReasoningPolicy.ON,
     ),
 )
 

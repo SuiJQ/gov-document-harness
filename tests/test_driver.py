@@ -221,8 +221,15 @@ def test_同一循环两种投影看到同一事件序列() -> None:
 
     # 调试模式全量透传；标准模式只放行白名单
     assert len(dbg.lines()) == len(all_seen)
-    # 本次只有 run.started / run.finished，两者都不在白名单 → 标准模式无输出
-    assert std.lines() == (), "run.started/finished 不该进标准界面（避免与成果卡抢注意力）"
+    # `run.started` **现在在白名单里**（用户新增要求，见 D-150）：
+    # 界面要告诉用户「识别到了几个文件、哪些文件名」，
+    # 而不是让用户不知道程序读到了什么。
+    # 本次事件不带 user_files/file_names，故摘要走「未发现用户材料」。
+    # `run.finished` 仍不在白名单——它不携带用户需要知道的信息。
+    assert std.lines() == ("  未发现用户材料",), (
+        f"run.started 应投影出一行扫描摘要，实得 {std.lines()}"
+    )
+    assert not any("finished" in 行 for 行 in std.lines()), "run.finished 仍不该进标准界面"
 
 
 def test_终态对象可直接判断成败() -> None:

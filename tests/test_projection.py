@@ -32,14 +32,27 @@ from zhengtong.kernel.projection import DebugProjection, StandardProjection
 # ═══ 白名单本身的形状 ═══
 
 
-def test_白名单恰好五项() -> None:
-    """架构 §5.4 明文：「用户白名单（对齐 D-023 用户只需知道四件事）：
-    表内 **5 项**」。数字对不上就是有人动过它。"""
-    assert len(USER_VISIBLE_KINDS) == 5
+def test_白名单恰好六项() -> None:
+    """架构 §5.4 原本写「表内 **5 项**」，现为 **6 项**。
+
+    用户明确要求新增：
+    > 「界面上能不能告诉用户扫描到了几个用户给 AI 的文件，
+    >  相当于告诉用户它识别到的，而不是不知道。」
+
+    故 `RUN_STARTED` 进入白名单。**架构 §5.4 的「5 项」需同步改为 6 项**
+    （D-150 已记录该修订）——这里若不跟着改，数字对不上就会有人
+    以为是误改而改回去。
+
+    **不违背 D-023**：D-023 限制的是内部过程噪声（成员状态、审核意见、
+    模型间交互），而"程序读到了哪些用户文件"是**系统对用户输入的确认**，
+    用户有权知道。
+    """
+    assert len(USER_VISIBLE_KINDS) == 6
 
 
-def test_白名单恰为架构指定的五项() -> None:
+def test_白名单恰为架构指定的六项() -> None:
     期望 = {
+        EventKind.RUN_STARTED,  # 用户新增：扫描到几个文件、哪些文件名
         EventKind.ARTIFACT_READY,
         EventKind.EXPORT_BLOCKED,
         EventKind.EXPORT_DONE,
@@ -126,6 +139,7 @@ def test_白名单内每类都有对应处理分支() -> None:
     两种情况都要立刻暴露。
     """
     样例: dict[EventKind, dict[str, object]] = {
+        EventKind.RUN_STARTED: {"user_files": 2, "file_names": ("a.md", "b.docx")},
         EventKind.ARTIFACT_READY: {"name": "正文初稿", "content": "全文"},
         EventKind.EXPORT_BLOCKED: {"placeholders": ("【发文机关】",)},
         EventKind.EXPORT_DONE: {"files": ("正文.txt",)},
@@ -338,3 +352,75 @@ def test_清单字段类型异常不崩(坏值: object) -> None:
     p.accept(_ev(EventKind.EXPORT_DONE, {"files": 坏值}))
     p.accept(_ev(EventKind.EXPORT_BLOCKED, {"placeholders": 坏值}))
     assert isinstance(p.lines(), tuple)
+
+
+# ═══ D-150：扫描结果要在标准模式显示（用户明确要求）═══
+
+
+class Test扫描摘要:
+    """用户原话：
+
+    > 「界面上能不能告诉用户扫描到了几个用户给 AI 的文件，
+    >  相当于告诉用户它识别到的，而不是不知道」
+    > 「不要占太大空间，讲一下识别到了几个文件和文件名即可」
+
+    故判据是三个词：**有数字、有名字、限长**。
+    """
+
+    def _投(self, 数据: dict[str, object]) -> tuple[str, ...]:
+        p = StandardProjection()
+        p.accept(_ev(EventKind.RUN_STARTED, 数据))
+        return p.lines()
+
+    def test_有数字有名字(self) -> None:
+        行 = self._投({"user_files": 2, "file_names": ("情况说明.docx", "数据表.xlsx")})
+        assert len(行) == 1, f"应只占一行，实得 {len(行)} 行：{行}"
+        文 = 行[0]
+        assert "2" in 文, f"没显示数量：{文}"
+        assert "情况说明.docx" in 文, f"没显示文件名：{文}"
+        assert "数据表.xlsx" in 文, f"没显示第二个文件名：{文}"
+
+    def test_零份时说清楚(self) -> None:
+        """**「没找到」也必须说，而不是什么都不显示。**
+
+        用户说「不要让用户不知道」——那反过来也成立：
+        不知道有没有材料，同样是「不知道」。
+        """
+        assert "未发现" in self._投({"user_files": 0, "file_names": ()})[0]
+        assert "未发现" in self._投({})[0], "连字段都没有时也不能静默"
+
+    def test_限长不刷屏(self) -> None:
+        """**用户明确说「不要占太大空间」，故必须有上限。**"""
+        十个 = tuple(f"文件{i}.docx" for i in range(10))
+        文 = self._投({"user_files": 10, "file_names": 十个})[0]
+        assert len(文) < 90, f"一行 {len(文)} 字，太长了：{文}"
+        assert "等 10 份" in 文, f"未折成「等 N 份」：{文}"
+        assert "文件0.docx" in 文, "第一个文件名应保留"
+
+    def test_超长名单名截断(self) -> None:
+        """**单个文件名也不能刷屏。**"""
+        超长 = "很长的名字" * 20 + ".docx"
+        文 = self._投({"user_files": 1, "file_names": (超长,)})[0]
+        assert "…" in 文, f"超长名未截断：{文}"
+        assert len(文) < 70, f"截断后仍过长：{文}"
+
+    def test_数量为准名字为摘要(self) -> None:
+        """**发射端截断过名字时，数量仍是事实。**
+
+        数量 8 但只给了 2 个名字（发射端限长）时，
+        显示必须是「8 份」而不是「2 份」——
+        否则用户会以为程序只识别出 2 份。
+        """
+        文 = self._投({"user_files": 8, "file_names": ("a.md", "b.md")})[0]
+        assert "8 份" in 文, f"数量应取自 user_files：{文}"
+
+    def test_发射端与投影的折线责任分明(self) -> None:
+        """**发射端只带数据，显示决策全在投影层。**
+
+        投影层跑在 TUI 主循环里，发射端不该也不必知道屏幕有多宽。
+        """
+        # 用行为而非私有常量来断言——常量改名不该让测试红，
+        # 而「一行有多长」才是用户真正在意的东西。
+        十份 = self._投({"user_files": 10, "file_names": tuple(f"文件{i}.docx" for i in range(10))})
+        超长 = self._投({"user_files": 1, "file_names": ("很长的名字" * 20 + ".docx",)})
+        assert len(十份[0]) < 90 and len(超长[0]) < 70

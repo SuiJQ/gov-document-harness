@@ -55,6 +55,43 @@ def _as_names(value: object) -> tuple[str, ...]:
     return (str(value),)
 
 
+#: 文件名一行的显示上限。用户要求「不要占太大空间」，
+#: 故超过这个数只显示前几个 + 「等 N 份」。
+_MAX_文件显示 = 5
+
+#: 单个文件名的显示上限。超长名截断，避免一行刷屏。
+_MAX_名单长 = 28
+
+
+def _扫描摘要(data: dict[str, object]) -> str:
+    """把 `RUN_STARTED` 的扫描结果压成**一行**。
+
+    用户原话：
+    > 「告诉用户扫描到了几个用户给 AI 的文件，相当于告诉用户它识别到的
+    >  而不是不知道」+「不要占太大空间，讲一下识别到了几个文件和文件名即可」
+
+    所以：**一行、限长、有名字**。不列大小不列类型——那是内部信息，
+    且会让这行迅速变长，反而看不清"识别到了什么"。
+
+    数量以发射端的 `user_files` 为准，名字列表可能因限长而不全，
+    两者不一致时以数量为准（**数量是事实，名字是摘要**）。
+    """
+    数量 = data.get("user_files")
+    名单 = _as_names(data.get("file_names"))
+    if not isinstance(数量, int):
+        数量 = len(名单)
+    if 数量 <= 0:
+        return "未发现用户材料"
+
+    示: list[str] = []
+    for 名 in 名单[:_MAX_文件显示]:
+        文 = str(名)
+        示.append(文 if len(文) <= _MAX_名单长 else 文[: _MAX_名单长 - 1] + "…")
+    if 数量 > _MAX_文件显示:
+        示.append(f"等 {数量} 份")
+    return f"已识别用户材料 {数量} 份：" + "、".join(示)
+
+
 @dataclass(slots=True)
 class StandardProjection:
     """标准模式（D-046）。
@@ -67,6 +104,7 @@ class StandardProjection:
     角色名用中文（D-080），且**只在这一处**出现角色相关文案。
     """
 
+    scanned: str = ""
     progress: str = ""
     artifacts: tuple[tuple[str, str], ...] = ()
     questions: tuple[str, ...] = ()
@@ -77,6 +115,9 @@ class StandardProjection:
             return
         data = event.data
         name = str(data.get("name", ""))
+        if event.kind is EventKind.RUN_STARTED:
+            self.scanned = _扫描摘要(data)
+            return
         if event.kind is EventKind.ARTIFACT_READY:
             # D-072：content 装的就是成果全文，界面直接渲染成成果卡。
             #
@@ -125,6 +166,7 @@ class StandardProjection:
     def lines(self) -> tuple[str, ...]:
         """标准模式的全部输出。**顺序稳定**：进度、提问、成果、错误。"""
         out = [self.progress] if self.progress else []
+        out += [f"  {self.scanned}"] if self.scanned else []
         out += [f"  · {q}" for q in self.questions]
         out += [f"  ▣ {n}（{len(c)} 字）" for n, c in self.artifacts]
         out += [f"  ✗ {e}" for e in self.errors]

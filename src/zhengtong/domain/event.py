@@ -220,8 +220,18 @@ DEBUG_ONLY_KINDS: Final[frozenset[EventKind]] = frozenset(
 #:
 #: 注意 `RUN_FINISHED` 不在其中：完成由界面自行收束，
 #: 不额外弹事件卡片，避免和成果卡抢注意力。
+#: 标准模式可见的事件类别（D-023/D-046）。
+#:
+#: 用户明确要求（新增 `RUN_STARTED`）：
+#: > 「界面上能不能告诉用户扫描到了几个用户给 AI 的文件，
+#: >  相当于告诉用户它识别到的，而不是不知道。」
+#:
+#: **这不违背 D-023。** D-023 限制的是"内部过程噪声"
+#: （成员状态、审核意见、模型间交互），而"程序读到了哪些用户文件"
+#: 是**系统对用户输入的确认**——用户有权知道。
 USER_VISIBLE_KINDS: Final[frozenset[EventKind]] = frozenset(
     {
+        EventKind.RUN_STARTED,
         EventKind.ARTIFACT_READY,
         EventKind.EXPORT_BLOCKED,
         EventKind.EXPORT_DONE,

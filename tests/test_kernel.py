@@ -163,19 +163,22 @@ def test_阶段成果事件名与架构逐字一致() -> None:
 # ── 白名单：D-046 的机械落点 ──
 
 
-def test_标准模式只放行五项四类事() -> None:
+def test_标准模式只放行六项四类事() -> None:
     """D-023「用户只需知道四件事」+ D-046。
 
     表内 5 项是因为 `export.blocked` / `export.done` 属同一族
     （导出结果）分开计；语义上仍是四件事。合并裁决见 EVENT_MERGE.md。
     """
+    # 用户新增：「告诉用户它识别到了几个文件、哪些文件名」（D-150）
+    assert is_user_visible(EventKind.RUN_STARTED)
     assert is_user_visible(EventKind.ARTIFACT_READY)
     assert is_user_visible(EventKind.EXPORT_BLOCKED)
     assert is_user_visible(EventKind.EXPORT_DONE)
     assert is_user_visible(EventKind.RUN_FAILED)
     assert is_user_visible(EventKind.USER_QUESTION_RAISED)
-    # 事件共 37 项，标准界面只放行 5 项——这正是 D-046 的意义
-    assert len({k for k in EventKind if is_user_visible(k)}) == 5
+    # 事件共 37 项，标准界面只放行 6 项——这正是 D-046 的意义
+    # （第 6 项 `RUN_STARTED` 是用户后来要求的，见 D-150）
+    assert len({k for k in EventKind if is_user_visible(k)}) == 6
     assert len(EventKind) == 37, "事件总数变了，架构 §5.4 与 EVENT_MERGE.md 需同步"
 
 
