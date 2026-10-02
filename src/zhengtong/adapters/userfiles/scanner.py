@@ -57,6 +57,7 @@ class LocalUserFiles:
                     name=路径.name,
                     size=路径.stat().st_size,
                     suffix=路径.suffix.lower(),
+                    rel_path=路径.relative_to(self.根).as_posix(),
                 )
             )
         self._已登记 = tuple(条目)
@@ -82,11 +83,27 @@ class LocalUserFiles:
         return read_txt_md(路径)
 
     def _定位(self, name: str) -> Result[Path]:
-        """按文件名找已登记文件，且**必须落在 user/ 内**。"""
+        """按名字找已登记文件，且**必须落在 user/ 内**。
+
+        **与 `scan_and_register` 用同一套定位规则**（第 7 步复查修）：
+        原先登记是递归的、定位是 `根 / name` 只查直下，
+        于是「登记了却读不到」——AI 看得到文件名，读不出内容。
+        用户按年度/类别放子目录是常态，那不是边角情况。
+
+        `name` 可以是 `通知.docx`（任一层），也可以是 `2026年/通知.docx`
+        （`rel_path` 全路径）。同名文件用后者区分。
+        """
         安全 = ensure_within(self.根, self.根 / name)
         if 安全.is_error:
             return Result.fail(ErrorCode.PATH_ESCAPE, "路径越出 user/ 范围")
         路径 = 安全.unwrap()
-        if not 路径.is_file():
-            return Result.fail(ErrorCode.FILE_UNREADABLE, f"文件不存在：{name}")
-        return Result.ok(路径)
+        if 路径.is_file():
+            return Result.ok(路径)
+
+        # 直下没有就按登记表找——**唯一的匹配依据是 `rel_path`**
+        for 条目 in self._已登记:
+            if 条目.rel_path == name or 条目.name == name:
+                候选 = ensure_within(self.根, self.根 / 条目.rel_path)
+                if 候选.is_ok and 候选.unwrap().is_file():
+                    return 候选
+        return Result.fail(ErrorCode.FILE_UNREADABLE, f"未登记的文件：{name}")

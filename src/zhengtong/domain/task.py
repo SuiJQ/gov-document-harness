@@ -19,11 +19,20 @@ class UserFile:
 
     刻意**不含内容**：D-023 要求 AI 初始只拿到文件名，
     内容必须通过工具按需读取。把它放进任务对象等于绕过了那道限制。
+
+    **`rel_path` 为什么必须存在**（第 7 步复查实测）：
+    扫描是递归的，两个子目录里各有一个 `通知.docx` 时，
+    只用 `name` 会登记出两条**完全相同**的记录，模型无法指定读哪个，
+    且按 `name` 找不到任何一份。故 `rel_path`（相对 `user/` 的路径）
+    才是**唯一定位依据**；`name` 保留为人类可读的展示名。
     """
 
     name: str
     size: int
     suffix: str
+    #: 相对 `user/` 的路径（POSIX 分隔符，如 `2026年/通知.docx`）。
+    #: 定位以它为准，**且同样受路径守卫约束**。
+    rel_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
