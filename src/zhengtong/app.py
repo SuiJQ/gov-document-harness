@@ -38,6 +38,7 @@ from .adapters.fakes import (
     FakeUserFiles,
     FakeValidators,
 )
+from .adapters.fs_storage import FsStorage
 from .adapters.http_llm import HttpLlm
 from .adapters.httpx_transport import HttpxTransport
 from .adapters.local_secrets import LocalSecrets
@@ -65,6 +66,7 @@ from .ports.storage import StoragePort
 from .ports.user_files import UserFilesPort
 from .ports.validators import ValidatorPort
 from .services.retrieval.search import 中文检索
+from .services.tools import 工具运行器, 建工具运行器
 
 #: 三个阶段成果的名字（D-030）。标准模式只显示这三样（D-046）。
 ARTIFACT_DIRECTION = "写作方向确认单"
@@ -90,6 +92,10 @@ class App:
     standard: StandardProjection
     debug: DebugProjection
     run_id: RunId
+    #: 工具层。**接进 App 才是可达的**（D-195）：
+    #: 第 10 步交付后 `services/tools/` 零引用——建好了、测过了，
+    #: 但没有任何一处引用它，真实模型一个工具也调不到。
+    tools: 工具运行器
     #: 运行期配置。**模型名只能从这里取**（D-082）——
     #: 代码不得自动填写，用户填什么就用什么。
     #: 此前这里是 `model="stub-model"` 写死的，
@@ -170,12 +176,27 @@ def build_app(
     journal = JsonlJournal(log_path) if log_path is not None else None
     bus = EventBus(redactor, journal)
 
+    # 工具层接线（D-195）：**由已装好的端口组装，不另造一套依赖**。
+    # 这样「App 用的端口」与「工具用的端口」必然是同一批——
+    # 若工具层自己 new 一份假端口，就会出现「装配层测的是真检索、
+    # 工具层用的还是假检索」这种同型盲区。
+    生效run = run_id if run_id is not None else RunId("r-0001")
+    tools = 建工具运行器(
+        storage=st,
+        user_files=ports.user_files,
+        retriever=ports.retriever,
+        content_pack=ports.content_pack,
+        validators=val,
+        run_id=生效run,
+    )
+
     app = App(
         ports=ports,
         bus=bus,
         standard=StandardProjection(),
         debug=DebugProjection(),
-        run_id=run_id if run_id is not None else RunId("r-0001"),
+        run_id=生效run,
+        tools=tools,
         config=config if config is not None else Config(),
     )
     # 订阅顺序即处理顺序：标准投影与调试投影互不影响（D-023）
@@ -460,6 +481,19 @@ def build_app_from_workspace(
         # 「用户文件读取」是唯一让用户材料进入系统的入口，
         # 假实现意味着**整条材料链是断的**，而测试照样全绿。
         user_files = LocalUserFiles(根=ws.dir("user"))
+
+    if storage is None:
+        # **同 D-165，第 5 次**：本函数为 `llm`/`retriever`/`user_files`
+        # 都写了「不传就接真实现」，**唯独漏了 storage**。
+        # 于是 `build_app` 见到 None 装 `FakeStorage`——
+        # 产物写进内存字典，**用户的工作区里一个文件都不会有**。
+        # 症状与前几次完全一样：真配置、测试全绿、什么也没落盘。
+        # 由 `tests/test_tool_path_guard.py::test_app装配出的工具层同样拦得住` 抓出。
+        storage = FsStorage(ws=ws)
+
+    # `validators` **故意仍接假实现**：真实校验器属第 11 步，尚未实现。
+    # 到那时须把这一行改掉——**留假实现不是权宜之计，是一笔明确的欠账**，
+    # 记在 D-196，故此处不写「暂无真实现」的含糊注释。
 
     return Result.ok(
         build_app(

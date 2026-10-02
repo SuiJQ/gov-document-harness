@@ -9,6 +9,7 @@
 | `handlers.py` | 16 个工具的实现。**不拼路径**（D-076） |
 | `runner.py` | 三重检查 + 一条审计的派发入口 |
 | `audit.py` | 审计记录，只追加不改写 |
+| `factory.py` | **构造入口**。接线在此，不在别处（D-195） |
 
 **已砍除且代码里不允许复活**（D-042）：`fs.list` / `fs.write` / `fs.delete`。
 """
@@ -16,6 +17,7 @@
 from __future__ import annotations
 
 from .audit import 审计器, 审计条目
+from .factory import 建工具运行器
 from .handlers import 处理器表, 工具依赖
 from .registry import TOOL_SPECS, 取工具, 该角色可调
 from .runner import 工具运行器
@@ -31,5 +33,6 @@ __all__ = [
     "审计条目",
     "工具依赖",
     "工具运行器",
+    "建工具运行器",
     "该角色可调",
 ]

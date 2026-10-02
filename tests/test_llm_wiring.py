@@ -135,19 +135,30 @@ def test_真实项目录不被污染() -> None:
 
 
 def test_接线不写任何文件(工作区: Path) -> None:
-    """装配是纯读——**不产出、不改写**。
+    """装配是纯读——**装配本身**不产出、不改写。
 
     **显式传 `FakeLlm`**：本条验的是「装配不写文件」，
     若用真适配器就会真发网络请求到 `example.invalid`（不存在），
     失败原因会盖掉要验的东西。**一个测试只该验一件事。**
+
+    ## 这条曾把 `run_once` 的产出算进来（已修）
+
+    原写法在 `with` 块**内**跑 `run_once`，却在**块外**取「前」再比「后」。
+    而 `run_once` 产出会导出 `final.txt`——那是第 7 步的正常行为。
+    于是本条把「运行产出」误算成「装配写文件」，
+    任何一次改动 storage 接线的修正都会被它误判为回归
+    （第 10 步核实、接真 `FsStorage` 时即触发）。
+
+    **一条测试只该验一件事**：这里验的是装配，故不跑 `run_once`。
+    导出行为由 `test_app.py` 那侧的导出判据负责。
     """
     前 = sorted(p.name for p in 工作区.rglob("*"))
-    with build_app_from_workspace(ensure_dirs(工作区).unwrap(), llm=FakeLlm()).unwrap() as app:
-        from zhengtong.app import run_once
-
-        assert run_once(app).is_ok
-    后 = sorted(p.name for p in 工作区.rglob("*"))
-    assert 前 == 后, f"装配/运行过程写入了文件：{set(后) - set(前)}"
+    # 装配后即退出上下文（`close()` 会释放连接池），
+    # 文件列表在退出**前**取——`close()` 本身不写文件，但把断言点
+    # 钉在「装配完成的那一刻」，测的才是「装配」。
+    with build_app_from_workspace(ensure_dirs(工作区).unwrap(), llm=FakeLlm()).unwrap():
+        装配后 = sorted(p.name for p in 工作区.rglob("*"))
+    assert 前 == 装配后, f"装配过程写入了文件：{set(装配后) - set(前)}"
 
 
 def test_关闭会释放连接池(工作区: Path) -> None:
