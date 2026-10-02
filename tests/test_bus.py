@@ -276,12 +276,15 @@ def test_current_seq反映已处理数(tmp_path: Path) -> None:
 
 
 def test_新建总线seq从零开始(tmp_path: Path) -> None:
-    """**这不是缺陷，是待补约束**（第 9 步续跑时须处理）。
+    """空 journal 时仍从 0 开始（D-125 恢复逻辑不得误伤全新运行）。"""
+    j = JsonlJournal(tmp_path / "ev.jsonl")
+    b = EventBus(Redactor(), j)
+    assert b.current_seq == 0, "空 journal 必须仍是 0，否则全新运行的第一个事件 seq≠1"
+    b.stop()
 
-    架构未规定续跑时 `seq` 如何恢复。当前实现总是从 0 开始，
-    故续跑场景下同一份日志里会出现重复 seq。
-    第 9 步实现续跑时必须处理，否则无法判断事件先后。
-    """
+
+def test_续跑后seq接着历史继续不重复(tmp_path: Path) -> None:
+    """D-125 核心：拿同一 journal 重建总线，新事件 seq 不与历史重复。"""
     j = JsonlJournal(tmp_path / "ev.jsonl")
     第一个 = EventBus(Redactor(), j)
     for i in range(1, 4):
@@ -289,8 +292,38 @@ def test_新建总线seq从零开始(tmp_path: Path) -> None:
     第一个.stop()
 
     第二个 = EventBus(Redactor(), j)
-    assert 第二个.current_seq == 0, "当前实现确实从 0 开始（第 9 步须处理）"
+    assert 第二个.current_seq == 3, "续跑起点必须是历史最大 seq，而非 0"
+    _ = 第二个.emit(_事件(call_id="new"))
+    assert 第二个.flush()
     第二个.stop()
+
+    seqs = [e.seq for e in j.read_all()]
+    assert seqs == [1, 2, 3, 4], f"续跑后 seq 应连续且不重复，实得 {seqs}"
+    assert len(seqs) == len(set(seqs)), "seq 不得重复"
+
+
+def test_续跑恢复取max而非条数(tmp_path: Path) -> None:
+    """journal 里有坏行时，用 max(seq) 而非 len() 恢复——否则新事件会撞历史 seq。"""
+    j = JsonlJournal(tmp_path / "ev.jsonl")
+    第一个 = EventBus(Redactor(), j)
+    for i in range(1, 4):  # seq 1,2,3
+        _ = 第一个.emit(_事件(call_id=str(i)))
+    第一个.stop()
+    # 人为插一行会崩的坏行（模拟 D-124 未知 kind / 崩溃半行）
+    with (tmp_path / "ev.jsonl").open("a", encoding="utf-8") as fh:
+        _ = fh.write("{这不是合法 JSON\n")
+
+    第二个 = EventBus(Redactor(), j)
+    # 坏行被跳过，只剩 3 条好事件，但坏行占了一个物理位置——
+    # 若按物理行数(len of file lines)恢复会得到 4，新事件将落到 5，
+    # 而 max(seq) 恢复得 3，新事件落到 4，与历史无冲突。
+    assert 第二个.current_seq == 3, "有坏行时必须仍取 max(seq)，不能被坏行抬高"
+    _ = 第二个.emit(_事件(call_id="after-bad"))
+    assert 第二个.flush()
+    第二个.stop()
+
+    seqs = [e.seq for e in j.read_all()]
+    assert seqs == [1, 2, 3, 4], f"坏行不应影响续跑续号，实得 {seqs}"
 
 
 # ═══ 夹具 ═══

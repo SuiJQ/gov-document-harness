@@ -33,6 +33,27 @@ Sink = Callable[[Event], None]
 _SHUTDOWN: Final[object] = object()
 
 
+def _恢复seq(journal: JournalPort | None) -> int:
+    """续跑起点 = journal 里**已落盘的最大 seq**。无 journal 或空 journal 时为 0。
+
+    **为什么取 `max(seq)` 而不是 `len(events)`**：journal 允许坏行
+    （D-123 崩溃半行、D-124 未知 kind 都会被跳过），
+    所以"条数"≠"这条日志一共发生过多少个事件"。
+    拿条数当起点，一旦中间有坏行，新事件就会与后面的历史事件撞 seq——
+    而 seq 重复意味着 replay 出来的顺序是假的，正是 D-064 要消灭的东西。
+
+    **为什么初值是 max 而非 max+1**：泵线程里是 `self._seq += 1`
+    之后才使用，初值给 max，第一个新事件自然落到 max+1，不会重复。
+    也不需要在 pump 启动后再校正——`_seq` 此刻只在构造期被写一次。
+
+    **续跑不需要额外标志位**：拿同一个 journal 路径重建 EventBus
+    就是续跑；空 journal 自然得 0，等同全新运行。
+    """
+    if journal is None:
+        return 0
+    return max((e.seq for e in journal.read_all()), default=0)
+
+
 class EventBus:
     """单点发射。**一个程序一个实例。**"""
 
@@ -42,7 +63,10 @@ class EventBus:
         self._inbox: SimpleQueue[Event | object] = SimpleQueue()
         self._sinks: list[Sink] = []
         self._sinks_lock: threading.Lock = threading.Lock()
-        self._seq: int = 0
+        # D-125：续跑时从 journal 恢复 seq 起点，**不恒从 0 开始**。
+        # 恢复点放在构造期——此刻泵线程尚未启动，不存在与 `_drain`
+        # 争抢 `_seq` 的并发问题；放到别处才需要额外加锁。
+        self._seq: int = _恢复seq(journal)
         self._stopped: bool = False
         self._pump: threading.Thread = threading.Thread(
             target=self._drain, name="event-pump", daemon=True
