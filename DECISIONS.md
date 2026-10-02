@@ -2471,6 +2471,106 @@ Pyright 随即报 7 处 `object` 不能赋给协议。
 
 ---
 
+### D-162 · LLM 适配器：三个实测坑与「传输层可注入」
+
+- **决策**：真实 LLM 适配器分两层——`http_llm`（请求组装与响应解析）
+  与 `Transport` 协议（发包），探测逻辑独立成 `llm_probe`。
+- **机制落点**：`adapters/http_llm.py`、`adapters/llm_probe.py`、
+  `adapters/httpx_transport.py`、`adapters/system_clock.py`
+- **出**：架构 §15 第 6 步，D-024，D-048
+
+**为什么传输层要能注入**：`complete` 与 `probe` 要测
+「服务端返回畸形响应时会怎样」，而**真端点没法稳定造出这些**。
+`tests/test_http_llm.py` 用构造的 JSON 覆盖每种形状，
+真端点的连通性由 `scripts/verify_endpoint.py` 单独验——
+**不混在一起**：混在一起会让「代码坏了」和「网络抖了」分不清。
+
+**三个实测坑**（2026-09-30 报告，每条都有断言）：
+
+1. **正文为 `null` 时回落到 `reasoning_content`**——
+   `max_tokens` 设小会让推理挤占额度，此时 `content=null`
+   而 `reasoning_content` 已写入。直接取 `content` 得到 `None`，
+   往下 `.strip()` 全线崩。
+2. **`tool_calls[].function.arguments` 是 JSON 字符串**，需二次 `json.loads`。
+   解析失败时**丢掉该工具调用而非整次调用失败**——
+   一个坏参数不该让整轮工作作废。
+3. **5xx 重试、4xx 不重试**：401 重试一万次仍是 401，
+   而每次重试都让用户干等。间隔指数退避 1s / 2s / 4s（D-027）。
+
+**探测为何逐项**：四项塞进一个请求里，失败时无法定位是哪一项坏了，
+用户看到「连接失败」不知道该换密钥还是换模型名。
+1/2/3 项共用一次往返（失败原因从同一响应的错误码区分），
+4 项单独发，5 项只检测不使用（D-032）。
+
+**`llm_probe` 不 import `HttpLlm` 的原因**：
+`http_llm.probe` 要调 `llm_probe`，后者若 import `HttpLlm` 就成环——
+类型检查器报 `Cycle detected`，而运行期可能某个 import 顺序才崩。
+故 `llm_probe` 声明本地 `Protocol`（只用 `model` / `complete` / `探测流式`），
+依赖单向，**探测逻辑顺带变得可测**。
+
+---
+
+### D-163 · `Result.ok` 的泛型在 BasedPyright 1.40 下推不出（工具限制，接受）
+
+- **决策**：保留 `Result.ok` 现状，接受由此产生的 4 条 `reportUnknownVariableType`，
+  **不改核心 API 去消它**。
+- **机制落点**：`src/zhengtong/domain/errors.py`（**不改**）、
+  `http_llm.py:369`、`llm_probe.py:148`
+- **出**：D-001
+
+**最小复现已存档**（27 行骨架即可复现）：
+
+    T = TypeVar("T")
+    class R1(Generic[T]):
+        @classmethod
+        def ok(cls, value: T) -> "R1[T]":
+            return cls(value=value)
+    a = R1.ok(5)
+    # reveal_type(a) → Result[Unknown]
+
+**试过并无效的三种改法**（都回滚了）：
+① `cls: type[Result[T]]` 显式标注——`cls` 本就无绑定，标注不解决问题；
+② 改 `@staticmethod`——`T` 仍推不出；
+③ 返回前加局部变量标注 `r: R2[T] = cls(...)`——照样 Unknown。
+
+**为什么接受**：`Result.ok` 是全项目 800+ 处的核心 API，
+为消 4 条 warning 而改它，**风险远大于收益**。
+而 warning 不影响运行：862 测试全绿、真实端点五项全通。
+**如实记录比强行压平更诚实**——压平会让后来人以为这里没问题。
+
+**这类 warning 之前没出现过**，因为前五步没有直接调 `Result.ok`
+（走的都是 `drive()` / `complete()` 等上层封装）。
+第 6 步第一次在生产代码里用到它，才暴露出来。
+**「基线 0 warnings」不等于「检查器覆盖了所有代码路径」。**
+
+---
+
+### D-164 · D-161 会被自己违反，包括新写的工具
+
+- **决策**：D-161（文档与输出不得含真实凭据片段）**适用于一切会打印内容的代码**，
+  不只是文档与注释。
+- **机制落点**：`scripts/verify_endpoint.py`
+- **出**：D-161
+
+**怎么违反的**：D-161 刚落盘不到一天，
+第 6 步新写的 `scripts/verify_endpoint.py` 里就有
+
+    print(f"密钥  已配置（{len(...)} 字符，片段 {sec.redaction_patterns()}）")
+
+**明知 `redaction_patterns()` 返回的是密钥片段，还是打印了出来。**
+理由当时是「用它验证脱敏确实返回了东西」——但**验证归测试，不归输出**。
+测试文件里可以用假密钥，验收脚本面对的是真凭据。
+
+**改法**：只报「已配置」与片段**数量**，不报内容。
+
+**这条比 D-161 本身更值得记**：规矩立起来之后，
+最容易被违反的不是老代码，是**新写的、当时觉得自己很清楚的代码**。
+D-161 那条决策里已经写了「一条规则如果在自己的说明文字里都做不到，它就不成立」——
+这次说明文字做到了，**代码没做到**。
+故补一句：**规则的范围要写全，否则实现时会按自己的理解缩小它。**
+
+---
+
 ## 待补
 
 以下内容随实施推进逐步回填：架构 §15 走完一步即补对应决策
