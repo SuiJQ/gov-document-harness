@@ -49,7 +49,7 @@
     "doc-templates": "法定文种模板骨架：请示/通知/函/报告/纪要/总结 + 填写纪律"
   },
   "files": {
-    "prompts/compliance.md": "sha256:46bbdc0635026fab307ed3d9f4241cbe3a84b89fa9daa8cc78e1154aa13849e8",
+    "prompts/compliance.md": "sha256:e9c613dcf329d43cceae486c92c565440eb388cdcb0d5b10b8ade4ec199138a0",
     "prompts/doc-advisor.md": "sha256:8a460c036ffcff0e14d059e262f0d7f30c5bba0b2b1631480e800df09aae5880",
     "prompts/language.md": "sha256:db7366c4e9fa0dc0ca9136e3614ecfd791f763cfd9955e99da4fc3e2488f9746",
     "prompts/structure.md": "sha256:12388bc44db0e4eacac4f22770992c93187fd5ce5c48e7b76e7d3a317167fbe8",
@@ -58,8 +58,8 @@
     "references/compliance-rules.md": "sha256:cee2d4a21b8be906697cc3274182a1102bd02cd47a33a4a296dfb85e11d3030b",
     "references/deai-rules.md": "sha256:6e02633d7d87592a57d8765e65de0e1f964e3699c3851f437ff8667d010b1668",
     "references/doc-type-patterns.md": "sha256:88eadf9fb403934f648e9c17869abe8a89ec05ec506919557142ce76d7c38ce4",
-    "references/error-memory.md": "sha256:6cdd72b284a06986cb3c8f2b386abd46a7d2835be3fdc552244e22ef855dec45",
-    "references/gate-manual.md": "sha256:dd7878ca8b74b7ad98d9332695d356f7fe9fcb024064939d6cf920c337e2e02e",
+    "references/error-memory.md": "sha256:7cf3f72cda688aa032c0a514c6616634f463a93a4cfbcdbe73760f04d603166b",
+    "references/gate-manual.md": "sha256:10cc01cd74bc1661356aeca1817fc8fd965058dcd8d2bee975ddf0743dce189c",
     "references/gbt9704-format.md": "sha256:c14584f08643de16d0cef5d157a0d55cd6cd1e0a464325dbc3c9b53032f78bd3",
     "references/punctuation.md": "sha256:514dfeb45eba41d51de0569c34501696005a8091cd66df9db35b932874b145bb",
     "references/writing-techniques.md": "sha256:39612d9ea45439a007b211a0853f2a73ed47ceb42e56b53ad913e340368d7447",

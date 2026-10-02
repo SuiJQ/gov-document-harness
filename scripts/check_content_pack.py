@@ -464,11 +464,74 @@ def check_manifest() -> list[Check]:
     return checks
 
 
+def check_g1_grouping() -> list[Check]:
+    """G1 的 18 项分组口径：版头 5 + 主体 9 + 版记 3 + 版式 1。
+
+    **页码不属版记**（用户裁决，与 GB/T 9704—2012 一致）——
+    版记只含分隔线、抄送机关、印发机关和印发日期。
+
+    为什么单独断言：这类口径在多文件复述，
+    实审时已出现过 gate-manual / compliance / error-memory 三处不一致。
+    脚本只查「有无说错」，**查不出是否漏读某处**，故断言给全仓扫描。
+    """
+    files = {
+        "gate-manual": _read(REFERENCES / "gate-manual.md"),
+        "compliance": _read(PROMPTS / "compliance.md"),
+        "error-memory": _read(REFERENCES / "error-memory.md"),
+    }
+    checks = [
+        Check(
+            "gate-manual 版记分组为 3",
+            "**版记（3）**" in files["gate-manual"],
+            "版头 5 + 主体 9 + 版记 3 + 版式 1 = 18",
+        ),
+        Check(
+            "gate-manual 页码明示不属版记",
+            "不属版记" in files["gate-manual"],
+            "须写明页码是版式要素",
+        ),
+        Check(
+            "compliance 版记仅列三项",
+            "版记仅此三项" in files["compliance"],
+            "G1 概览表须与 gate-manual 同口径",
+        ),
+        Check(
+            "error-memory E5 不把页码算进版记",
+            "页码属版式要素，不在版记之内" in files["error-memory"],
+            "红线库是权威口径，不得沿用旧分组",
+        ),
+    ]
+    # 反向扫描：把「页码」当**版记的构成要素**并列列举的地方都算错。
+    # 注意排除两类合法表述：
+    #   ① 显式否定式（含「不属」「不在」「独立」「版式要素」）
+    #   ② 「版记页」——指整页版面，不是版记要素
+    #      （证伪时实测到误报：「版记页前有空白页」说的是整页）
+    bad: list[str] = []
+    for p in sorted(CONTENT.rglob("*.md")):
+        for line in _read(p).splitlines():
+            if "版记" not in line or "页码" not in line:
+                continue
+            if any(k in line for k in ("不属", "不在", "独立", "版式要素")):
+                continue
+            if "版记页" in line:  # 「版记页」＝整页版面，非要素
+                continue
+            bad.append(f"{p.relative_to(ROOT)}: {line.strip()[:40]}")
+    checks.append(
+        Check(
+            "全仓无「版记含页码」的要素并列",
+            not bad,
+            "；".join(bad) if bad else "无",
+        )
+    )
+    return checks
+
+
 def main() -> int:
     groups = [
         ("文件齐备", check_file_presence()),
         ("红线 E1-E14", check_red_lines()),
         ("门禁 G0-G13", check_gates()),
+        ("G1 分组口径", check_g1_grouping()),
         ("D-Card 字段", check_dcard()),
         ("档位一致性", check_tiers()),
         ("事实三态", check_fact_tristate()),
