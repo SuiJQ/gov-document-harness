@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from zhengtong.adapters.config import Config, save
-from zhengtong.adapters.fakes import FakeLlm, FakeUserFiles
+from zhengtong.adapters.fakes import FakeLlm, FakeRetriever, FakeUserFiles
 from zhengtong.adapters.http_llm import HttpLlm
 from zhengtong.adapters.local_secrets import LocalSecrets
 from zhengtong.adapters.paths import ensure_dirs
@@ -239,3 +239,36 @@ def test_端口指向真实的user目录(工作区: Path) -> None:
     用户目录.joinpath("放一个.txt").write_text("内容", encoding="utf-8")
     登记 = app.ports.user_files.scan_and_register()
     assert any(f.name == "放一个.txt" for f in 登记), "端口没指向真实 user/"
+
+
+# ═══ 五、第 8 步：检索也必须接进真实入口 ═══
+#
+# D-165 的教训在第 8 步原样重演的风险：前三次
+# （HttpLlm / LocalUserFiles / 之后的每一次）都是「适配器写好了，
+# 却没接进运行路径」，用户运行程序拿到的仍是假实现。
+
+
+def test_检索端口是真实现(工作区: Path) -> None:
+    app = build_app_from_workspace(ensure_dirs(工作区).unwrap(), llm=FakeLlm()).unwrap()
+    assert not isinstance(app.ports.retriever, FakeRetriever), (
+        "真实入口拿到的是假检索器——用户材料永远检索不到"
+    )
+
+
+def test_显式传假检索器不被覆盖(工作区: Path) -> None:
+    app = build_app_from_workspace(
+        ensure_dirs(工作区).unwrap(), llm=FakeLlm(), retriever=FakeRetriever()
+    ).unwrap()
+    assert isinstance(app.ports.retriever, FakeRetriever)
+
+
+def test_真实检索器能索引并检索(工作区: Path) -> None:
+    """不只是「是真类」——**接上了还能用**。
+
+    实例化对了但内容是空的，照样是假实现。
+    """
+    app = build_app_from_workspace(ensure_dirs(工作区).unwrap(), llm=FakeLlm()).unwrap()
+    r = app.ports.retriever
+    assert r.build((("a", "关于甲事项的通知"), ("b", "关于乙事项的批复"))).is_ok
+    候选 = r.search("通知", top_k=5).unwrap()
+    assert 候选 and 候选[0].ref == "a", f"接上了但检索不出：{候选}"

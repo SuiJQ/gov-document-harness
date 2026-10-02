@@ -327,8 +327,8 @@ def test_检索遵守top_k() -> None:
 def test_记录建索引用的文档() -> None:
     """测试要能断言"喂给检索器的确实是这些"。"""
     r = fakes.FakeRetriever()
-    _ = r.build(("甲", "乙"))
-    assert r.built_with == ("甲", "乙")
+    _ = r.build((("a", "甲"), ("b", "乙")))
+    assert r.built_with == (("a", "甲"), ("b", "乙"))
 
 
 # ═══ 假用户文件源 ═══

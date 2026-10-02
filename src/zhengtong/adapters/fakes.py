@@ -42,7 +42,7 @@ from ..ports.llm import (
     LlmResponse,
     TokenUsage,
 )
-from ..ports.retriever import RetrieverPort, SearchHit
+from ..ports.retriever import RetrieverPort, SearchHit, 文档条目
 from ..ports.secrets import SecretsPort
 from ..ports.storage import StoragePort
 from ..ports.user_files import UserFilesPort
@@ -384,12 +384,12 @@ class FakeRetriever:
     """假检索器。返回空结果而非编造命中——编造召回结果会掩盖检索层的问题。"""
 
     hits: tuple[SearchHit, ...] = ()
-    built_with: tuple[str, ...] = ()
+    built_with: tuple[文档条目, ...] = ()
 
     def search(self, query: str, top_k: int = 8) -> Result[tuple[SearchHit, ...]]:  # noqa: ARG002
         return Result.ok(self.hits[:top_k])
 
-    def build(self, docs: tuple[str, ...]) -> Result[None]:
+    def build(self, docs: tuple[文档条目, ...]) -> Result[None]:
         self.built_with = docs
         return Result.ok_none()
 

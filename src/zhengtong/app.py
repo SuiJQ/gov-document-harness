@@ -64,6 +64,7 @@ from .ports.secrets import SecretsPort
 from .ports.storage import StoragePort
 from .ports.user_files import UserFilesPort
 from .ports.validators import ValidatorPort
+from .services.retrieval.search import 中文检索
 
 #: 三个阶段成果的名字（D-030）。标准模式只显示这三样（D-046）。
 ARTIFACT_DIRECTION = "写作方向确认单"
@@ -218,7 +219,12 @@ def run_once(app: App) -> Result[DriveOutcome]:
             # **但必须真的调**——判据是"管线接通"，不是"这里有活干"。
             # 跳过它们的话，"能跑起来"就只是驱动循环自己在转。
             files = app.ports.user_files.scan_and_register()
-            got_build = app.ports.retriever.build(tuple(f.name for f in files))
+            # **ref 用文件名**：只有文件名可用——此时材料还没读进来
+            # （第 7 步的 D-023 铁律：AI 初始只拿元信息，内容按需读）。
+            # 真正建库发生在编排层拿到内容之后，这里只保证链路通。
+            got_build = app.ports.retriever.build(
+                tuple((f.rel_path or f.name, f.name) for f in files)
+            )
             if got_build.is_error:
                 err = got_build.error
                 assert err is not None
@@ -440,6 +446,12 @@ def build_app_from_workspace(
             secrets=真密钥,
             clock=真时钟,
         )
+
+    if retriever is None:
+        # **同 D-165，第四次**：不传就接真实现。
+        # 检索是「用户材料 → 可引用依据」的唯一通路，
+        # 假实现意味着整条依据链是断的，而测试照样全绿。
+        retriever = 中文检索()
 
     if user_files is None:
         # **同 D-165**：不传就接真适配器。原先这里直接转发 None，
