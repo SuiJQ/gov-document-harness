@@ -44,11 +44,20 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from threading import Lock
 from typing import Final
 
 from ..domain.errors import ErrorCode, Result
 from ..domain.event import Event, EventKind, Level, make_call_id
-from ..domain.gate import FORMAL_GATES, GATES, GateId, 处置, 门禁判定
+from ..domain.gate import (
+    FORMAL_GATES,
+    GATES,
+    GateId,
+    处置,
+    并行门禁组,
+    终闸组,
+    门禁判定,
+)
 from ..domain.ids import RunId
 from ..domain.phase import PhaseId, PhaseState
 from ..domain.role import RoleId, RoleState
@@ -58,6 +67,7 @@ from ..domain.tier import TIER_BY_ID, TierId
 from ..domain.validation import g3降级标注, validate_task
 from ..kernel.bus import EventBus
 from ..kernel.driver import Step, drive
+from ..kernel.scheduler import GateGroup, run_groups
 from ..ports.content_pack import ContentPackPort
 from ..ports.llm import LlmPort, LlmRequest, Message
 from ..ports.storage import StoragePort
@@ -298,17 +308,27 @@ class _过程:
         决策（gate-manual 反死循环铁律），不消耗退回数、不空转。
         """
         while True:
-            派 = self._派发(档, PhaseId.GATING)
-            if 派.is_error:
-                return _转为失败(派, "门禁段派发失败")
             门禁 = _该跑门禁(档)
             self.门禁.extend(门禁)
-            裁定 = self.编排.门禁取证(门禁)
+            裁定 = self._并行取证(档, 门禁)
             # 结论落进 RunState——续跑、取证台账、用户裁决都要看它
             for 记 in 裁定.values():
                 self.状态 = self.状态.put_gate(记)
             # **缺席即无证据**（D-221）：按该跑门禁全集核对
-            缺席 = [g.value for g in 门禁 if g.value not in 裁定]
+            # 排除 **动态取证方** 的门禁：G9 不独立取证，按所触发的红线
+            # 归属退回（D-084），故它没有独立结论是正常的，
+            # 拿「全集核对」去要求它出结论，等于凭空造出一道不存在的缺证据。
+            # 再排除**取证方不在本档编制**的门禁：Flash 无文择体，
+            # G3 降级给主理人研判并带标注（D-116），本就不该独立取证。
+            # 拿它要求出结论，等于凭空造出一道不存在的缺证据（D-049 配平铁律）。
+            编制 = set(TIER_BY_ID[档].roster)
+            缺席 = [
+                g.value
+                for g in 门禁
+                if g.value not in 裁定
+                and not GATES[g].dynamic_owners
+                and any(r in 编制 for r in GATES[g].owners)
+            ]
             if 缺席:
                 self.编排.发(
                     EventKind.GATE_ESCALATED,
@@ -354,6 +374,73 @@ class _过程:
                 self.编排.发(EventKind.PHASE_EXITED, PhaseId.REVISION, ok=False)
                 return _转为失败(重跑, "退回后重起草失败")
             self.编排.发(EventKind.PHASE_EXITED, PhaseId.REVISION, ok=True)
+
+    def _并行取证(self, 档: TierId, 门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
+        """门禁取证：**并行组并发跑，主理人终闸组串行在后**（D-049）。
+
+        ## 复查时补上的接线
+
+        首版这里调的是 `_派发`——一条串行 `for` 循环，12 道门禁 11 次调用
+        全程严格 enter/exit 交替。D-049 要的是「并行 4 组」，
+        `kernel/scheduler.run_groups` 早就是完整的并行调度器
+        （ThreadPoolExecutor、D-130 异常就地转失败、顺序恒等于入参），
+        但**生产代码零引用**。这正是本项目反复记录的同型缺口：
+        零件都测过、衔接没测。
+
+        ## 编排侧同样也有终闸混入（D-218 的另一半）
+
+        `_该段角色` 从 `GATES[...].owners` 展开，会把 G12 的取证方
+        （主理人）也算进 GATING 当值。故并行组**只取 `并行门禁组()`**，
+        终闸组由 `_派发` 单独跑——架构 §8.3：「主理人独占终闸，
+        不与其他门禁并行」。
+        """
+        并行组 = tuple(组 for 组 in 并行门禁组() if any(r in TIER_BY_ID[档].roster for r in 组))
+        # 终闸组：主理人独占，串行在后
+        终闸 = tuple(r for 组 in 终闸组() for r in 组 if r in TIER_BY_ID[档].roster)
+
+        裁定: dict[str, GateRecord] = {}
+        if 并行组:
+            任务 = tuple(
+                GateGroup(
+                    owner=组[0], gate_ids=tuple(g.value for g in 门禁 if 组[0] in GATES[g].owners)
+                )
+                for 组 in 并行组
+            )
+
+            def _跑一组(g: GateGroup) -> Result[dict[str, GateRecord]]:
+                组门禁 = tuple(x for x in 门禁 if x.value in g.gate_ids)
+                # 取证方**在自己的线程里**走一遍状态机并动笔——
+                # 并行不能绕过 D-042 的六态机，否则 `动过的角色` 缺人，
+                # 「编制内必须当值」这类判据就查不出谁真被派发过。
+                self.状态 = self.状态.set_role_state(g.owner, RoleState.RUNNING)
+                self.出现过的状态.append(RoleState.RUNNING)
+                cid = make_call_id(
+                    "gate", str(self.编排.运行号), PhaseId.GATING.value, role=g.owner.value
+                )
+                if cid not in self.已完成:
+                    答 = self.llm.complete(self._构造请求(g.owner, PhaseId.GATING))
+                    if 答.is_error:
+                        错 = 答.error
+                        assert 错 is not None
+                        return Result.fail(错.code, f"{g.owner.value} 取证失败：{错.detail}")
+                    self.回复[g.owner] = 答.unwrap().text
+                    self.已完成 = (*self.已完成, cid)
+                self.动过的.append(g.owner)
+                self.出现过的状态.append(RoleState.DONE)
+                self.状态 = self.状态.set_role_state(g.owner, RoleState.DONE)
+                # 每组**各自**取一次取证结论：并行的意义就在这儿——
+                # 一组一请求，而不是 12 道门禁挤在一次调用里。
+                return Result.ok(self.编排.门禁取证(组门禁))
+
+            结果 = run_groups(任务, _跑一组)
+            for 项 in 结果:
+                if 项.value.is_ok:
+                    裁定.update(项.value.unwrap())
+        if 终闸:
+            终闸门禁 = tuple(g for g in 门禁 if any(r in GATES[g].owners for r in 终闸))
+            if 终闸门禁:
+                裁定.update(self.编排.门禁取证(终闸门禁))
+        return 裁定
 
     def _派发(self, 档: TierId, 阶段: PhaseId) -> Result[None]:
         """按编制派发该段该动的人，问模型，记账。**幂等在此**。
@@ -413,7 +500,9 @@ class _过程:
                 Message(role="user", content=需求),
             )
         请求 = LlmRequest(model=self.编排.模型名, messages=消息)
-        self.编排.发出的请求.append(请求)
+        # 并行取证时多线程共写这张表，故加锁（D-049）
+        with self.编排.请求锁:
+            self.编排.发出的请求.append(请求)
         return 请求
 
     def _路径(self, 名称: str) -> str:
@@ -488,6 +577,8 @@ class 编排器:
         #: 全集核对时空结论即缺席，会判无证据（E041/D-221）。
         #: 「没人取证」与「取过了都没问题」必须是两回事。
         self.门禁取证 = 门禁取证 or (lambda _门禁: {})  # noqa: ARG005
+        #: 门禁并行取证（D-049）时保护共享可变的锁。
+        self.请求锁 = Lock()
 
         #: **发出去过的请求**。刻意保留而非丢掉——
         #: 「模型到底收到了什么」是最难查的问题之一。

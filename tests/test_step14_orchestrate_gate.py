@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from threading import Lock
 
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
 from zhengtong.domain.errors import ErrorCode
@@ -31,44 +31,57 @@ from zhengtong.orchestration import 编排器
 
 def _编排(
     *,
-    裁定: list[dict[str, GateRecord]] | None = None,
-    补齐: bool = True,
+    驳回: dict[str, int] | None = None,
+    缺席: bool = False,
 ) -> 编排器:
-    """装一个编排器，门禁裁定按 `裁定` 序列逐次给出（用尽则全过）。
+    """装一个编排器。
 
-    `补齐=True`（默认）把未提及的门禁补成通过——编排按全集核对（D-221），
-    只给 G2 而不给其余 11 道会被判「无证据」而非「G2 驳回」。
-    `补齐=False` 则原样交出，用于验「缺席即无证据」。
+    ## 为什么按**门禁计次**而不是按**调用次序**消费脚本
+
+    并行化之后 `门禁取证` 每组被调一次（4 个并行组 + 1 次终闸），
+    且**并发**调用。若脚本靠 `next(队列)` 顺序取裁定，
+    某组的裁定会被别的组领走——而那组并不负责这些门禁，
+    驳回就被静默丢弃，退回永远不触发（实测：GATE_REWORK 一条都没有）。
+
+    故改为**按门禁号计次**：某门禁前 N 次调用判驳回、之后放行。
+    与调用顺序无关，线程安全（用锁计数）。
+
+    `驳回={"G2": 1}` = G2 第一次驳回、第二次放行。
+    `缺席=True` = 一条结论都不给（验 D-221 无证据不放行）。
     """
-    队列: Iterator[dict[str, GateRecord]] = iter(裁定 or [{}])
+    次数: dict[str, int] = {}
+    锁 = Lock()
 
     def 门禁取证(门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
-        try:
-            本次 = next(队列)
-        except StopIteration:
-            本次 = {}
-        if not 补齐:
-            return 本次
-        return {g.value: 本次.get(g.value, GateRecord(gate=g.value, passed=True)) for g in 门禁}
+        if 缺席:
+            return {}
+        出: dict[str, GateRecord] = {}
+        with 锁:
+            for g in 门禁:
+                n = 次数.get(g.value, 0)
+                次数[g.value] = n + 1
+                限 = (驳回 or {}).get(g.value, 0)
+                出[g.value] = GateRecord(
+                    gate=g.value,
+                    passed=n >= 限,
+                    rejection_reason="" if n >= 限 else "编造",
+                )
+        return 出
 
-    return 编排器(
-        llm=FakeLlm(),
-        storage=FakeStorage(),
-        门禁取证=门禁取证,
-    )
+    return 编排器(llm=FakeLlm(), storage=FakeStorage(), 门禁取证=门禁取证)
 
 
 class TestGATING真跑判定:
     def test_门禁结论进产物(self) -> None:
         """通过的门禁须出现在 gate-report 里——「走过」不等于「取证过」。"""
-        编 = _编排(裁定=[{g.value: GateRecord(gate=g.value, passed=True) for g in GateId}])
+        编 = _编排()
         结果 = 编.跑到终(档位=TierId.PRO, 需求="通知").unwrap()
         报告 = "".join(p.内容 for p in 结果.产物 if p.名称 == "gate-report.md")
         assert 报告.strip(), "GATING 段没产出任何报告——门禁静默"
 
     def test_门禁结论落进状态(self) -> None:
         """门禁结论必须写进 RunState.gates，不能只在报告里。"""
-        编 = _编排(裁定=[{g.value: GateRecord(gate=g.value, passed=True) for g in GateId}])
+        编 = _编排()
         编.跑到终(档位=TierId.PRO, 需求="通知")
         终态 = 编.终态
         assert 终态 is not None
@@ -82,7 +95,7 @@ class Test退回重写:
         观测点是 **REVISION 段的产物**——重起草走 REVISION phase 而非
         复用 DRAFTING（架构 D-065：退回靠 phase 不同自然不命中幂等）。
         """
-        编 = _编排(裁定=[{"G2": GateRecord(gate="G2", passed=False, rejection_reason="编造")}])
+        编 = _编排(驳回={"G2": 1})
         结果 = 编.跑到终(档位=TierId.PRO, 需求="通知")
         assert 结果.is_ok, f"首次退回不该直接失败：{结果.error}"
         重写 = [e for e in 编.事件 if e.kind is EventKind.GATE_REWORK]
@@ -90,7 +103,7 @@ class Test退回重写:
 
     def test_退回时进REVISION阶段(self) -> None:
         """退回必须显式经过 REVISION 阶段，不能悄悄跳回 DRAFTING。"""
-        编 = _编排(裁定=[{"G2": GateRecord(gate="G2", passed=False, rejection_reason="编造")}])
+        编 = _编排(驳回={"G2": 1})
         结果 = 编.跑到终(档位=TierId.PRO, 需求="通知")
         assert 结果.is_ok
         # 退回后的重起草事件 phase 必须是 REVISION——复用 DRAFTING 会让
@@ -110,8 +123,7 @@ class Test退回重写:
         编排须发 GATE_ESCALATED 并以 GATE_REWRITE_EXHAUSTED 结束，
         且**不得**有第 3 次 REVISION——再自动重写就是死循环。
         """
-        恒驳 = {"G2": GateRecord(gate="G2", passed=False, rejection_reason="编造")}
-        编 = _编排(裁定=[恒驳, 恒驳, 恒驳, 恒驳])
+        编 = _编排(驳回={"G2": 99})  # 永远驳回
         结果 = 编.跑到终(档位=TierId.PRO, 需求="通知")
         assert 结果.is_error, "退满上限仍自动放行——违反 D-050"
         错 = 结果.error
@@ -131,7 +143,7 @@ class Test无证据不放行:
         只看「裁定说了什么」，对**没说**的门禁一律放行——
         取证方压根没交结论的门禁，在报告里却长得跟通过一样。
         """
-        编 = _编排(裁定=[{}], 补齐=False)  # 12 道门禁一道结论都没给
+        编 = _编排(缺席=True)  # 12 道门禁一道结论都没给
         结果 = 编.跑到终(档位=TierId.PRO, 需求="通知")
         assert 结果.is_error, "一道门禁都没取证却整体放行——违反 E041"
         错 = 结果.error
@@ -157,7 +169,7 @@ class Test无证据不放行:
         取证方压根没交结论 → 属环境性缺失，第 1 轮就该请用户裁决，
         不该先白白退回重写两轮。
         """
-        编 = _编排(裁定=[{}], 补齐=False)
+        编 = _编排(缺席=True)
         结果 = 编.跑到终(档位=TierId.PRO, 需求="通知")
         assert 结果.is_error
         重写 = [e for e in 编.事件 if e.kind is EventKind.GATE_REWORK]
@@ -174,7 +186,7 @@ class TestD065幂等与退回:
         于是反复退回却永不改变——门禁成了摆设。故比对：退回一轮的模型
         调用数必须**多于**全通过的那一次。
         """
-        驳回 = _编排(裁定=[{"G2": GateRecord(gate="G2", passed=False, rejection_reason="编造")}])
+        驳回 = _编排(驳回={"G2": 1})
         全过 = _编排()
         驳回.跑到终(档位=TierId.PRO, 需求="通知")
         全过.跑到终(档位=TierId.PRO, 需求="通知")
