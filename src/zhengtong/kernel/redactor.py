@@ -63,6 +63,27 @@ _吞到边界: Final[re.Pattern[str]] = re.compile(
     re.escape(REDACTED) + r"[A-Za-z0-9._\-]*",
 )
 
+#: 第 5 步实测补上：**锚点之前也要吞**。
+#:
+#: D-134 那次只做了「向后」，因为当时的锚点都在密钥开头（`sk-` 前缀），
+#: 向后吞正好覆盖全文。**但 `SecretsPort` 也可能给出后缀锚点**——
+#: 本项目实测的密钥片段是 `("sk-4d492", "2265")`，前后各一。
+#:
+#: 只给后缀锚点时的实测残留：
+#:     密钥   = "AKIA9PROJ…fa7a676102265"
+#:     锚点   = "2265"
+#:     修复前 = "某处 AKIA9PROJ…fa7a67610[已脱敏] 出现"   ← 36 字符裸露
+#:
+#: **完整密钥没泄漏，严格说没违反 D-030**——但留下 36 个字符的密钥主体
+#: 配明文上下文，比完整密钥更容易被拼接还原，**这比不脱更糟**。
+#:
+#: 故锚点两侧都吞。边界规则与向后那条一致：
+#: 只吃 `[A-Za-z0-9._\-]`，不吃空格与中文，
+#: 否则「请检查 sk-xxx」会把中文说明一起吃掉。
+_向前吞: Final[re.Pattern[str]] = re.compile(
+    r"[A-Za-z0-9._\-]*" + re.escape(REDACTED),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Redactor:
@@ -105,7 +126,12 @@ class Redactor:
         """
         for 锚点 in self.extra_patterns:
             if 锚点:
-                text = _吞到边界.sub(REDACTED, text.replace(锚点, REDACTED))
+                # **先替换锚点本身，两侧都吞**（第 5 步实测补上）。
+                # 只做向后吞时，后缀锚点会留下它前面几十个字符明文——
+                # 完整密钥虽不泄漏，但残留主体 + 明文上下文更容易被还原。
+                text = text.replace(锚点, REDACTED)
+                text = _吞到边界.sub(REDACTED, text)
+                text = _向前吞.sub(REDACTED, text)
         for pattern in _PATTERNS:
             text = pattern.sub(REDACTED, text)
         return text

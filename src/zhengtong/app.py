@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .adapters.config import Config
+from .adapters.config import load as load_config
 from .adapters.fakes import (
     STUB_MARK,
     FakeClock,
@@ -36,6 +38,8 @@ from .adapters.fakes import (
     FakeUserFiles,
     FakeValidators,
 )
+from .adapters.local_secrets import LocalSecrets
+from .adapters.paths import Workspace
 from .domain.artifact import ArtifactKind, ArtifactRef
 from .domain.errors import ErrorCode, Result
 from .domain.event import Event, EventKind, Level
@@ -47,8 +51,15 @@ from .kernel.driver import DriveOutcome, Step, drive
 from .kernel.journal import JsonlJournal
 from .kernel.projection import DebugProjection, StandardProjection
 from .kernel.redactor import Redactor
-from .ports.llm import LlmRequest, Message
+from .ports.clock import ClockPort
+from .ports.content_pack import ContentPackPort
+from .ports.llm import LlmPort, LlmRequest, Message
 from .ports.registry import PortRegistry
+from .ports.retriever import RetrieverPort
+from .ports.secrets import SecretsPort
+from .ports.storage import StoragePort
+from .ports.user_files import UserFilesPort
+from .ports.validators import ValidatorPort
 
 #: 三个阶段成果的名字（D-030）。标准模式只显示这三样（D-046）。
 ARTIFACT_DIRECTION = "写作方向确认单"
@@ -74,6 +85,11 @@ class App:
     standard: StandardProjection
     debug: DebugProjection
     run_id: RunId
+    #: 运行期配置。**模型名只能从这里取**（D-082）——
+    #: 代码不得自动填写，用户填什么就用什么。
+    #: 此前这里是 `model="stub-model"` 写死的，
+    #: 第 5 步接真配置时换掉。
+    config: Config = field(default_factory=Config)
     #: 收集全部事件，供测试与调试
     collected: list[Event] = field(default_factory=list)
 
@@ -93,14 +109,24 @@ def build_app(
     run_id: RunId | None = None,
     *,
     log_path: Path | None = None,
-    secrets: FakeSecrets | None = None,
-    storage: FakeStorage | None = None,
-    validators: FakeValidators | None = None,
-    clock_override: FakeClock | None = None,
-    user_files: FakeUserFiles | None = None,
-    content_pack: FakeContentPack | None = None,
-    retriever: FakeRetriever | None = None,
-    llm: FakeLlm | None = None,
+    #: 运行期配置。**不给就用默认空配置**——
+    #: 第 4 步的测试全是假端口，不需要真实端点，
+    #: 强制要配置会把它们全变成「先造一份配置」的仪式。
+    #: 真实运行走 `build_app(workspace=...)`。
+    config: Config | None = None,
+    # 端口参数一律用**协议类型**而非假实现类型。
+    # 第 5 步实测：原来签名写死 `FakeSecrets | None`，
+    # 结果 `LocalSecrets`（真适配器）**根本传不进去**——
+    # 假实现阶段没暴露，一接真凭据就撞墙。
+    # 端口存在的意义就是「实现可换」，签名写死实现等于废掉端口。
+    secrets: SecretsPort | None = None,
+    storage: StoragePort | None = None,
+    validators: ValidatorPort | None = None,
+    clock_override: ClockPort | None = None,
+    user_files: UserFilesPort | None = None,
+    content_pack: ContentPackPort | None = None,
+    retriever: RetrieverPort | None = None,
+    llm: LlmPort | None = None,
 ) -> App:
     """装配一个应用。**每个端口都可注入**，便于测试定向场景。
 
@@ -134,6 +160,7 @@ def build_app(
         standard=StandardProjection(),
         debug=DebugProjection(),
         run_id=run_id if run_id is not None else RunId("r-0001"),
+        config=config if config is not None else Config(),
     )
     # 订阅顺序即处理顺序：标准投影与调试投影互不影响（D-023）
     bus.subscribe(app.standard.accept)
@@ -216,9 +243,12 @@ def run_once(app: App) -> Result[DriveOutcome]:
 
             got_llm = app.ports.llm.complete(
                 LlmRequest(
-                    # 模型名由用户手填（D-039），此处不编造——
-                    # 假实现阶段用固定占位名，第 5 步接真配置时替换。
-                    model="stub-model",
+                    # **模型名取自配置，用户手填**（D-082/D-039）。
+                    # 此前写死 `model="stub-model"`——那在第 4 步是占位，
+                    # 现在配置里没填就是空串，**代码不猜、不兜底**：
+                    # 空模型名发出去会被服务端拒（`model_not_available`），
+                    # 那正是用户该看到的真实反馈，比程序替用户编一个名字强。
+                    model=app.config.model,
                     messages=(Message(role="user", content=prompt),),
                 )
             )
@@ -328,3 +358,66 @@ def _ev(
     这种"恰好撞名"正是最容易被误读为"我传对了"的写法。
     """
     return Event(seq=0, kind=kind_of_event, run_id=app.run_id, phase=phase, level=level, data=data)
+
+
+def build_app_from_workspace(
+    ws: Workspace,
+    run_id: RunId | None = None,
+    *,
+    log_path: Path | None = None,
+    llm: LlmPort | None = None,
+    storage: StoragePort | None = None,
+    validators: ValidatorPort | None = None,
+    clock_override: ClockPort | None = None,
+    user_files: UserFilesPort | None = None,
+    content_pack: ContentPackPort | None = None,
+    retriever: RetrieverPort | None = None,
+) -> Result[App]:
+    """从工作区装配 —— **真实运行的入口**（第 5 步）。
+
+    与 `build_app` 的分工：
+    `build_app` 是第 4 步的测试入口（全假端口，不碰配置）；
+    本函数读 `system/config.toml`，并把**真实**密钥源接上。
+
+    ## 为什么不直接让 `build_app` 读配置
+
+    803 条测试全用假端口。若 `build_app` 一律读配置，
+    每个测试都得先造一份 `config.toml`——那是纯仪式，
+    且会让「测试用假配置」变成一种需要维护的假象。
+    故拆成两个入口：**要真实配置的就调本函数**。
+
+    ## 为什么不静默兜底
+
+    配置读失败或未填时**返回错误，不代填**（D-082）：
+    程序替用户编一个端点或模型名，比报错糟得多——
+    用户会以为配置生效了，实际发出去的请求是错的。
+    """
+    got = load_config(ws)
+    if got.is_error:
+        err = got.error
+        assert err is not None
+        return Result.fail(err.code, err.detail)
+    cfg = got.unwrap()
+
+    checked = cfg.validate()
+    if checked.is_error:
+        err = checked.error
+        assert err is not None
+        return Result.fail(err.code, err.detail)
+
+    return Result.ok(
+        build_app(
+            run_id,
+            log_path=log_path,
+            config=cfg,
+            # 真实密钥源接在这里（D-030：唯一返回明文的端口）
+            secrets=LocalSecrets.from_workspace(ws),
+            llm=llm,
+            storage=storage,
+            validators=validators,
+            clock_override=clock_override,
+            user_files=user_files,
+            content_pack=content_pack,
+            retriever=retriever,
+        )
+    )

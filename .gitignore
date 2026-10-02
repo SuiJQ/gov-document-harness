@@ -18,6 +18,13 @@ htmlcov/
 data/
 user/
 
+# `system/` 只存运行期配置与日志（D-017）。
+# **必须忽略**：`system/config.toml` 里是 API key 明文
+# （用户明确接受明文存储，D-032），提交进仓库等于永久泄漏——
+# 且删掉该目录用户仍能重建（D-017 的启动自检），
+# 仓库里留一份只增加风险，不带来任何价值。
+system/
+
 # 本地覆盖
 .env
 config.local.toml
