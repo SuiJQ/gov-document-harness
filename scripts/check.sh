@@ -67,5 +67,10 @@ echo "── 内容包约束（红线 / 门禁 / D-Card / 专有名词）──"
 # 所以这里必须有一道单独的、针对内容本身的门禁。
 python3 scripts/check_content_pack.py
 
+# 第四轮新增：内容包与代码侧契约一致性。
+# 内容包写 D1/角色/阶段/门禁，代码有唯一定义；不一致会让链路必然失败，
+# 而任何单侧检查都查不出来（软数据对硬枚举）。
+python3 scripts/check_content_contract.py
+
 echo ""
 echo "全部通过。"
