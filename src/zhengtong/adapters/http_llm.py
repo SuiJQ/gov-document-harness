@@ -347,6 +347,11 @@ class HttpLlm:
                 }
                 for t in request.tools
             ]
+        # **额外字段原样附加**（D-245）：只推理关闭探测会用（D-004
+        # 要求原样请求，程序不拼接不改写，故这里不做任何翻译）。
+        # 为空时什么都不加，正常路径的请求体与从前**逐字节相同**。
+        for 键, 值 in request.额外字段:
+            体[键] = 值
         return 体
 
     def _头(self) -> dict[str, str]:

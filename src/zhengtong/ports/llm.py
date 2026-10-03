@@ -91,6 +91,18 @@ class LlmRequest:
     tools: tuple[ToolSchema, ...] = ()
     max_tokens: int = 0  # 0 表示交由服务端默认
     span: Span | None = None
+    #: **原样附加到请求体的额外字段**（D-245）。
+    #:
+    #: 只为推理关闭探测而设（架构 §6.2 的 `thinking` /
+    #: `chat_template_kwargs` / `reasoning_effort` 三种写法）。
+    #:
+    #: 为什么要有这个字段：那些写法**不是 OpenAI 标准**，
+    #: 但 D-004 要求「端点原样请求，程序不拼接不改写」——
+    #: 于是既不能把三种写法硬编进 `_请求体`（那会让正常请求
+    #: 带上后端专属字段），也不该让探测模块去拼 URL 或改体。
+    #:
+    #: **默认空**：正常路径完全不受影响，序列化时什么都不加。
+    额外字段: tuple[tuple[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

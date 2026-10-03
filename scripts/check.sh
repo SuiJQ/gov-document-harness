@@ -31,11 +31,26 @@ fi
 
 FIX=""
 [ "$1" = "--fix" ] && FIX="--fix"
+# 显式 `--fix` 才允许格式化改文件（见下方 D-244 说明）
+FORMAT_MODE="--check"
+[ "$1" = "--fix" ] && FORMAT_MODE="--fix"
 
 echo "── Ruff（格式 + 静态检查）──"
-# 注意：--fix 只属于 `ruff check`（它修代码），
-# `ruff format` 是格式化器，没有这个选项，传了会直接报 unexpected argument。
-"$V/ruff" format src tests
+# **默认只检查不改**（D-244）。
+#
+# 此前每次都跑 `ruff format src tests`，它会**改文件**且退出码为 0。
+# 后果不是「多了个自动修复」，而是：
+#
+# 1. `ruff format` 排在 basedpyright **之前**。类型检查不过就退出，
+#    格式化被跳过——**同一次运行的不同阶段看到的不是同一份代码**，
+#    而报错行号是格式化前的，对不上。
+# 2. 门禁跑到一半停下时，工作区停在「已格式化但未检查」的中间态，
+#    且没有任何输出提示这一点。
+#
+# 故默认 `--check`（只报不改），真要改用 `--fix` 显式触发。
+# 注意 `--fix` 只属于 `ruff check`；`ruff format` 的对应参数也是 `--fix`，
+# 但两者作用不同，故分开写。
+"$V/ruff" format $FORMAT_MODE src tests
 "$V/ruff" check $FIX src tests
 
 echo ""
