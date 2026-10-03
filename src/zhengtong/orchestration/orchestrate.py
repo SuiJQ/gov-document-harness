@@ -70,7 +70,16 @@ from ..kernel.bus import EventBus
 from ..kernel.driver import Step, drive
 from ..kernel.scheduler import GateGroup, run_groups
 from ..ports.content_pack import ContentPackPort
-from ..ports.llm import LlmPort, LlmRequest, LlmResponse, Message, ToolCall, ToolSchema
+from ..ports.llm import (
+    FinishReason,
+    LlmPort,
+    LlmRequest,
+    LlmResponse,
+    Message,
+    ToolCall,
+    ToolSchema,
+    是已知结束原因,
+)
 from ..ports.storage import StoragePort
 from ..ports.validators import ValidatorPort
 from ..services.context import 压缩, 组装, 需要压缩
@@ -683,6 +692,15 @@ class _过程:
                     return Result.fail(错.code, f"{阶段.value}/{角色.value} 调用失败：{错.detail}")
                 响应 = 答.unwrap()
                 self.编排._记用量(阶段, 问, 响应)
+                # **结束原因不合格就拦下**（D-268）：截断稿与合规拦截稿
+                # 此前都被当成正常完成照收。
+                合格 = 查结束原因(响应, 阶段, 角色)
+                if 合格.is_error:
+                    错2 = 合格.error
+                    assert 错2 is not None
+                    return Result.fail(
+                        错2.code, f"{阶段.value}/{角色.value} 模型调用未正常结束：{错2.detail}"
+                    )
                 # **执行模型请求的工具**（D-267）。
                 #
                 # 此前 `LlmResponse.tool_calls` 从不被读：请求的 `tools`
@@ -771,6 +789,13 @@ class _过程:
                     错.code, f"{阶段.value}/{角色.value} 工具后续调用失败：{错.detail}"
                 )
             当前 = 答.unwrap()
+            合格 = 查结束原因(当前, 阶段, 角色)
+            if 合格.is_error:
+                错2 = 合格.error
+                assert 错2 is not None
+                return Result.fail(
+                    错2.code, f"{阶段.value}/{角色.value} 模型调用未正常结束：{错2.detail}"
+                )
             # 工具后续轮的用量同样要记（D-277）——
             # 一轮里多次调模型，少记一次累计值就对不上，
             # 而用户是拿这个数字对账的。
@@ -1295,6 +1320,61 @@ class 编排器:
 def 阶段序列(档: TierId) -> tuple[PhaseId, ...]:
     """该档走的阶段线。**查 `is_consult` 不查人数**（D-206）。"""
     return 咨询序列 if TIER_BY_ID[档].is_consult else 成文序列
+
+
+def 查结束原因(响应: LlmResponse, 阶段: PhaseId, 角色: RoleId) -> Result[None]:
+    """**结束原因不合格就不许往下走**（D-268）。
+
+    ## 此前是个静默的洞
+
+    `FinishReason.LENGTH`（输出被截断）与 `CONTENT_FILTER`（服务端合规拦截）
+    在全仓**生产代码里从未被读过**——归一化出来后直接被丢掉。
+    后果是两种坏稿子都被当成正常完成交付出去：
+
+    - 截断：`http_llm.py` 的注释原话是「只认 `length` 会把『输出被截断』
+      判成『正常完成』——上层认为内容完整而交付，交付的是残稿」。
+      **而那正是当时发生的事。**
+    - 合规拦截：D-032 明写「前者（合规）是红线，硬退回」，
+      实际却是「照收不误」。
+
+    **用户宁可看到一次明确的失败，也不要一份看着完整的残稿。**
+
+    ## 未知值为什么不放过
+
+    未知归一化成 `STOP`，而 `STOP` 的含义是「正常结束」。
+    厂商新增一个词，程序就会把可能截断的稿子当完整的交出去——
+    与只认 `length` 是同一类错误，只是发生在另一个词上。
+
+    故**认不出来就不许断定完整**（`是已知结束原因`），
+    报错信息里带上服务端原文，用户能据此判断该端点的行为。
+
+    ## 为什么不让它重试
+
+    截断可以续写（`FinishReason.LENGTH` 注释写了「可续写」），
+    但**本层不做续写**——续写要拼上一轮的内容，牵涉提示词装配与预算，
+    属另一件事。此处只做到「不把残稿当完整稿交付」。
+    """
+    原因 = 响应.finish_reason
+    原文 = 响应.raw_finish_reason.strip()
+    定位 = f"{阶段.value}/{角色.value}"
+    if 原因 is FinishReason.LENGTH:
+        return Result.fail(
+            ErrorCode.LLM_OUTPUT_TRUNCATED,
+            f"{定位} 输出被服务端截断（finish_reason={原文 or 原因.value}），"
+            f"内容不完整，不得当作完成：{响应.text[:80]}",
+        )
+    if 原因 is FinishReason.CONTENT_FILTER:
+        return Result.fail(
+            ErrorCode.LLM_CONTENT_FILTERED,
+            f"{定位} 被服务端合规拦截（finish_reason={原文 or 原因.value}），按红线处理，不得交付",
+        )
+    if 原文 and not 是已知结束原因(原文):
+        return Result.fail(
+            ErrorCode.LLM_FINISH_UNKNOWN,
+            f"{定位} 服务端返回未识别的结束原因「{原文}」，"
+            "无法断定内容是否完整，已拦下（可在决策记录里登记该端点的用法）",
+        )
+    return Result.ok_none()
 
 
 def _转为失败(错: Result[None], 前缀: str) -> Result[阶段产物]:

@@ -30,6 +30,57 @@ class FinishReason(StrEnum):
     TOOL_CALLS = "tool_calls"  # 正常：要执行工具
 
 
+#: 服务端 `finish_reason` → 本地枚举。
+#:
+#: **别名是实测来的**：OpenAI 用 `length`，部分服务商用
+#: `max_tokens` / `model_length` 表示同一件事。**只认 `length`
+#: 会把「输出被截断」判成「正常完成」**——上层认为内容完整而交付，
+#: 交付的是残稿。
+#:
+#: 键统一转小写后查，故大小写差异也能命中。
+#:
+#: **放在端口而不在适配器**（D-268）：这张表是**协议知识**，
+#: 不是某一家的实现细节。编排层要判断「这个结束原因认不认识」
+#: （不认识就不能断定内容完整），适配器与编排层必须查同一张表——
+#: 各存一份的话，改了一处忘了另一处，静默把残稿当完整稿交付。
+结束原因对照: dict[str, FinishReason] = {
+    "stop": FinishReason.STOP,
+    "length": FinishReason.LENGTH,
+    "max_tokens": FinishReason.LENGTH,  # 常见别名
+    "model_length": FinishReason.LENGTH,  # 常见别名
+    "content_filter": FinishReason.CONTENT_FILTER,
+    "content-filter": FinishReason.CONTENT_FILTER,  # 连字符变体
+    "tool_calls": FinishReason.TOOL_CALLS,
+    "function_call": FinishReason.TOOL_CALLS,  # 旧版工具调用
+}
+
+
+def 是已知结束原因(原值: object) -> bool:
+    """服务端这个 `finish_reason` 认不认识。
+
+    **不认识就不能断定内容完整**（D-268）。原先未知值一律归 `STOP`，
+    而 `STOP` 的含义是「正常结束」——于是厂商新增一个词，
+    程序就会把可能截断的稿子当完整的交付出去。
+    """
+    return isinstance(原值, str) and 原值.lower() in 结束原因对照
+
+
+def 归一化结束原因(原值: object) -> FinishReason:
+    """把服务端的 `finish_reason` 归一化。
+
+    **未知值归 `STOP` 但原文另行留痕**（`LlmResponse.raw_finish_reason`）：
+    归一化是给分流逻辑用的，留痕是给排查与兜底判断用的，两者都要。
+
+    **调用方若要区分「真的正常停」与「不认识」，须先用
+    `是已知结束原因` 判一次**——只拿归一化结果会看不出区别。
+    """
+    if isinstance(原值, str):
+        命中 = 结束原因对照.get(原值.lower())
+        if 命中 is not None:
+            return 命中
+    return FinishReason.STOP
+
+
 @dataclass(frozen=True, slots=True)
 class ToolSchema:
     """一个工具的声明。描述用中文（D-030：用户交互用严谨中文）。"""

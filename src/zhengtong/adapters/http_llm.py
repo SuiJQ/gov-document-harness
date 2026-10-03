@@ -56,11 +56,11 @@ from typing import Protocol, cast, final, runtime_checkable
 from ..domain.errors import ErrorCode, Result
 from ..ports.clock import ClockPort
 from ..ports.llm import (
-    FinishReason,
     LlmRequest,
     LlmResponse,
     TokenUsage,
     ToolCall,
+    归一化结束原因,
 )
 from ..ports.secrets import SecretsPort
 
@@ -97,37 +97,10 @@ class Transport(Protocol):
         ...
 
 
-#: 服务端 `finish_reason` → 本地枚举。
-#:
-#: **别名是实测来的**：OpenAI 用 `length`，部分服务商用
-#: `max_tokens` / `model_length` 表示同一件事。**只认 `length`
-#: 会把「输出被截断」判成「正常完成」**——上层认为内容完整而交付，
-#: 交付的是残稿。
-#:
-#: 键统一转小写后查，故大小写差异也能命中。
-_结束原因对照: dict[str, FinishReason] = {
-    "stop": FinishReason.STOP,
-    "length": FinishReason.LENGTH,
-    "max_tokens": FinishReason.LENGTH,  # 常见别名
-    "model_length": FinishReason.LENGTH,  # 常见别名
-    "content_filter": FinishReason.CONTENT_FILTER,
-    "content-filter": FinishReason.CONTENT_FILTER,  # 连字符变体
-    "tool_calls": FinishReason.TOOL_CALLS,
-    "function_call": FinishReason.TOOL_CALLS,  # 旧版工具调用
-}
-
-
-def _结束原因(原值: object) -> FinishReason:
-    """把服务端的 `finish_reason` 归一化。
-
-    **未知值归 `STOP` 但原文另行留痕**（`LlmResponse.raw_finish_reason`）：
-    归一化是给分流逻辑用的，留痕是给排查与兜底判断用的，两者都要。
-    """
-    if isinstance(原值, str):
-        命中 = _结束原因对照.get(原值.lower())
-        if 命中 is not None:
-            return 命中
-    return FinishReason.STOP
+#: 服务端 `finish_reason` → 本地枚举的对照表**放在端口**
+#: （`ports/llm.py` 的 `结束原因对照`），此处不再另存一份——
+#: 编排层要判断「认不认识这个结束原因」，两边查的必须是同一张表（D-268）。
+_结束原因 = 归一化结束原因
 
 
 def _用量(数据: object) -> TokenUsage:

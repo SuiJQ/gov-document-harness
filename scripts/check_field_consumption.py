@@ -70,7 +70,6 @@ from pathlib import Path
     "参数摘要": "D-258",
     "结果摘要": "D-258",
     "错误码": "D-258",
-    "score": "D-259 SearchHit.score 零消费",
     "rule": "D-260 校验结论丢了「命中哪条规则」",
     "script": "D-260",
     "丢弃条数": "D-261 压缩省了多少从不显示",

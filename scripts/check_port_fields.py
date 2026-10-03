@@ -62,7 +62,6 @@ from pathlib import Path
 
 #: 已立案未修 → 缺陷编号。
 已立案: dict[str, str] = {
-    "raw_finish_reason": "D-268 写了没人读，与 D-262 ToolSpec.effect 同型",
     # —— 装配根 app.py 里直接构造这两个适配器（LocalSecrets/SystemClock），
     # 不经 PortRegistry 取。故登记册里的这两个字段确实无人取用。
     # **不是缺陷**：登记册的价值在 missing() 自检（8 个端口漏一个就炸），
@@ -112,6 +111,7 @@ from pathlib import Path
     "LlmResponse.usage": "D-277 已修：编排层 _记用量() 读它并发事件",
     "ValidationIssue.rule": "D-278 已修：ValidationIssue.定位 把规则号带进两个出口",
     "ValidationIssue.at": "D-278 已修：同上，锚点带进两个出口",
+    "LlmResponse.raw_finish_reason": "D-280 已修：编排层 查结束原因() 据此拦下未正常结束的响应",
 }
 
 #: 已知的两处真缺陷（D-267 复查逐字段查出，非本脚本发现）。

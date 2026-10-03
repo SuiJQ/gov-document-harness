@@ -53,6 +53,9 @@ class ErrorCode(StrEnum):
     LLM_CONTEXT_OVERFLOW = "E033"
     LLM_RETRY_EXHAUSTED = "E034"  # 重试 3 次仍失败（D-027）
     LLM_ENDPOINT_REJECTED = "E035"  # 端点拒绝了请求（端点/协议不匹配）
+    LLM_OUTPUT_TRUNCATED = "E036"  # 输出触到上限被截断——**不是完成**，不得交付
+    LLM_CONTENT_FILTERED = "E037"  # 服务端合规拦截——红线，硬退回
+    LLM_FINISH_UNKNOWN = "E038"  # 结束原因不认识——**无法断定内容完整**
 
     # ── 门禁 ──
     GATE_FAILED = "E040"
