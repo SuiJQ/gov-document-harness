@@ -677,6 +677,7 @@ class _过程:
                     assert 错 is not None
                     return Result.fail(错.code, f"{阶段.value}/{角色.value} 调用失败：{错.detail}")
                 响应 = 答.unwrap()
+                self.编排._记用量(阶段, 问, 响应)
                 # **执行模型请求的工具**（D-267）。
                 #
                 # 此前 `LlmResponse.tool_calls` 从不被读：请求的 `tools`
@@ -765,6 +766,10 @@ class _过程:
                     错.code, f"{阶段.value}/{角色.value} 工具后续调用失败：{错.detail}"
                 )
             当前 = 答.unwrap()
+            # 工具后续轮的用量同样要记（D-277）——
+            # 一轮里多次调模型，少记一次累计值就对不上，
+            # 而用户是拿这个数字对账的。
+            self.编排._记用量(阶段, 问, 当前)
         return Result.ok(当前)
 
     def 存档工具结果(self, 调用id: str, 正文: str) -> None:
@@ -1125,6 +1130,58 @@ class 编排器:
         self.事件.append(事件)
         if self.bus is not None:
             self.bus.emit(事件)
+
+    def _记用量(self, 阶段: PhaseId, 请求: LlmRequest, 响应: LlmResponse) -> None:
+        """发 `model.request` / `model.response`，**载荷只有数字**（D-277）。
+
+        ## 修的是什么
+
+        `MODEL_REQUEST` / `MODEL_RESPONSE` 两个 kind 在枚举里躺了很久，
+        测试也测了它们，**但生产代码一处都没发过**——
+        与 D-118（分支挂在白名单外因而永不执行）、D-237
+        （事件两端都在却没连线）完全同型。
+        于是 `TokenUsage` 三个字段用户路径零消费：
+        跑完一稿，**永远不知道花了多少 token**。
+
+        ## 载荷纪律：只放数字，不放正文
+
+        `prompt_tokens` / `completion_tokens` / `finish_reason`，
+        **没有 `text`**。`MODEL_RESPONSE` 进了 `USER_VISIBLE_KINDS`
+        （标准模式要显示账单），若把模型回复正文一并塞进去，
+        那就是 D-046 明令禁止的「模型间交互」上了标准界面——
+        **可见的是用量，不是内容**。
+
+        ## 为什么不用估算值
+
+        D-077 确立的纪律：估算只用于 85% 压缩触发的**提前示警**；
+        「界面展示用量」必须用 **API 返回的真实值**（架构 §686）。
+        用户看的是实际消耗，不是我们的预测。
+
+        ## 为什么不再建 `system/telemetry.json`
+
+        D-031 修订已定该文件不建，且明写「token 台账不受影响」
+        ——用户 2026-10-03 裁决取**读法 A**：只发事件。
+        事件本来就会落 journal（`kernel/journal.py` 的 `_to_json`
+        带 `data`），事后可查；而聚合台账要维护一套状态，
+        对一个「跑一次看个数字」的场景是净成本。
+        """
+        self.发(
+            EventKind.MODEL_REQUEST,
+            阶段,
+            model=请求.model,
+            消息数=len(请求.messages),
+            工具数=len(请求.tools),
+        )
+        用量 = 响应.usage
+        self.发(
+            EventKind.MODEL_RESPONSE,
+            阶段,
+            model=请求.model,
+            prompt_tokens=用量.prompt_tokens,
+            completion_tokens=用量.completion_tokens,
+            reasoning_tokens=用量.reasoning_tokens,
+            finish_reason=响应.finish_reason.value,
+        )
 
     def 取一步(self) -> Callable[[int], Result[Step[int]]]:
         """返回 `drive` 要的 `step` 回调。**一次一阶段**。

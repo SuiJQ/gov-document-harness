@@ -176,9 +176,12 @@ def test_标准模式只放行六项四类事() -> None:
     assert is_user_visible(EventKind.EXPORT_DONE)
     assert is_user_visible(EventKind.RUN_FAILED)
     assert is_user_visible(EventKind.USER_QUESTION_RAISED)
-    # 事件共 37 项，标准界面只放行 6 项——这正是 D-046 的意义
-    # （第 6 项 `RUN_STARTED` 是用户后来要求的，见 D-150）
-    assert len({k for k in EventKind if is_user_visible(k)}) == 6
+    # 用户新增第 7 项：「标准模式也显示 Token」（D-277）——
+    # 用量是账单不是模型间交互，故进白名单
+    assert is_user_visible(EventKind.MODEL_RESPONSE)
+    # 事件共 37 项，标准界面只放行 7 项——这正是 D-046 的意义
+    # （第 6 项 `RUN_STARTED` 见 D-150，第 7 项 `MODEL_RESPONSE` 见 D-277）
+    assert len({k for k in EventKind if is_user_visible(k)}) == 7
     assert len(EventKind) == 37, "事件总数变了，架构 §5.4 与 EVENT_MERGE.md 需同步"
 
 

@@ -198,8 +198,10 @@ DEBUG_ONLY_KINDS: Final[frozenset[EventKind]] = frozenset(
         EventKind.RETRIEVAL_DONE,
         EventKind.CONTEXT_COMPOSED,
         EventKind.CONTEXT_COMPACTED,
+        # `MODEL_RESPONSE` **不在这里**（D-277）：它进了 `USER_VISIBLE_KINDS`，
+        # 因为它承载真实 token 用量——那是「用户有权知道花了多少」，
+        # 不是「模型间交互」。两张表必须互斥，故此处不能同时列它。
         EventKind.MODEL_REQUEST,
-        EventKind.MODEL_RESPONSE,
         EventKind.MODEL_ERROR,
         EventKind.MODEL_RETRY,
     }
@@ -229,6 +231,16 @@ DEBUG_ONLY_KINDS: Final[frozenset[EventKind]] = frozenset(
 #: **这不违背 D-023。** D-023 限制的是"内部过程噪声"
 #: （成员状态、审核意见、模型间交互），而"程序读到了哪些用户文件"
 #: 是**系统对用户输入的确认**——用户有权知道。
+#:
+#: 用户明确要求（新增 `MODEL_RESPONSE`，D-277）：
+#: > 「标准模式也显示 Token」
+#:
+#: **同样不违背 D-023。** 模型间交互指「谁问了什么、谁答了什么」，
+#: 那是要藏的；而「这一稿花了多少 token」是**账单**——
+#: 架构 §686 明写「界面展示用量 → API 返回的真实值」。
+#:
+#: **边界**：进白名单的是**这一个 kind**，且只带数字与 `finish_reason`，
+#: **不带模型正文**。正文进了事件就是「模型间交互」，D-046 会失效。
 USER_VISIBLE_KINDS: Final[frozenset[EventKind]] = frozenset(
     {
         EventKind.RUN_STARTED,
@@ -237,6 +249,7 @@ USER_VISIBLE_KINDS: Final[frozenset[EventKind]] = frozenset(
         EventKind.EXPORT_DONE,
         EventKind.RUN_FAILED,
         EventKind.USER_QUESTION_RAISED,
+        EventKind.MODEL_RESPONSE,
     }
 )
 

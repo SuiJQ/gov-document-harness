@@ -62,8 +62,6 @@ from pathlib import Path
 
 #: 已立案未修 → 缺陷编号。
 已立案: dict[str, str] = {
-    "prompt_tokens": "D-269 token 用量从不进入任何输出（架构 §14/§6 明写要）",
-    "completion_tokens": "D-269",
     "raw_finish_reason": "D-268 写了没人读，与 D-262 ToolSpec.effect 同型",
     "at": "D-271 校验问题有锚点但用户看不到（has_anchor 仅内部用）",
     # —— 装配根 app.py 里直接构造这两个适配器（LocalSecrets/SystemClock），
@@ -72,7 +70,6 @@ from pathlib import Path
     # 字段本身是「登记齐全」的凭据，取用路径另有其人。
     "secrets": "app.py 直接构造 LocalSecrets/SystemClock，不经登记册取；登记册字段用于 missing() 自检",
     "clock": "同上",
-    "usage": "D-269 token 用量从不进入任何输出（架构 §14/§6 明写要）",
     "rule": "D-260 校验结论丢了「命中哪条规则」",
     # —— 定性为合法：PortRegistry 由装配根消费，不在三层里 ——
     # `app.py` 用 `self.ports.llm` 等注入各层；它不是「用户可见数据」，
@@ -112,12 +109,14 @@ from pathlib import Path
 #: D-274 补 `记工具结果()` 后 `orchestrate.py` 已在用户路径消费该字段。
 已修 = {
     "Message.tool_call_id": "D-274 已修：orchestrate.py 记工具结果() 按 OpenAI 协议完整回传",
+    "TokenUsage.prompt_tokens": "D-277 已修：model.response 事件带真实用量，投影累计显示",
+    "TokenUsage.completion_tokens": "D-277 同上",
+    "LlmResponse.usage": "D-277 已修：编排层 _记用量() 读它并发事件",
 }
 
 #: 已知的两处真缺陷（D-267 复查逐字段查出，非本脚本发现）。
 #: 列出以便对照——**本脚本的价值恰在于它们会被报出来**。
 已知缺陷 = {
-    "LlmResponse.usage": "D-269 token 用量从不进入任何输出",
     "ValidationIssue.rule": "D-260 校验结论丢了「命中哪条规则」",
 }
 

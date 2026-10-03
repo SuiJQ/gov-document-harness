@@ -47,7 +47,7 @@ def test_白名单恰好六项() -> None:
     模型间交互），而"程序读到了哪些用户文件"是**系统对用户输入的确认**，
     用户有权知道。
     """
-    assert len(USER_VISIBLE_KINDS) == 6
+    assert len(USER_VISIBLE_KINDS) == 7
 
 
 def test_白名单恰为架构指定的六项() -> None:
@@ -58,6 +58,7 @@ def test_白名单恰为架构指定的六项() -> None:
         EventKind.EXPORT_DONE,
         EventKind.RUN_FAILED,
         EventKind.USER_QUESTION_RAISED,
+        EventKind.MODEL_RESPONSE,  # 用户新增：token 用量是账单（D-277）
     }
     assert set(USER_VISIBLE_KINDS) == 期望
 
@@ -93,13 +94,18 @@ def test_门禁明细不可见(kind: EventKind) -> None:
     "kind",
     [
         EventKind.MODEL_REQUEST,
-        EventKind.MODEL_RESPONSE,
         EventKind.MODEL_ERROR,
         EventKind.MODEL_RETRY,
     ],
 )
 def test_模型间交互不可见(kind: EventKind) -> None:
-    """D-046：不显示模型间交互。"""
+    """D-046：不显示模型间交互。
+
+    **`MODEL_RESPONSE` 不在此列**（D-277）：用户明确要求
+    「标准模式也显示 Token」。进白名单的是**用量这一个数字**，
+    不是「谁问了什么、谁答了什么」——后者仍由 `MODEL_REQUEST` /
+    `MODEL_ERROR` / `MODEL_RETRY` 挡着，且事件载荷里本就没有正文字段。
+    """
     assert not is_user_visible(kind)
 
 
@@ -145,6 +151,7 @@ def test_白名单内每类都有对应处理分支() -> None:
         EventKind.EXPORT_DONE: {"files": ("正文.txt",)},
         EventKind.RUN_FAILED: {"detail": "调用失败"},
         EventKind.USER_QUESTION_RAISED: {"fields": "D1"},
+        EventKind.MODEL_RESPONSE: {"prompt_tokens": 800, "completion_tokens": 200},
     }
     for kind in USER_VISIBLE_KINDS:
         p = StandardProjection()

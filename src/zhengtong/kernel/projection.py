@@ -32,6 +32,30 @@ class Projection(Protocol):
         ...
 
 
+def _as_int(value: object) -> int:
+    """把 `data` 里的计数字段安全转成非负整数（D-277）。
+
+    与 `_as_names` 同一个理由：**投影层不能因为发射端写错类型就崩**。
+    `data` 的类型是 `dict[str, object]`，而事件会从 journal 读回来
+    （JSON 反序列化后 `int` 可能变成别的形态）。
+
+    **负数归零**：token 不可能是负的。宁可少算也不显示一个
+    「-1 token」——那会让用户以为程序坏了。
+    """
+    if isinstance(value, bool):  # bool 是 int 的子类，先挡掉
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value))
+    if isinstance(value, str):
+        try:
+            return max(0, int(value.strip()))
+        except ValueError:
+            return 0
+    return 0
+
+
 def _as_names(value: object) -> tuple[str, ...]:
     """把 `data` 里的清单字段安全转成显示用字符串序列。
 
@@ -109,6 +133,9 @@ class StandardProjection:
     artifacts: tuple[tuple[str, str], ...] = ()
     questions: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    #: 真实 token 用量累计（D-277）。**只加不减**：模型调用只会发生更多次。
+    token_入: int = 0
+    token_出: int = 0
 
     def accept(self, event: Event) -> None:
         if not is_user_visible(event.kind):
@@ -159,14 +186,31 @@ class StandardProjection:
             # 必须显式告知，且要点名交付了哪些文件。
             文件 = _as_names(data.get("files"))
             self.progress = f"已导出：{'、'.join(文件)}" if 文件 else "已导出"
+        elif event.kind is EventKind.MODEL_RESPONSE:
+            # D-277：token 用量是**账单**，用户有权知道。
+            #
+            # **刻意不动 `progress`**：那一行是「总体进度」（D-046），
+            # 被每次模型调用覆写的话，进度会一闪一闪跳回去。
+            #
+            # **只读数字，不碰正文**：事件里带的是
+            # `prompt_tokens` / `completion_tokens` 两个整数，
+            # 没有文本字段可读——这正是「进白名单但不等于
+            # 展示模型间交互」的机械保证。
+            self.token_入 += _as_int(data.get("prompt_tokens"))
+            self.token_出 += _as_int(data.get("completion_tokens"))
         # 审计 D-118 另删掉一处死分支 `DIRECTION_CONFIRMED`：
         # 它同样不在白名单里，永远进不来。
         # 方向确认单本就是三份阶段成果之一，走 `ARTIFACT_READY` 即可。
 
     def lines(self) -> tuple[str, ...]:
-        """标准模式的全部输出。**顺序稳定**：进度、提问、成果、错误。"""
+        """标准模式的全部输出。**顺序稳定**：进度、扫描、用量、提问、成果、错误。"""
         out = [self.progress] if self.progress else []
         out += [f"  {self.scanned}"] if self.scanned else []
+        if self.token_入 or self.token_出:
+            out.append(
+                f"  · token 用量：{self.token_入 + self.token_出}"
+                f"（输入 {self.token_入} · 输出 {self.token_出}）"
+            )
         out += [f"  · {q}" for q in self.questions]
         out += [f"  ▣ {n}（{len(c)} 字）" for n, c in self.artifacts]
         out += [f"  ✗ {e}" for e in self.errors]
