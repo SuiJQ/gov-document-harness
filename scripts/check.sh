@@ -32,8 +32,40 @@ fi
 FIX=""
 [ "$1" = "--fix" ] && FIX="--fix"
 # 显式 `--fix` 才允许格式化改文件（见下方 D-244 说明）
+#
+# **`ruff format` 没有 `--fix`**（实测 ruff 0.16.9：给了直接
+# `error: unexpected argument '--fix' found`）。它**默认就改文件**，
+# 要「只报不改」得显式给 `--check`。
+#
+# 故修的模式下**什么参数都不给**，而不是给一个不存在的 `--fix`——
+# 那会让 `./scripts/check.sh --fix` **一用就崩**，
+# 而它此前确实一直崩着：没人用过这个选项（都跑不带参数的版本），
+# 于是「声明了但一用就错」又是一个没人走到的分支（D-281 同型）。
 FORMAT_MODE="--check"
-[ "$1" = "--fix" ] && FORMAT_MODE="--fix"
+[ "$1" = "--fix" ] && FORMAT_MODE=""
+
+# ── `--fix` 前后拍快照（D-284）──────────────────────────────
+# 拍在**动手之前**。改动之后才拍，拍到的就是改完的样子，diff 永远为空。
+#
+# 为什么要这道：`ruff check --fix` 会改它路径下**每一个**可修违规，
+# 不管我有没有写过那个文件、那条问题我知不知道，
+# 而它默认**不告诉你改了哪儿**——于是「动了生产代码」这件事
+# 是靠事后撞上症状才发现的。
+#
+# 快照写进 `.git/`：**不放工作区**，否则 git status 会看见它，
+# 守卫会把自己的临时文件当成「新改动」报出来。
+#
+# **变量名用 ASCII**：本脚本是 `#!/bin/sh`，实际由 dash 执行，
+# 而 dash **不接受非 ASCII 变量名**（写了报 `xxx: not found`）。
+# 注释可以用中文，标识符不行。
+if [ "$FIX" = "--fix" ]; then
+    SNAP=".git/check_fix_before"
+    if [ -d .git ]; then
+        git status --porcelain | sort > "$SNAP" 2>/dev/null || : > "$SNAP"
+    else
+        : > "$SNAP"
+    fi
+fi
 
 echo "── Ruff（格式 + 静态检查）──"
 # **默认只检查不改**（D-244）。
@@ -52,6 +84,36 @@ echo "── Ruff（格式 + 静态检查）──"
 # 但两者作用不同，故分开写。
 "$V/ruff" format $FORMAT_MODE src tests
 "$V/ruff" check $FIX src tests
+
+# **报账**：`--fix` 到底动了哪些文件（D-284）。
+#
+# 分三类：
+#   - 本轮我已改过的（拍快照时就已经脏）→ 正常
+#   - `--fix` **新弄脏**的 → **这一类才是要盯的**
+#
+# **不用 `<(...)` 进程替换**：那是 bash 专有语法，
+# 本脚本由 dash 执行（`#!/bin/sh`），写了会 `Syntax error`。
+# 改用排序后的临时文件喂 `comm`。
+#
+# **边界（如实说）**：本守卫只抓「修完仍脏」的文件。
+# 若 `--fix` 把文件修回干净（内容被改过但最终与 HEAD 一致），它不响。
+# 那种情况文件最终是对的，故不响不算漏——但**不能宣称全覆盖**。
+if [ "$FIX" = "--fix" ] && [ -d .git ]; then
+    AFTER=".git/check_fix_after"
+    git status --porcelain | sort > "$AFTER" 2>/dev/null || : > "$AFTER"
+    NEWLY="$(comm -13 "$SNAP" "$AFTER" 2>/dev/null || true)"
+    echo ""
+    echo "── --fix 改了什么（D-284）──"
+    if [ -n "$NEWLY" ]; then
+        echo "⚠️  以下文件是 \`--fix\` **新改动**的（此前不在本轮改动范围内）："
+        echo "$NEWLY" | sed 's/^/   /'
+        echo "   请逐条确认：这些改动是否是你要的。确认无误后再提交。"
+        rm -f "$AFTER" "$SNAP"
+        exit 2
+    fi
+    echo "没有新改动文件（--fix 只碰了本轮已在改的文件）。"
+    rm -f "$AFTER" "$SNAP"
+fi
 
 echo ""
 echo "── BasedPyright（类型检查）──"
