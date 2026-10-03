@@ -56,7 +56,6 @@ def _长文编排(字数: int):
     比改容量阈值更贴近真实情形（真实公文写作回复本来就长）。
     """
     from test_step14_orchestrate_gate import _编排
-
     from zhengtong.adapters.fakes import FakeContentPack, FakeLlm
 
     # **两个注入口缺一不可**（踩过一次）：
@@ -112,8 +111,6 @@ class Test工具调用事件:
         与角色派发无关，故独立成事件。
         """
         from zhengtong.domain.role import RoleId
-        from zhengtong.domain.tier import TIER_BY_ID
-        from zhengtong.services.tools.runner import 工具运行器
 
         # 找一个「不在 shared.write 白名单里」的角色
         无人可调 = [
