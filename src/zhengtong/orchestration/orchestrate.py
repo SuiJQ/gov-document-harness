@@ -60,7 +60,7 @@ from ..domain.gate import (
 )
 from ..domain.ids import RunId
 from ..domain.phase import PhaseId, PhaseState
-from ..domain.role import RoleId, RoleState, display_name
+from ..domain.role import RoleId, RoleState, display_name, 取温度
 from ..domain.run_state import GateRecord, RunState, new_run_state
 from ..domain.task import TaskSpec
 from ..domain.tier import TIER_BY_ID, TierId
@@ -711,7 +711,10 @@ class _过程:
             tools=_工具声明(角色),
             # 温度走配置基准（D-234）。此前 `LlmRequest.temperature`
             # 用的是字段默认值 0.3，`Config.temperature` 从未影响任何请求。
-            temperature=self.编排.温度,
+            # **温度按角色取**（D-243）：此前所有角色的请求都用
+            # 同一个全局基准，「各角色可不同温度」这条约束从未实现。
+            # 取值在 `domain/role.py` 的常量表里，用户不可配（D-146 的坑）。
+            temperature=取温度(角色),
         )
         # 并行取证时多线程共写这张表，故加锁（D-049）
         with self.编排.请求锁:
