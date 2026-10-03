@@ -123,7 +123,7 @@ class Ref:
 #: 触发词的**识别模式**（不是词表——词表会与内容脱节）。
 #: 命中任一即认为该段声明了「何时读」。
 TIMING_PATTERNS = (
-    r"前(?!往)",  # 起草前 / 落笔前 / 写结构前 / 终稿前 / 定稿前
+    r"前(?!往)",            # 起草前 / 落笔前 / 写结构前 / 终稿前 / 定稿前
     r"(?<![一-鿿])[时当](?:读|查|看)",  # 时读 / 时查 / 当时 / 仅当
     r"遇到|遇该|遇此|遇争议",
     r"仅在|仅遇|按需|查阅|参见时",
@@ -197,7 +197,8 @@ def main() -> int:
             refs.append(Ref(role, name, timing))
             graph[name].append(Ref(role, name, timing))
 
-    print(f"\n角色 {len(prompts)} 份，references {len(ref_names)} 份，引用边 {len(refs)} 条\n")
+    print(f"\n角色 {len(prompts)} 份，references {len(ref_names)} 份，"
+          f"引用边 {len(refs)} 条\n")
 
     # ── A. 孤儿检测 ──
     print("── A. 孤儿检测（无人引用的死文件）──")
@@ -276,11 +277,9 @@ def main() -> int:
     # ── 汇总 ──
     print("\n" + "=" * 72)
     problems = len(orphans) + len(no_timing) + len(hits) + len(set(dangling))
-    print(
-        f"死文件 {len(orphans)} · 缺时机 {len(no_timing)} · "
-        f"越界可疑 {len(set((a, b) for a, b, _ in hits))} · "
-        f"悬空 {len(set(dangling))} · 孤岛 {len(islands)}"
-    )
+    print(f"死文件 {len(orphans)} · 缺时机 {len(no_timing)} · "
+          f"越界可疑 {len(set((a, b) for a, b, _ in hits))} · "
+          f"悬空 {len(set(dangling))} · 孤岛 {len(islands)}")
     if problems:
         print("→ A 项（死文件）是硬结论；B/C/D 是线索，须人工判断，**不作为门禁**。")
         return 0 if not orphans else 1

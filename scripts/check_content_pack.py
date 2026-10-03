@@ -76,7 +76,9 @@ def check_file_presence() -> list[Check]:
     checks = []
     for rid in ROLE_IDS:
         p = PROMPTS / f"{rid}.md"
-        checks.append(Check(f"提示词存在：{rid}", p.is_file(), str(p.relative_to(ROOT))))
+        checks.append(
+            Check(f"提示词存在：{rid}", p.is_file(), str(p.relative_to(ROOT)))
+        )
     required_refs = (
         "gate-manual.md",
         "error-memory.md",
@@ -97,7 +99,9 @@ def check_file_presence() -> list[Check]:
     )
     for name in required_refs:
         p = REFERENCES / name
-        checks.append(Check(f"references 存在：{name}", p.is_file(), str(p.relative_to(ROOT))))
+        checks.append(
+            Check(f"references 存在：{name}", p.is_file(), str(p.relative_to(ROOT)))
+        )
     return checks
 
 
@@ -159,10 +163,8 @@ def check_gates() -> list[Check]:
             has_section = re.search(rf"^## {g} \S", text, re.MULTILINE) is not None
             in_lead = g in lead
             ok = has_section and in_lead
-            detail = (
-                "手册小节 + 主理人提示词引用"
-                if ok
-                else (f"手册小节={has_section} 主理人引用={in_lead}")
+            detail = "手册小节 + 主理人提示词引用" if ok else (
+                f"手册小节={has_section} 主理人引用={in_lead}"
             )
         checks.append(Check(f"门禁 {g} 有判据", ok, detail))
 
@@ -184,7 +186,9 @@ def check_dcard() -> list[Check]:
     for d in DCARD_FIELDS:
         # 断言字段在方向锁表格里有独立行：`| **D1 主件** | ...`
         has_row = re.search(rf"\*\*{d} ", lead) is not None
-        checks.append(Check(f"D-Card 字段 {d} 有判读", has_row, "方向锁表中须有独立字段行"))
+        checks.append(
+            Check(f"D-Card 字段 {d} 有判读", has_row, "方向锁表中须有独立字段行")
+        )
     # 关键纪律：F/S/M 分级、逃生选项、D3 硬确认
     for token, why in (
         ("**F**", "事实分级 F（缺失致命）"),
@@ -194,7 +198,9 @@ def check_dcard() -> list[Check]:
         ("硬确认项", "D3 硬确认"),
         ("唯一停车项", "D1 唯一停车项"),
     ):
-        checks.append(Check(f"方向锁纪律：{why}", token in lead, f"须含 {token}"))
+        checks.append(
+            Check(f"方向锁纪律：{why}", token in lead, f"须含 {token}")
+        )
     return checks
 
 
@@ -407,11 +413,16 @@ def check_manifest() -> list[Check]:
     checks = [Check("manifest.json 存在", True, str(mpath.relative_to(ROOT)))]
 
     for field in ("name", "version", "requires_zhengtong", "files", "roles"):
-        checks.append(Check(f"manifest 字段 {field}", field in data, f"须含 {field}"))
+        checks.append(
+            Check(f"manifest 字段 {field}", field in data, f"须含 {field}")
+        )
 
     files = data.get("files", {})
     # 哈希覆盖全部内容文件
-    on_disk = {str(p.relative_to(CONTENT)).replace("\\", "/") for p in CONTENT.rglob("*.md")}
+    on_disk = {
+        str(p.relative_to(CONTENT)).replace("\\", "/")
+        for p in CONTENT.rglob("*.md")
+    }
     listed = set(files)
     missing = on_disk - listed
     extra = listed - on_disk

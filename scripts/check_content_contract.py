@@ -48,8 +48,8 @@ class Contract:
     """一个代码侧的权威枚举。"""
 
     name: str
-    source: str  # 定义所在的代码文件
-    enum_name: str  # 枚举类名
+    source: str          # 定义所在的代码文件
+    enum_name: str       # 枚举类名
     mapping: dict[str, str]  # 标识符 -> 注释里的中文名
 
 
@@ -94,28 +94,24 @@ def parse_comments(path: Path, enum_name: str) -> dict[str, str]:
 def load_contracts() -> list[Contract]:
     return [
         Contract("角色", "role.py", "RoleId", parse_enum(SRC / "role.py", "RoleId")),
-        Contract(
-            "产物类型",
-            "artifact.py",
-            "ArtifactKind",
-            parse_enum(SRC / "artifact.py", "ArtifactKind"),
-        ),
+        Contract("产物类型", "artifact.py", "ArtifactKind",
+                 parse_enum(SRC / "artifact.py", "ArtifactKind")),
         Contract("阶段", "phase.py", "PhaseId", parse_enum(SRC / "phase.py", "PhaseId")),
-        Contract(
-            "D-Card 字段", "dcard.py", "DCardFieldId", parse_enum(SRC / "dcard.py", "DCardFieldId")
-        ),
+        Contract("D-Card 字段", "dcard.py", "DCardFieldId",
+                 parse_enum(SRC / "dcard.py", "DCardFieldId")),
         Contract("门禁", "gate.py", "GateId", parse_enum(SRC / "gate.py", "GateId")),
     ]
 
 
 def content_text() -> str:
-    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(CONTENT.rglob("*.md")))
+    return "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted(CONTENT.rglob("*.md"))
+    )
 
 
 def check_role_manifest() -> list[str]:
     """manifest.json 的角色标识必须与 RoleId 完全一致。"""
     import json
-
     mpath = CONTENT / "manifest.json"
     if not mpath.is_file():
         return ["manifest.json 缺失"]
@@ -140,7 +136,6 @@ def check_role_manifest() -> list[str]:
 def check_prompt_files(contracts: list[Contract]) -> list[str]:
     """每个角色提示词文件必须被 manifest 指向，且文件名与 RoleId 一致。"""
     import json
-
     data = json.loads((CONTENT / "manifest.json").read_text(encoding="utf-8"))
     roles = data.get("roles", {})
     problems = []
@@ -162,14 +157,14 @@ def check_artifact_kind_names(contracts: list[Contract]) -> list[str]:
     # 内容包里常见的产物中文名 → 必须是代码里 ArtifactKind 的注释之一
     # 或明确属于 D-Card / 阶段，不在 ArtifactKind 范围
     allowed_extra = {
-        "方向确认单",  # D-Card，state 的一等公民
-        "文章大纲",  # = OUTLINE
-        "正文初稿",  # = DRAFT
-        "门禁报告",  # = GATE_REPORT
-        "主件",  # = MAIN_DOCUMENT
-        "配套件",  # = ATTACHMENT
-        "交付说明",  # = NOTE
-        "修正稿",  # = DRAFT 的别名（代码注释里写了）
+        "方向确认单",      # D-Card，state 的一等公民
+        "文章大纲",        # = OUTLINE
+        "正文初稿",        # = DRAFT
+        "门禁报告",        # = GATE_REPORT
+        "主件",            # = MAIN_DOCUMENT
+        "配套件",          # = ATTACHMENT
+        "交付说明",        # = NOTE
+        "修正稿",          # = DRAFT 的别名（代码注释里写了）
     }
     return []  # 结构上无法可靠自动判定，交给人工；保留函数以备后续
 
@@ -190,10 +185,10 @@ def _core(desc: str) -> str:
     补充说明不属契约——把「例外接口清单」也要求出现是过度约束。
     """
     s = desc.strip()
-    s = re.sub(r"^G\d+\s+", "", s)  # 剥编号前缀
-    s = re.sub(r"^自检：", "", s)  # 剥分类标记
-    s = re.split(r"[（(；;]", s, 1)[0]  # 剥括号与分号后的补充
-    s = re.split(r"\s*\+\s*", s, 1)[0]  # 剥并列的第二项
+    s = re.sub(r"^G\d+\s+", "", s)           # 剥编号前缀
+    s = re.sub(r"^自检：", "", s)             # 剥分类标记
+    s = re.split(r"[（(；;]", s, 1)[0]        # 剥括号与分号后的补充
+    s = re.split(r"\s*\+\s*", s, 1)[0]        # 剥并列的第二项
     return s.strip()
 
 
@@ -248,7 +243,9 @@ def check_phase_names() -> list[str]:
     for 名, 标记组 in 阶段标记:
         缺 = [k for k in 标记组 if k not in text]
         if 缺:
-            problems.append(f"内容包未落地架构阶段「{名}」——缺标记 {缺}（应全部在场）")
+            problems.append(
+                f"内容包未落地架构阶段「{名}」——缺标记 {缺}（应全部在场）"
+            )
     return problems
 
 
@@ -269,7 +266,6 @@ def check_decision_ids_unique() -> list[str]:
     ② 全仓引用的决策号必须在 DECISIONS.md 里存在
     """
     import re as _re
-
     dec = (ROOT / "DECISIONS.md").read_text(encoding="utf-8")
     编号 = _re.findall(r"^### (D-\d+)", dec, _re.M)
     problems = []
@@ -337,7 +333,9 @@ def check_decision_coverage() -> list[str]:
     problems = []
     for 名, 锚点组 in 必写.items():
         if not any(w in text for w in 锚点组):
-            problems.append(f"内容包未声明「{名}」——模型不知道有这条约束，行为就不会收敛")
+            problems.append(
+                f"内容包未声明「{名}」——模型不知道有这条约束，行为就不会收敛"
+            )
     return problems
 
 
@@ -354,7 +352,6 @@ def check_gate_count() -> list[str]:
     人工数一遍 12 道，早晚会数错或漏。
     """
     import re as _re
-
     text = content_text()
     problems = []
     # 从代码抽正式门禁编号
@@ -367,24 +364,20 @@ def check_gate_count() -> list[str]:
         problems.append(f"代码侧正式门禁数变了：{len(正式)} 道（判据写死 12，须同步）")
 
     # 内容包若写「N 道」，N 必须等于代码侧门禁数
-    for 文, 位置 in (
-        (c, f)
-        for f, c in (
-            (p.relative_to(CONTENT).as_posix(), p.read_text(encoding="utf-8"))
-            for p in sorted(CONTENT.rglob("*.md"))
-        )
-    ):
+    for 文, 位置 in ((c, f) for f, c in
+                     ((p.relative_to(CONTENT).as_posix(), p.read_text(encoding="utf-8"))
+                      for p in sorted(CONTENT.rglob("*.md")))):
         # **只查断言句式，不查任何「N 道」**。
         # 证伪时实测：裸 `\d+\s*道` 会把解释性文字也判进来——
         # 我自己写的「`G1–G13` 是 13 个格」被判成「13 道门禁」不符。
         # 解释数字是给人看的，断言数字才是契约。
         断言 = _re.compile(
-            r"(成品门禁|正式门禁|门禁)[^。\n]{0,12}?(\d+)\s*道"  # 「12 道门禁」
-            r"|(\d+)\s*道[^。\n]{0,6}?(成品门禁|正式门禁)"  # 「12 道成品门禁」
+            r"(成品门禁|正式门禁|门禁)[^。\n]{0,12}?(\d+)\s*道"   # 「12 道门禁」
+            r"|(\d+)\s*道[^。\n]{0,6}?(成品门禁|正式门禁)"          # 「12 道成品门禁」
             # 档位表里的「11 道（G1/G2/…）+ 交付一致性核」——
             # **证伪时实测这条原本漏判**：括号里是编号清单，
             # 「道」后面跟的是「（」不是「门禁」，上面两条都吃不到。
-            r"|(?<![\d])(\d+)\s*道（(?=[G0-9/])"  # 「11 道（」
+            r"|(?<![\d])(\d+)\s*道（(?=[G0-9/])"                  # 「11 道（」
         )
         for mo in 断言.finditer(文):
             # 三个分支的数字分别在 group 2/3/4。**不能用 `or` 链**：
@@ -394,10 +387,8 @@ def check_gate_count() -> list[str]:
             # 12 = 全部正式门禁；11 = Flash 档（无 G3）
             if 数字 in (11, 12, len(正式)):
                 continue
-            上下文 = 文[max(0, mo.start() - 40) : mo.end() + 20].replace("\n", " ")
-            problems.append(
-                f"{位置} 断言「{数字} 道门禁」，与代码侧 {len(正式)} 道不符：…{上下文}…"
-            )
+            上下文 = 文[max(0, mo.start() - 40):mo.end() + 20].replace("\n", " ")
+            problems.append(f"{位置} 断言「{数字} 道门禁」，与代码侧 {len(正式)} 道不符：…{上下文}…")
     return problems
 
 
@@ -431,15 +422,8 @@ def check_gate_ownership() -> list[str]:
         "doc-advisor.md": ("G3",),
     }
     全部编号 = {g for gs in 归属.values() for g in gs}
-    触发词 = (
-        "取证责任",
-        "由你独自取证",
-        "由你取证",
-        "属第 4 组",
-        "属第4组",
-        "独占此项",
-        "归你负责",
-    )
+    触发词 = ("取证责任", "由你独自取证", "由你取证",
+              "属第 4 组", "属第4组", "独占此项", "归你负责")
 
     problems: list[str] = []
     for 名, 门禁组 in 归属.items():
@@ -451,7 +435,8 @@ def check_gate_ownership() -> list[str]:
         for g in 门禁组:
             if g not in 已认领:
                 problems.append(
-                    f"{名} 未以认领句式声明自己负责 {g}——裸编号不算（反例句里也会出现该编号）"
+                    f"{名} 未以认领句式声明自己负责 {g}"
+                    f"——裸编号不算（反例句里也会出现该编号）"
                 )
     return problems
 

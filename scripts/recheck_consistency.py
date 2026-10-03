@@ -70,7 +70,8 @@ CONCEPTS: tuple[Concept, ...] = (
 
 def main() -> int:
     files = {
-        str(p.relative_to(NEW)): p.read_text(encoding="utf-8") for p in sorted(NEW.rglob("*.md"))
+        str(p.relative_to(NEW)): p.read_text(encoding="utf-8")
+        for p in sorted(NEW.rglob("*.md"))
     }
     print("=" * 72)
     print("第二轮复核 · B：矛盾定位器（⚠ 不可自动判定矛盾，须人判）")
