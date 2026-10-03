@@ -31,7 +31,15 @@ from ...ports.storage import StoragePort
 from ...ports.user_files import UserFilesPort
 from ...ports.validators import ValidatorPort
 from .audit import 审计器
-from .handlers import 工具依赖, 记事件回调
+from .handlers import (
+    唤醒回调,
+    回滚回调,
+    工具依赖,
+    汇报回调,
+    记事件回调,
+    请示回调,
+    问用户回调,
+)
 from .runner import 工具运行器
 
 
@@ -45,6 +53,20 @@ def 建工具运行器(
     run_id: RunId,
     审计时钟: Callable[[], float] | None = None,
     记事件: 记事件回调 | None = None,
+    # ── 编排回调（第 0 步接；此前一个都没在工厂里露过面，D-286）──
+    #
+    # **此前 `工具依赖` 上有 7 个回调字段，工厂一个都不传**——
+    # 于是它们在真实运行路径上恒为 `None`，全部走 `_未接线`。
+    #
+    # 后果不是「少个功能」，而是 D-007 的反例：
+    # Flash/Pro 要求必须问用户（D-029/D-040），而模型拿到的是
+    # 「尚未接线」，**流程带着未填的 D-Card 继续走**——
+    # 不报错，但产出建立在空字段上。
+    问用户: 问用户回调 | None = None,
+    汇报: 汇报回调 | None = None,
+    请示: 请示回调 | None = None,
+    唤醒: 唤醒回调 | None = None,
+    回滚: 回滚回调 | None = None,
 ) -> 工具运行器:
     """造一个工具运行器。
 
@@ -67,6 +89,11 @@ def 建工具运行器(
             # 否则审计条目只留在内存，进程一结束即消失
             # （架构 §7.4「全部进 journal」）。
             记事件=记事件,
+            问用户=问用户,
+            汇报=汇报,
+            请示=请示,
+            唤醒=唤醒,
+            回滚=回滚,
         ),
         审计=审计器(时钟=审计时钟 or time.monotonic),
     )

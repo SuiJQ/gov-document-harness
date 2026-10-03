@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, cast
 
 from ...domain.artifact import ArtifactKind, ArtifactRef
 from ...domain.errors import ErrorCode, Result
@@ -379,8 +379,39 @@ def flow_wake_on(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[
 def flow_ask_user(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[str]:  # noqa: ARG001  # role 是统一签名的一部分，删了会让处理器表类型不一致
     if d.问用户 is None:
         return _未接线("flow.ask_user", "问用户回调")
-    字段 = p.get("fields")
-    return Result.ok(d.问用户(字段 if isinstance(字段, tuple) else ()))
+    return Result.ok(d.问用户(_取字段(p.get("fields"))))
+
+
+def _取字段(原: object) -> tuple[dict[str, object], ...]:
+    """把 `fields` 参数规整成字段元组。
+
+    ## 此前写的是 `isinstance(原, tuple)`——**恒为假**（D-286）
+
+    工具参数来自 `json.loads(原始参数)`（`http_llm.py:220`），
+    **JSON 数组解析出来是 `list`，永远不可能是 `tuple`**。
+
+    于是那一行等价于「无论传什么都传空元组」：
+    模型问了一个问题，收到的却是**空问题的答案**。
+
+    **今天没发作**，因为 `问用户` 回调在生产代码里零接线，
+    每次都在这一行之前就 `_未接线(...)` 返回了。
+    **一旦把回调接上，这个缺陷立刻激活。**
+
+    > 这是本项目反复出现的形态：**被前置的失败挡住、因而从未执行的代码，
+    > 里面藏着第二个缺陷。**接缝不接，下面的一切都验不到。
+
+    ## 为什么要逐项 `isinstance(字段, dict)`
+
+    字段来自**模型**，是敌意输入面。`["a", "b"]`、字符串、嵌套数组都可能出现。
+    逐项过滤后丢掉坏的，好过把整个畸形结构塞进回调里——
+    那会让「模型问了什么」和「用户答了什么」彻底对不上号。
+    """
+    # **两种都收**：真实模型来的参数经 `json.loads` 是 `list`（D-286 的由来），
+    # 而程序内直接调用可能传 `tuple`（既有判据就是这么写的）。
+    # 只认一种会逼另一条路径静默降级成空问题——那正是要修的毛病。
+    if not isinstance(原, (list, tuple)):
+        return ()
+    return tuple(项 for 项 in cast("tuple[object, ...]", 原) if isinstance(项, dict))
 
 
 def flow_rollback(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[str]:  # noqa: ARG001  # role 是统一签名的一部分，删了会让处理器表类型不一致
