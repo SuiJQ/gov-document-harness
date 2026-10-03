@@ -116,6 +116,13 @@ python3 scripts/check_wiring.py
 # `TIER_BY_ID[档].字段名` 的读取**不出现在类内 self 链上**，查 wiring 查不到。
 python3 scripts/check_field_consumption.py
 
+# 第五轮（D-270）：端口契约字段的**用户路径**消费。
+# 与上一条**判据不同**：那条问「全仓有没有人读」，这条问
+# 「用户路径上有没有人读」——`prompt_tokens` 在 `llm_probe` 里被读过，
+# 于是「有人读」成立，但那是**连接检测**路径，用户看不到。
+# **「有人读」≠「用户看得到」**（D-269 的成因）。
+python3 scripts/check_port_fields.py
+
 # 第二轮全面检查新增（D-241）：决策号一致性。
 # D-157 那次撞号，判据只查内容包，而真正抓到的是 .py 里的悬空引用——
 # 代码侧的 `D-xxx` 引用此前**无判据常驻**，写错号会安静通过。
