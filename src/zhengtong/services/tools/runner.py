@@ -27,7 +27,7 @@ from __future__ import annotations
 from ...domain.errors import ErrorCode, Result
 from ...domain.role import RoleId
 from .audit import 审计器
-from .handlers import 处理器表, 工具依赖, 记事件回调
+from .handlers import 处理器表, 工具依赖, 记事件回调, 问用户回调
 from .registry import TOOL_SPECS, 取工具
 
 
@@ -41,6 +41,22 @@ class 工具运行器:
     @property
     def 审计(self) -> 审计器:
         return self._审计
+
+    def 接问用户(self, 问: 问用户回调 | None) -> None:
+        """后补「问用户」回调（D-287）。
+
+        ## 为什么和 `接记事件` 一样是「后补」
+
+        同一个鸡生蛋：工具层先于编排器建好，
+        而问用户要接到**界面侧的闸门**上——
+        闸门由 `app.py` 持有，装配时一并递给两边。
+
+        与 `接记事件` 分成两个方法而不是合成一个 `接回调`：
+        **取值时机不同**——记事件在编排器建好后立刻定，
+        问用户在界面起来之前可能还没有答复方，
+        传 `None` 就表示「此刻无人应答」。
+        """
+        self._d.问用户 = 问
 
     def 接记事件(self, 记: 记事件回调) -> None:
         """后补事件回调（D-266）。

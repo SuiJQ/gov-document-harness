@@ -69,6 +69,7 @@ from .ports.secrets import SecretsPort
 from .ports.storage import StoragePort
 from .ports.user_files import UserFilesPort
 from .ports.validators import ValidatorPort
+from .presentation.gate import 问答闸门
 from .services.retrieval.search import 中文检索
 from .services.tools import 工具运行器, 建工具运行器
 
@@ -117,6 +118,10 @@ class App:
     #: 第 10 步交付后 `services/tools/` 零引用——建好了、测过了，
     #: 但没有任何一处引用它，真实模型一个工具也调不到。
     tools: 工具运行器
+    #: 问答闸门（D-287）。**界面侧要从 App 取这同一个实例**——
+    #: 提问走工具层（`闸.问`）、答复走界面（`闸.挂答复`），
+    #: 两侧必须握同一个闸，否则提问方永远等不到。
+    问答: 问答闸门
     #: 运行期配置。**模型名只能从这里取**（D-082）——
     #: 代码不得自动填写，用户填什么就用什么。
     #: 此前这里是 `model="stub-model"` 写死的，
@@ -250,6 +255,9 @@ def build_app(
     content_pack: ContentPackPort | None = None,
     retriever: RetrieverPort | None = None,
     llm: LlmPort | None = None,
+    #: 问答闸门（D-287）。**不给就用一个新的**——
+    #: 没闸门等于「无人应答」，而强制等待正是这个语义。
+    问答: 问答闸门 | None = None,
 ) -> App:
     """装配一个应用。**每个端口都可注入**，便于测试定向场景。
 
@@ -282,6 +290,13 @@ def build_app(
     # 若工具层自己 new 一份假端口，就会出现「装配层测的是真检索、
     # 工具层用的还是假检索」这种同型盲区。
     生效run = run_id if run_id is not None else RunId("r-0001")
+    # **问答闸门（D-287）**：装配时建一个，App 持有，界面侧也从 App 取同一个。
+    #
+    # 此前 `工具依赖.问用户` 在真实路径上恒为 None，模型一提问就得到
+    # 「尚未接线」，而流程带着未填的 D-Card 继续走——
+    # 不报错，但产出建立在空字段上（D-007 的反例）。
+    闸 = 问答 if 问答 is not None else 问答闸门()
+
     tools = 建工具运行器(
         storage=st,
         user_files=ports.user_files,
@@ -289,6 +304,7 @@ def build_app(
         content_pack=ports.content_pack,
         validators=val,
         run_id=生效run,
+        问用户=闸.问,
     )
 
     app = App(
@@ -296,6 +312,7 @@ def build_app(
         bus=bus,
         standard=StandardProjection(),
         debug=DebugProjection(),
+        问答=闸,
         run_id=生效run,
         tools=tools,
         config=config if config is not None else Config(),

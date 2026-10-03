@@ -188,3 +188,106 @@ def test_主理人可提问(角色: RoleId) -> None:
     )
     got = 运行器.调用("flow.ask_user", 角色=角色, 参数={"fields": [{"key": "D1"}]})
     assert got.is_ok
+
+
+class Test走装配根真接上了:
+    """**这是本文件真正要守的东西**（D-287）。
+
+    前两组判据验的是「零件能用」——
+    工厂能传、handler 不吞字段、闸门会等。
+
+    但本项目反复出现的形态是：
+    **零件全对、判据全绿，而真实路径上一次都没走到过**
+    （D-195 工具层零引用、D-231 参数没往下传、D-286 回调零接线）。
+
+    故这里验的是**装配根建出来的那个 App**，
+    而不是手工构造的工具依赖。
+    """
+
+    def test_App持有闸门(self) -> None:
+        from zhengtong.app import build_app
+        from zhengtong.domain.ids import RunId
+
+        应用 = build_app(RunId("r-0001"))
+        assert 应用.问答 is not None, "App 没持有闸门——界面拿不到，提问方永远等不到"
+
+    def test_工具层的问用户真的是闸门(self) -> None:
+        """**不许用「没接线」冒充接上了。**
+        传进去的必须是闸门的方法本身，不是包装过的空壳。
+        """
+        from zhengtong.app import build_app
+        from zhengtong.domain.ids import RunId
+
+        应用 = build_app(RunId("r-0001"))
+        assert 应用.tools._d.问用户 is not None, "工具层的问用户还是 None"
+        assert 应用.tools._d.问用户 == 应用.问答.问, "工具层接的不是 App 持有的那个闸"
+
+    def test_通过App提问能真拿到答案(self) -> None:
+        """**端到端**：从 App 出发提问，挂上答复方，拿回答案。
+
+        这一条走的是完整接缝：
+        `建工具运行器(问用户=闸.问)` → `工具依赖.问用户`
+        → handler → 闸门 → 答复方。
+        """
+        from zhengtong.app import build_app
+        from zhengtong.domain.ids import RunId
+
+        应用 = build_app(RunId("r-0001"))
+        应用.问答.挂答复(lambda 字段: f"收到 {len(字段)} 个字段")
+        got = 应用.tools.调用(
+            "flow.ask_user",
+            角色=RoleId.TEAM_LEAD,
+            参数={"fields": [{"key": "D1"}, {"key": "D2"}]},
+        )
+        assert got.is_ok, "装配根提问失败"
+        assert got.unwrap() == "收到 2 个字段", got.unwrap()
+
+
+class Test提示词告诉了模型用哪个工具:
+    """**第 2 层**（D-287）。
+
+    此前提示词只说「必须一次性发出方向确认询问」，
+    **没说通过什么工具发**——模型得自己猜该调什么。
+
+    而 `grep ask_user content/prompts/*.md` **零命中**。
+
+    ## 这条为什么值得单列判据
+
+    提示词是**软数据**：Ruff 看不见、类型检查器看不见、
+    运行期也不校验「内容对不对」，只校验哈希。
+
+    故它很容易在改版时被无声改回去，而**没有任何机制会报警**——
+    除非专门写一条判据盯着。
+    """
+
+    def _提示词(self) -> str:
+        from zhengtong.app import 内容包根
+
+        return (内容包根() / "prompts" / "team-lead.md").read_text(encoding="utf-8")
+
+    def test_提示词点名了flow_ask_user(self) -> None:
+        assert "flow.ask_user" in self._提示词(), (
+            "提示词没告诉模型用哪个工具问——模型不会问，而接线做得多好都没用（D-287）"
+        )
+
+    def test_提示词禁止用文字直接问(self) -> None:
+        """**只说「要问」不够**，还得说「不能光用嘴问」——
+        否则模型会直接在正文里写一句问题，然后自己往下编。"""
+        文本 = self._提示词()
+        assert "flow.ask_user" in 文本
+        assert "编造" in 文本, "提示词没重申「不得编造」（D-007）"
+
+    def test_内容包哈希与提示词一致(self) -> None:
+        """改了提示词必须同步 manifest 哈希，否则运行期启动即报错。
+
+        **这条是为了让「改了忘了重算」变成红的**——
+        有 `scripts/recalc_content_hash.py` 可修。
+        """
+        from zhengtong.adapters.content_pack import 本地内容包
+        from zhengtong.app import 内容包根
+
+        r = 本地内容包(内容包根()).verify_manifest()
+        if r.is_error:
+            错 = r.error
+            assert 错 is not None
+            pytest.fail(f"内容包哈希不符：{错.detail}")
