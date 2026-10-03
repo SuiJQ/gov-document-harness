@@ -120,25 +120,9 @@ def new_run_state(run_id: RunId, task: TaskSpec) -> RunState:
     )
 
 
-def check_resumable(state: RunState) -> tuple[bool, str]:
-    """能否续跑。
-
-    只拒绝**版本不认识**的状态；版本一致但内容残缺时照样续跑，
-    因为残缺的初值有合法默认值兜着，而强行中断更伤。
-    """
-    from . import SCHEMA_VERSION
-
-    if state.schema_version > SCHEMA_VERSION:
-        return False, f"状态版本 {state.schema_version} 高于程序支持的 {SCHEMA_VERSION}，请升级程序"
-    if state.schema_version < SCHEMA_VERSION:
-        return True, "将按迁移链升级状态"
-    return True, ""
-
-
 __all__ = [
     "Event",
     "GateRecord",
     "RunState",
-    "check_resumable",
     "new_run_state",
 ]

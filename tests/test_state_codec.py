@@ -18,6 +18,9 @@ from __future__ import annotations
 import json
 
 from zhengtong.adapters import state_codec as sc
+
+#: 程序支持的版本号——**唯一来源是 `domain`**，state_codec 不再另定义（D-252）
+from zhengtong.domain import SCHEMA_VERSION as _当前版本
 from zhengtong.domain.artifact import ArtifactKind, ArtifactRef
 from zhengtong.domain.dcard import DCard, DCardField, DCardFieldId, Provenance, empty_dcard
 from zhengtong.domain.errors import ErrorCode
@@ -74,7 +77,7 @@ def test_中文不转义() -> None:
 
 
 def test_输出是合法JSON() -> None:
-    assert json.loads(sc.dumps(_state()))["schema_version"] == sc.SCHEMA_VERSION
+    assert json.loads(sc.dumps(_state()))["schema_version"] == _当前版本
 
 
 def test_字段顺序稳定便于diff() -> None:
@@ -109,7 +112,7 @@ def test_顶层非对象同样用文件不可读() -> None:
 
 def test_版本过新时拒绝并说清原因() -> None:
     """把新版的字段按旧版解释出来，比加载失败危险得多（D-066）。"""
-    got = sc.from_json({"schema_version": sc.SCHEMA_VERSION + 1, "run_id": "r"})
+    got = sc.from_json({"schema_version": _当前版本 + 1, "run_id": "r"})
     assert got.is_error
     assert got.error is not None
     assert "高于当前程序支持" in got.error.detail
@@ -245,9 +248,9 @@ def test_空文件返回错误而非崩() -> None:
 
 
 def test_schema_version为当前值时正常加载() -> None:
-    got = sc.from_json({"schema_version": sc.SCHEMA_VERSION, "run_id": "r"})
+    got = sc.from_json({"schema_version": _当前版本, "run_id": "r"})
     assert got.is_ok
-    assert got.unwrap().schema_version == sc.SCHEMA_VERSION
+    assert got.unwrap().schema_version == _当前版本
 
 
 def test_空DCard加载() -> None:
@@ -282,7 +285,7 @@ def _state() -> RunState:
     """一个字段全满的状态。**每个字段都非空**——
     空字段的往返不能证明序列化是对的。"""
     return RunState(
-        schema_version=sc.SCHEMA_VERSION,
+        schema_version=_当前版本,
         run_id=RunId("run-测试-001"),
         task=TaskSpec(
             tier=TierId.PRO,

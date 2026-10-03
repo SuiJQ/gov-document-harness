@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 from typing import TypeVar, cast
 
+from .. import domain as _域
 from ..domain.artifact import ArtifactKind, ArtifactRef
 from ..domain.dcard import DCard, DCardField, DCardFieldId, Provenance, empty_dcard
 from ..domain.errors import ErrorCode, Result
@@ -48,8 +49,7 @@ from ..domain.run_state import GateRecord, RunState
 from ..domain.task import TaskSpec
 from ..domain.tier import TierId
 
-#: 当前 schema 版本。**改结构就 +1**，并在 `from_json` 里加迁移分支。
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = _域.SCHEMA_VERSION
 
 
 def dumps(state: RunState) -> str:
@@ -128,10 +128,10 @@ def from_json(raw: dict[str, object]) -> Result[RunState]:
     # **知道对方是哪个版本**；把布尔当版本接受，等于声称知道而其实不知道。
     if not isinstance(version, int) or isinstance(version, bool):
         return Result.fail(ErrorCode.FILE_UNREADABLE, "状态文件缺 schema_version")
-    if version > SCHEMA_VERSION:
+    if version > _域.SCHEMA_VERSION:
         return Result.fail(
             ErrorCode.FILE_UNREADABLE,
-            f"状态文件版本 {version} 高于当前程序支持的 {SCHEMA_VERSION}，拒绝加载",
+            f"状态文件版本 {version} 高于当前程序支持的 {_域.SCHEMA_VERSION}，拒绝加载",
         )
     run_id = raw.get("run_id")
     if not isinstance(run_id, str) or not run_id:

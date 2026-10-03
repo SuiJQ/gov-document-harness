@@ -121,11 +121,3 @@ TIERS: tuple[TierSpec, ...] = (
 )
 
 TIER_BY_ID: dict[TierId, TierSpec] = {t.id: t for t in TIERS}
-
-
-def tier_by_name(name: str) -> TierSpec | None:
-    """按配置里的档位名取档。认内部标识与中文名两种写法。"""
-    for spec in TIERS:
-        if name == spec.id.value or name == spec.display_name:
-            return spec
-    return None
