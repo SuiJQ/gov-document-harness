@@ -77,7 +77,6 @@ from pathlib import Path
     "摘要token": "D-261",
     "effect": "D-262 ToolSpec.effect 仅测试读取，副作用分类未执行",
     "requires_publish": "D-262",
-    "原文出处": "D-263 导出扫描的「原文出处」未接入",
     "reasoning_policy": "D-239 Pro 深度思考从未生效（台账待办第 2 项）",
     # —— 定性为「设计上就零消费」——
     # 编排结果的 6 个字段是给调用方的结果快照；TUI 与无界面都走

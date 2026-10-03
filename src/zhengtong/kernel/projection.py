@@ -180,6 +180,13 @@ class StandardProjection:
             # D-038 要求「列出待补信息」，故这里必须把清单显示出来。
             待补 = _as_names(data.get("placeholders"))
             self.questions = (*self.questions, f"还有待补信息，暂不能导出：{'、'.join(待补)}")
+            # **出处单独一行**（D-263）：不挤占上一行的待补清单。
+            #
+            # 「D3 待填」只说缺什么，不说**去哪个文件的哪一行**——
+            # 用户拿到清单仍要一份份翻。行号从 1 起（见 `export._行号`）。
+            出处 = _as_names(data.get("原文出处"))
+            if 出处:
+                self.questions = (*self.questions, f"在这些位置：{'、'.join(出处)}")
             self.progress = "导出被拦：请补齐待补信息"
         elif event.kind is EventKind.EXPORT_DONE:
             # 同为白名单项，此前也无分支。导出成功是用户明确期待的结论，

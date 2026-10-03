@@ -43,21 +43,21 @@ class Test残留占位符拦截:
         """
         from zhengtong.services.export import 扫描产出
 
-        结论 = 扫描产出(("正文：关于防汛工作的通知【待填 · D3】",))
+        结论 = 扫描产出((("正文.txt", "正文：关于防汛工作的通知【待填 · D3】"),))
         assert not 结论.可导出, "有待填项却放行了——严禁编造形同虚设"
         assert 结论.待补, "拦截了却没列出待补信息——用户不知道要补什么"
 
     def test_待核实项同样拦截(self) -> None:
         from zhengtong.services.export import 扫描产出
 
-        结论 = 扫描产出(("数据为【待核实 · D7】",))
+        结论 = 扫描产出((("正文.txt", "数据为【待核实 · D7】"),))
         assert not 结论.可导出, "待核实项被放行了"
 
     def test_无占位符则放行(self) -> None:
         """**反向**：干净稿件不能被误拦——误拦等于门禁失效。"""
         from zhengtong.services.export import 扫描产出
 
-        结论 = 扫描产出(("关于防汛工作的通知\n\n请各地于六月三十日前上报。",))
+        结论 = 扫描产出((("正文.txt", "关于防汛工作的通知\n\n请各地于六月三十日前上报。"),))
         assert 结论.可导出, f"干净稿件被拦了：{结论.待补}"
         assert not 结论.待补
 
@@ -70,7 +70,7 @@ class Test残留占位符拦截:
         """
         from zhengtong.services.export import 扫描产出
 
-        结论 = 扫描产出(("正文【待填 · D3】还有【待核实 · D7】",))
+        结论 = 扫描产出((("正文.txt", "正文【待填 · D3】还有【待核实 · D7】"),))
         列出 = " ".join(结论.待补)
         assert "D3" in 列出 and "D7" in 列出, f"没列出字段号：{列出}"
         assert len(结论.待补) == 2, f"重复计入：{结论.待补}"
@@ -93,7 +93,7 @@ class Test导出:
         """事件载荷契约由投影层定死：`placeholders`（D-038）。"""
         from zhengtong.services.export import 导出交付物, 扫描产出
 
-        结论 = 扫描产出(("正文【待填 · D3】",))
+        结论 = 扫描产出((("正文.txt", "正文【待填 · D3】"),))
         事件 = 导出交付物.取拦截事件(结论)
         assert 事件 is not None, "拦截了却没留下用户可见的事件"
         待补 = 事件["placeholders"]
@@ -127,7 +127,7 @@ class Test导出:
         """载荷契约：`files`（D-038「列出全部文件」）。"""
         from zhengtong.services.export import 导出交付物, 扫描产出
 
-        结论 = 扫描产出(("干净的正文",))
+        结论 = 扫描产出((("正文.txt", "干净的正文"),))
         事件 = 导出交付物.取完成事件(结论, ("01-主件-通知.txt",))
         assert 事件 is not None, "放行了却没发完成事件"
         文件 = 事件["files"]
