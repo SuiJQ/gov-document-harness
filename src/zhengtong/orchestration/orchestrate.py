@@ -60,7 +60,7 @@ from ..domain.gate import (
 )
 from ..domain.ids import RunId
 from ..domain.phase import PhaseId, PhaseState
-from ..domain.role import RoleId, RoleState
+from ..domain.role import RoleId, RoleState, display_name
 from ..domain.run_state import GateRecord, RunState, new_run_state
 from ..domain.task import TaskSpec
 from ..domain.tier import TIER_BY_ID, TierId
@@ -394,6 +394,7 @@ class _过程:
                 and any(r in 编制 for r in GATES[g].owners)
             ]
             if 缺席:
+                self._留门禁报告(裁定)
                 self.编排.发(
                     EventKind.GATE_ESCALATED,
                     PhaseId.GATING,
@@ -406,7 +407,13 @@ class _过程:
                 )
             驳回 = [记 for 记 in 裁定.values() if not 记.passed]
             if not 驳回:
-                return Result.ok(阶段产物(PhaseId.GATING, "gate-report.md", _门禁报告(self.门禁)))
+                return Result.ok(
+                    阶段产物(
+                        PhaseId.GATING,
+                        "gate-report.md",
+                        _门禁报告(self.门禁, 裁定),
+                    )
+                )
             for 记 in 驳回:
                 # 退回数以**编排实际经手的轮次**为准（`self.轮次`），
                 # 不轻信裁定方自报的 attempt——否则上限只在脚本配合时才成立。
@@ -418,6 +425,7 @@ class _过程:
                     detail=f"{真实记.gate}：{真实记.rejection_reason}",
                 )
                 if 判 is 处置.升级裁决:
+                    self._留门禁报告(裁定)
                     self.编排.发(
                         EventKind.GATE_ESCALATED,
                         PhaseId.GATING,
@@ -435,9 +443,28 @@ class _过程:
             self.编排.发(EventKind.PHASE_STARTED, PhaseId.REVISION)
             重跑 = self._派发(档, PhaseId.REVISION)
             if 重跑.is_error:
+                self._留门禁报告(裁定)
                 self.编排.发(EventKind.PHASE_EXITED, PhaseId.REVISION, ok=False)
                 return _转为失败(重跑, "退回后重起草失败")
             self.编排.发(EventKind.PHASE_EXITED, PhaseId.REVISION, ok=True)
+
+    def _留门禁报告(self, 裁定: dict[str, GateRecord]) -> None:
+        """**失败路径上也要留下门禁报告**（D-236）。
+
+        ## 为什么失败路径更需要它
+
+        用户被门禁卡住时拿到的是一个错误码，
+        而「哪道门禁、为什么、谁查的、证据是什么」全在这份报告里。
+        原先三条失败路径（无结论 / 升级裁决 / 退回失败）
+        都直接 `return Result.fail`，产物列表是空的——
+        用户除了错误码什么都拿不到，只能回去翻日志原文，
+        而那正是用户明确要求「不要展示」的东西。
+
+        报告**照留、但不落盘**：`ARTIFACT_READY` 事件带全文（D-046），
+        这条路径不发该事件，故不会把未过稿当成果报给界面。
+        """
+        件 = 阶段产物(PhaseId.GATING, "gate-report.md", _门禁报告(self.门禁, 裁定))
+        self.产物.append(件)
 
     def _并行取证(self, 档: TierId, 门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
         """门禁取证：**并行组并发跑，主理人终闸组串行在后**（D-049）。
@@ -1001,8 +1028,56 @@ def _正文(阶段: PhaseId, 回复: dict[RoleId, str]) -> str:
     return "\n".join(段)
 
 
-def _门禁报告(门禁: list[GateId]) -> str:
-    return "\n".join(["【门禁检查】", *(f"- {g.value} {GATES[g].name}" for g in 门禁)])
+def _门禁报告(
+    门禁: list[GateId],
+    裁定: dict[str, GateRecord] | None = None,
+) -> str:
+    """门禁报告：**责任角色 + 结论 + 证据 + 未过原因**（D-236）。
+
+    ## 为什么必须带这四项
+
+    标准模式不展示审核意见（用户约束），所以这份报告是**事后唯一的台账**。
+    原先只有「门禁号 + 名字」两样，于是三个字段生产零消费：
+
+    - `GateRecord.evidence` —— 只在序列化时读写，取证方给的证据**没人看**
+    - `rejection_reason` —— 驳回了，但用户看不到**为什么**被驳回
+    - `gate_owners(g)` —— 生产零引用，而架构 §8.3「这稿是谁的锅？」
+      问的就是这个（D-049 的责任映射）
+
+    用户只知道「被退回了」，无法判断是文稿问题还是环境问题，
+    只能回去翻日志原文——而那正是用户要求「不要展示」的东西。
+
+    ## 角色名用中文
+
+    用户约束：内部标识用英文，**界面显示中文角色名**。
+    报告是给人看的，故取 `display_name` 而非 `role.value`。
+
+    ## 缺结论要写明「无结论」而不是「通过」
+
+    门禁若不在 `裁定` 里（缺席、动态取证方未派发），
+    印「通过」就是把没查说成查过了——D-221 的老问题换个地方复发。
+    """
+    行: list[str] = ["【门禁检查】"]
+    for g in 门禁:
+        规 = GATES[g]
+        角色 = (
+            "（运行期确定）" if 规.dynamic_owners else "、".join(display_name(r) for r in 规.owners)
+        )
+        记 = (裁定 or {}).get(g.value)
+        if 记 is None:
+            结论 = "**无结论**"
+            证据 = ""
+            原因 = ""
+        elif 记.passed:
+            结论 = "通过"
+            证据 = "；证据：" + "；".join(记.evidence) if 记.evidence else ""
+            原因 = ""
+        else:
+            结论 = f"**未通过**（退回 {记.attempt} 次）"
+            证据 = "；证据：" + "；".join(记.evidence) if 记.evidence else ""
+            原因 = f"；原因：{记.rejection_reason}" if 记.rejection_reason else ""
+        行.append(f"- {g.value} {规.name}｜取证：{角色}｜{结论}{证据}{原因}")
+    return "\n".join(行)
 
 
 def _临时总线() -> EventBus:
