@@ -41,7 +41,21 @@ echo "── Ruff（格式 + 静态检查）──"
 echo ""
 echo "── BasedPyright（类型检查）──"
 # 类型检查不用 --fix：类型错误必须人工判断上下文，不能机械改。
-"$V/basedpyright"
+#
+# **审计 D-242**：basedpyright **只要有 warning 就返回 1**，
+# 而本脚本开了 errexit，于是引入双检查器那天起，
+# 本行之后的**全部检查（内容包 192 项、契约一致性、决策号）
+# 从未执行过**——每轮「check.sh 全绿」的记录里，它们根本没跑。
+#
+# 判据：0 errors 才是通过（本项目一贯口径，warnings 记录接受）。
+# 故这里显式按输出判定退出码，而不是信工具的退出码。
+"$V/basedpyright" | tee /tmp/.basedpyright.out
+ERRCNT=$(grep -oE "[0-9]+ errors" /tmp/.basedpyright.out | grep -oE "[0-9]+" | head -1)
+ERRCNT=${ERRCNT:-0}
+if [ "$ERRCNT" != "0" ]; then
+    echo "类型检查有 ${ERRCNT} 个 error——停在这里，后面的检查不跑。"
+    exit 1
+fi
 
 # 覆盖率与死代码不在默认门禁里，原因见 AUDIT.md：
 # 覆盖率是**趋势指标**不是**通过指标**——把它设成硬门禁，
@@ -75,6 +89,11 @@ python3 scripts/check_content_pack.py
 # 内容包写 D1/角色/阶段/门禁，代码有唯一定义；不一致会让链路必然失败，
 # 而任何单侧检查都查不出来（软数据对硬枚举）。
 python3 scripts/check_content_contract.py
+
+# 第二轮全面检查新增（D-241）：决策号一致性。
+# D-157 那次撞号，判据只查内容包，而真正抓到的是 .py 里的悬空引用——
+# 代码侧的 `D-xxx` 引用此前**无判据常驻**，写错号会安静通过。
+python3 scripts/check_decision_refs.py
 
 echo ""
 echo "全部通过。"
