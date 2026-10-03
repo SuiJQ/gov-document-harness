@@ -78,7 +78,9 @@ def main() -> int:
     print(f"模型  {cfg.model}    上下文 {cfg.context_k}K")
     # **不打印密钥片段**——D-161 明令文档/日志/工具输出不得出现真实凭据片段。
     # 只报「已配置」与长度：足够确认读到了，又不泄内容。
-    print(f"密钥  已配置（{len(sec.get_api_key())} 字符，片段数 {len(sec.redaction_patterns())}）\n")
+    print(
+        f"密钥  已配置（{len(sec.get_api_key())} 字符，片段数 {len(sec.redaction_patterns())}）\n"
+    )
 
     通过 = True
     print("═══ D-048 五项探测 ═══")
@@ -122,7 +124,9 @@ def main() -> int:
     起 = time.monotonic()
     try:
         码 = llm.探测流式()
-        print(f"  {'✓' if 码 == 200 else '~'} 流式能力     HTTP {码}（{time.monotonic() - 起:.2f}s，只检测不使用）")
+        print(
+            f"  {'✓' if 码 == 200 else '~'} 流式能力     HTTP {码}（{time.monotonic() - 起:.2f}s，只检测不使用）"
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"  ~ 流式能力     不可用（{exc}）——D-032：只检测不使用，不阻断")
 

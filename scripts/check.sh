@@ -110,6 +110,12 @@ python3 scripts/check_content_contract.py
 # （D-222/D-231/D-233/D-234/D-235 五条同型）。
 python3 scripts/check_wiring.py
 
+# 第四轮（D-257）：数据字段消费——「字段声明了但全仓无人读」。
+# 与上一条**形状不同**：check_wiring 盯 `self.X`（类实例），
+# 本条盯 frozen dataclass 字段。D-239 三项属后者——
+# `TIER_BY_ID[档].字段名` 的读取**不出现在类内 self 链上**，查 wiring 查不到。
+python3 scripts/check_field_consumption.py
+
 # 第二轮全面检查新增（D-241）：决策号一致性。
 # D-157 那次撞号，判据只查内容包，而真正抓到的是 .py 里的悬空引用——
 # 代码侧的 `D-xxx` 引用此前**无判据常驻**，写错号会安静通过。
