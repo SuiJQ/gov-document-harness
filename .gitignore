@@ -28,6 +28,12 @@ system/
 # 本地覆盖
 .env
 config.local.toml
+# **任何**带 local/private/secret 字样的配置都排除——
+# 2026-09-30 探测期就漏过一次：`endpoint.local.toml` 当时**没被任何忽略规则覆盖**，
+# 只因为它待在仓库外的另一个目录才没进版本控制（D-285）。
+*local*.toml
+*secret*.toml
+*.key
 
 # Python 开发环境
 .venv/
@@ -49,6 +55,3 @@ cross_platform_build/
 # 旧的已移到 `_archive/`（同样不入库）。
 *_TODO.md
 _archive/
-.bak_tool/
-CLI_TODO.md
-RUNPATH_TODO.md
