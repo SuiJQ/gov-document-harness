@@ -337,6 +337,22 @@ class HttpLlm:
     # ── 错误映射 ──
 
     def _映射错误(self, 状态码: int, 体: object) -> tuple[ErrorCode, str]:
+        # **状态码 0 不是「被拒」，是「压根没连上」**（D-282）。
+        #
+        # `HttpxTransport.post_json` 把 `httpx.HTTPError` 统一转成 `(0, {})`
+        # （连接被拒、DNS 失败、超时都在里面）。此前 0 掉进兜底分支，
+        # 用户看到的是**「请求被拒（0）」**——
+        # 既说错了事（不是被拒，是连不上），又报了个没意义的数字 0。
+        #
+        # 起真本地端点跑 `--run` 时撞到的：端点指了个死端口，
+        # 一路报「请求被拒（0）」，用户完全不知道该去检查地址还是网络。
+        if 状态码 == 0:
+            return (
+                ErrorCode.LLM_REQUEST_FAILED,
+                "连不上端点：请求没能送达服务器"
+                "（地址不通、网络不可达、或服务未启动）。"
+                "请检查 config.toml 里的 endpoint 是否完整可访问",
+            )
         服务码 = _服务错误码(体)
         if 状态码 in (401, 403):
             return ErrorCode.LLM_AUTH_FAILED, f"鉴权被拒（{服务码 or 状态码}）"
@@ -353,8 +369,13 @@ class HttpLlm:
 
         401/403/404/400 重试一万次结果相同，
         而每次重试都让用户干等——那是拿用户的时间换确定性。
+
+        **但 0 要重试**（D-282）：那是网络层失败，
+        服务还没起来、DNS 刚生效、代理刚连上都会这样，
+        **重试大概率能成**。用户的要求是「单次请求失败自动重试 3 次」，
+        而连不上恰恰是最该重试的那一类。
         """
-        return 状态码 in (408, 429) or 状态码 >= 500
+        return 状态码 in (0, 408, 429) or 状态码 >= 500
 
     # ── 公开方法 ──
 
@@ -374,6 +395,26 @@ class HttpLlm:
                 self._clock.sleep(_退避基准秒 * float(2) ** 次第)
             try:
                 状态码, 数据 = self._transport.post_json(self._endpoint, 头, 体)
+            except UnicodeEncodeError:
+                # **单独分支，不并进下面的通用异常**（D-282）。
+                #
+                # 实测（起真本地端点跑 `--run` 时撞到的）：密钥或地址里
+                # 混入非 ASCII 字符，httpx 按 latin-1 编码 HTTP 头时报
+                # `UnicodeEncodeError`。而通用分支会把它说成
+                # 「连接失败：UnicodeEncodeError」——
+                # **用户完全看不懂，也不知道该改哪里**。
+                #
+                # 这不是臆想的场景：密钥由用户手填、地址由用户粘贴，
+                # 混进一个全角标点或中文字符完全可能。
+                #
+                # **也不该重试**：这不是网络抖动，是输入问题，
+                # 重试 3 次只是让用户多等三倍时间看同一句话。
+                return Result.fail(
+                    ErrorCode.LLM_REQUEST_FAILED,
+                    "密钥或请求地址含非 ASCII 字符，无法作为 HTTP 头发送"
+                    "（HTTP 头只能传 ASCII）。请检查 system/config.toml 里的"
+                    " api_key 与 endpoint 是否混入了中文或全角标点",
+                )
             except Exception as exc:
                 # **只记异常类型名，不嵌 `str(exc)`**。
                 #
