@@ -27,12 +27,14 @@ from zhengtong.domain.phase import PhaseId
 from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TierId
 from zhengtong.orchestration import 编排器
+from zhengtong.ports.storage import StoragePort
 
 
 def _编排(
     *,
     驳回: dict[str, int] | None = None,
     缺席: bool = False,
+    storage: StoragePort | None = None,
 ) -> 编排器:
     """装一个编排器。
 
@@ -68,7 +70,11 @@ def _编排(
                 )
         return 出
 
-    return 编排器(llm=FakeLlm(), storage=FakeStorage(), 门禁取证=门禁取证)
+    return 编排器(
+        llm=FakeLlm(),
+        storage=storage if storage is not None else FakeStorage(),
+        门禁取证=门禁取证,
+    )
 
 
 class TestGATING真跑判定:

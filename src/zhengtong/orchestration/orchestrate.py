@@ -194,6 +194,8 @@ class _过程:
         self.已完成 = 初始已完成
         self.产物: list[阶段产物] = []
         self.门禁: list[GateId] = []
+        #: 《政策依据适配表》单独挂一份（D-255）；无则 None
+        self._政策取证件: 阶段产物 | None = None
         self.出现过的状态: list[RoleState] = []
         self.动过的: list[RoleId] = []
         self.回复: dict[RoleId, str] = {}
@@ -299,7 +301,39 @@ class _过程:
         派 = self._派发(档, 阶段)
         if 派.is_error:
             return _转为失败(派, f"{阶段.value} 段派发失败")
+        if 阶段 is PhaseId.OUTLINE:
+            # 《政策依据适配表》**不混进阶段聚合正文**（D-255）：
+            # `_跑一段` 是单件契约（调用方按 `件.名称` 落盘），
+            # 塞第二个产物会破坏它。故挂到编排器，收结果时统一入库
+            # ——与 `g3-降级标注` 同一模式。
+            self._政策取证件 = self._政策取证产物()
         return Result.ok(阶段产物(阶段, f"{阶段.value}.md", _正文(阶段, self.回复)))
+
+    def _政策取证产物(self) -> 阶段产物 | None:
+        """《政策依据适配表》**单独落一份**，不混在阶段聚合正文里（D-255）。
+
+        ## 为什么要单独落
+
+        它有两个下游要**按名取**：G7「依据全可溯」门禁要核政策出处，
+        起草阶段要据它写正文。混在 `outline.md` 的多角色聚合里，
+        下游只能整篇读、自己拆角色段落——**等于没有稳定的取法**。
+
+        名与内容包一致（`content/prompts/compliance.md` 第 11 条），
+        否则模型产出了对不上名字。
+
+        咨询档不产：它豁免政策取证（架构 §8.3）。
+        """
+        档 = self.状态.task.tier
+        if not TIER_BY_ID[档].policy_retrieval:
+            return None
+        正文 = self.回复.get(RoleId.COMPLIANCE, "")
+        if not 正文:
+            return None
+        return 阶段产物(
+            阶段=PhaseId.OUTLINE,
+            名称="政策依据适配表.md",
+            内容=正文,
+        )
 
     def _提问前校验(self, 阶段: PhaseId) -> Result[None]:
         """**提问前**跑硬约束（D-040 / D-069）。
@@ -761,6 +795,12 @@ class _过程:
 
     def 收结果(self) -> 编排结果:
         档 = self.状态.task.tier
+        # 《政策依据适配表》落盘并入库（G7 门禁与起草阶段按名取，D-255）
+        if self._政策取证件 is not None:
+            件 = self._政策取证件
+            存 = self.storage.write_atomic(self._路径(件.名称), 件.内容)
+            if not 存.is_error:
+                self.产物.append(件)
         self.标注 = g3降级标注(档)
         if self.标注:
             self.交付物 = f"{self.交付物}\n\n" + "\n".join(self.标注)
@@ -1042,7 +1082,22 @@ def _该段角色(档: TierId, 阶段: PhaseId) -> tuple[RoleId, ...]:
     if 阶段 in (PhaseId.DIRECTION, PhaseId.FINAL):
         return (RoleId.TEAM_LEAD,) if RoleId.TEAM_LEAD in 编制 else ()
     if 阶段 is PhaseId.OUTLINE:
-        return (RoleId.STRUCTURE,) if RoleId.STRUCTURE in 编制 else ()
+        # **架构 §8.3 的 Phase 0 与 Phase 0.5 合并在此格**（D-255）：
+        # Phase 0 = 陈纲举因果推演，Phase 0.5 = 骆准绳政策取证。
+        # 内容包 `compliance.md` 第 11 条明写「政策主动检索
+        # （Phase 0.5 · 起草前）」并要求产出《政策依据适配表》——
+        # 而此前**代码从不派骆准绳**，产物名在 `src/` 里也不存在。
+        #
+        # 不拆独立 `PhaseId`：一格走完两段是**有意设计**
+        # （`domain/phase.py` 注释：「假装是一对一，等于把代码少一次交接
+        # 藏起来」），拆枚举会波及续跑、投影与事件序列。
+        #
+        # 按 `policy_retrieval` 分流而非查档位名：咨询档豁免的只是
+        # **政策取证**，因果推演照做（架构 §8.3 三项豁免之一）。
+        该动 = [RoleId.STRUCTURE] if RoleId.STRUCTURE in 编制 else []
+        if TIER_BY_ID[档].policy_retrieval and RoleId.COMPLIANCE in 编制:
+            该动.append(RoleId.COMPLIANCE)
+        return tuple(该动)
     if 阶段 is PhaseId.DRAFTING:
         # §8.3：Phase 1 起草是辞达意，Phase 2 格式壳是骆准绳。
         return tuple(r for r in (RoleId.LANGUAGE, RoleId.COMPLIANCE) if r in 编制)
