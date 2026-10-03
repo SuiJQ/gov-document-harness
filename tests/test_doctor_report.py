@@ -14,9 +14,9 @@ from __future__ import annotations
 import io
 
 from zhengtong.presentation.doctor import (
+    打印自检,
     自检项,
     跑自检,
-    打印自检,
 )
 
 
@@ -94,9 +94,7 @@ class Test打印:
 
     def test_打印失败报告也完整(self) -> None:
         缓冲 = io.StringIO()
-        打印自检(
-            跑自检(探测=(自检项("鉴权", False, "HTTP 401", "检查 key"),)), 流=缓冲
-        )
+        打印自检(跑自检(探测=(自检项("鉴权", False, "HTTP 401", "检查 key"),)), 流=缓冲)
         文本 = 缓冲.getvalue()
         assert "HTTP 401" in 文本 and "检查 key" in 文本
 

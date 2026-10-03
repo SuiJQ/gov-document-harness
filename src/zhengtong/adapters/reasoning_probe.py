@@ -144,7 +144,8 @@ def 探测推理(模型: str, 发: 发请求) -> Result[推理探测结论]:
     if 基准推理 <= 0:
         return Result.ok(推理探测结论(可用写法=0, 实测写法=0))
 
-    for 序, (_名, 额外, _后端) in enumerate(写法表, start=1):
+    for 序, 写法 in enumerate(写法表, start=1):
+        额外 = 写法[1]
         if not 额外:
             # 第 4 种是提示词前缀，已在 _探测词 里，无需额外字段
             got = _实测(模型, 发, ())
@@ -160,9 +161,7 @@ def 探测推理(模型: str, 发: 发请求) -> Result[推理探测结论]:
     return Result.ok(推理探测结论(可用写法=0, 实测写法=0))
 
 
-def _实测(
-    模型: str, 发: 发请求, 额外: Sequence[tuple[str, object]]
-) -> Result[LlmResponse]:
+def _实测(模型: str, 发: 发请求, 额外: Sequence[tuple[str, object]]) -> Result[LlmResponse]:
     请求 = _请求(模型, 额外)
     结果 = 发(请求)
     if 结果.is_error:
@@ -175,4 +174,4 @@ def _实测(
     return Result.ok(值)
 
 
-__all__ = ["写法表", "探测推理", "推理探测结论", "发请求"]
+__all__ = ["写法表", "发请求", "探测推理", "推理探测结论"]

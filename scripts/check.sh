@@ -105,6 +105,11 @@ python3 scripts/check_content_pack.py
 # 而任何单侧检查都查不出来（软数据对硬枚举）。
 python3 scripts/check_content_contract.py
 
+# 第三轮（D-247）：接线专项——「存进 self 后类内从无读取」。
+# 历史缺陷里栽得最多的不是写错，而是**值在那里没人往下传**
+# （D-222/D-231/D-233/D-234/D-235 五条同型）。
+python3 scripts/check_wiring.py
+
 # 第二轮全面检查新增（D-241）：决策号一致性。
 # D-157 那次撞号，判据只查内容包，而真正抓到的是 .py 里的悬空引用——
 # 代码侧的 `D-xxx` 引用此前**无判据常驻**，写错号会安静通过。

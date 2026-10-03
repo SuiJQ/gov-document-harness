@@ -15,7 +15,7 @@ from collections.abc import Callable
 
 import pytest
 
-from zhengtong.adapters.reasoning_probe import 推理探测结论, 写法表, 探测推理
+from zhengtong.adapters.reasoning_probe import 写法表, 探测推理, 推理探测结论
 from zhengtong.domain.errors import Result
 from zhengtong.ports.llm import (
     FinishReason,
@@ -31,9 +31,7 @@ def _响应(*, 推理: int) -> LlmResponse:
         text="pong",
         tool_calls=(),
         finish_reason=FinishReason.STOP,
-        usage=TokenUsage(
-            prompt_tokens=0, completion_tokens=0, reasoning_tokens=推理
-        ),
+        usage=TokenUsage(prompt_tokens=0, completion_tokens=0, reasoning_tokens=推理),
     )
 
 
@@ -58,9 +56,7 @@ class _后端:
         # **基准请求（无额外字段）永远不算「关掉了」**——
         # 否则第一次调用就把推理打成 0，探测会短路成「无需关闭」。
         # 第 4 种（提示词前缀）也不靠额外字段，它在请求**正文**里。
-        关掉了 = bool(请求.额外字段) and any(
-            键 in self.认得 for 键 in 体 if 键 != "model"
-        )
+        关掉了 = bool(请求.额外字段) and any(键 in self.认得 for 键 in 体 if 键 != "model")
         return Result.ok(_响应(推理=0 if 关掉了 else self.基础推理))
 
 
@@ -104,9 +100,7 @@ class Test无效写法不误判:
         """
         后端 = _后端(认得=set(), 基础推理=100)
         结论 = _跑(后端)
-        assert not 结论.unwrap().能关闭, (
-            f"无效写法全返回 200 却判成能关：{结论.unwrap()}"
-        )
+        assert not 结论.unwrap().能关闭, f"无效写法全返回 200 却判成能关：{结论.unwrap()}"
         assert 结论.unwrap().可用写法 == 0
 
     def test_全败时如实告知而非静默(self) -> None:
@@ -135,10 +129,7 @@ class Test基准与短路:
         后端 = _后端(认得=set(), 基础推理=0)
         结论 = _跑(后端)
         assert not 结论.unwrap().能关闭
-        assert "推理" not in "" or True  # 短路即可，不该发额外请求
-        assert len(后端.见过) == 1, (
-            f"基准就不推理，却还发了 {len(后端.见过)} 次请求——浪费往返"
-        )
+        assert len(后端.见过) == 1, f"基准就不推理，却还发了 {len(后端.见过)} 次请求——浪费往返"
 
     def test_探测失败如实返回错误(self) -> None:
         """基准请求就失败 → 探测无从谈起，必须返回错误而非「关不掉」。"""

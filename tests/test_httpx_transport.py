@@ -32,21 +32,15 @@ from zhengtong.adapters.httpx_transport import HttpxTransport
 
 
 def _装(
-    处理,  # noqa: ANN001
+    处理,
 ) -> HttpxTransport:
     """用假传输层装一个 transport。**不联网**。"""
-    return HttpxTransport(
-        客户端=httpx.Client(transport=httpx.MockTransport(处理))
-    )
+    return HttpxTransport(客户端=httpx.Client(transport=httpx.MockTransport(处理)))
 
 
-def _回(
-    状态: int = 200, 体: object = None, *, 文本: str | None = None
-):  # noqa: ANN202, ANN001
+def _回(状态: int = 200, 体: object = None, *, 文本: str | None = None):
     """构造一个响应处理器。"""
-    载荷 = 文本 if 文本 is not None else json.dumps(
-        体 if 体 is not None else {"ok": True}
-    )
+    载荷 = 文本 if 文本 is not None else json.dumps(体 if 体 is not None else {"ok": True})
     return httpx.Response(状态, text=载荷)
 
 
@@ -125,9 +119,7 @@ class TestURL原样使用:
         # 不是「改写 URL」，见 D-246 的记录。
         _装(记).post_json("https://api.example.com:8443/a/b/c?x=1", {}, {})
         assert 见过, "没记录到请求"
-        assert 见过[0] == "https://api.example.com:8443/a/b/c?x=1", (
-            f"URL 被改写了：{见过[0]}"
-        )
+        assert 见过[0] == "https://api.example.com:8443/a/b/c?x=1", f"URL 被改写了：{见过[0]}"
 
     def test_中文域名按RFC转punycode而非报错(self) -> None:
         """**本条把上条踩到的坑钉住**。
@@ -143,9 +135,7 @@ class TestURL原样使用:
             return _回(200, {})
 
         _装(记).post_json("https://例子.invalid/v1", {}, {})
-        assert "xn--" in 见过[0], (
-            f"中文域名未按 RFC 转 punycode：{见过[0]}"
-        )
+        assert "xn--" in 见过[0], f"中文域名未按 RFC 转 punycode：{见过[0]}"
 
     def test_请求体原样发出(self) -> None:
         """D-004 同样适用于体：不增删字段。"""
@@ -172,7 +162,7 @@ class Test流式只检测不使用:
 
         def 处理(请求: httpx.Request) -> httpx.Response:
             def 流() -> object:
-                块 = b"data: {\"x\":1}\n\n"
+                块 = b'data: {"x":1}\n\n'
                 读到的.append(块)
                 yield 块
 
