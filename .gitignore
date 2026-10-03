@@ -43,11 +43,10 @@ CONTENT_SOURCE/
 # 临时与本地产物
 cross_platform_build/
 *.tmp
-.TODO.md
+
+# 会话内的临时清单。**唯一的现状源是 `STATUS.md`**（已入库）——
+# 这些文件曾经堆到 45 份且互相矛盾，直接导致记忆出错，故不再保留在根目录。
+# 旧的已移到 `_archive/`（同样不入库）。
 *_TODO.md
-*_TODO.md
-AUDIT2_TODO.md
-GATE_TODO.md
-AUDIT4_TODO.md
-STEP7_TODO.md
+_archive/
 .bak_tool/
