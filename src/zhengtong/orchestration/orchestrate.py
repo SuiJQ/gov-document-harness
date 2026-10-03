@@ -56,6 +56,7 @@ from ..domain.gate import (
     处置,
     并行门禁组,
     终闸组,
+    退回上限,
     门禁判定,
 )
 from ..domain.ids import RunId
@@ -419,10 +420,29 @@ class _过程:
                         _门禁报告(self.门禁, 裁定),
                     )
                 )
+            # **本档不许退回时，任何门禁不通过都直接转用户裁决**（D-254）。
+            #
+            # 现状：咨询档因 `gates_apply=False` → 门禁数为 0 → 循环不进，
+            # 故 `allows_rewrite` 一直**没有被执行过**，只是恰好正确。
+            # 一旦咨询档将来要门禁，它立刻变成真漏洞。故在此显式兑现。
+            #
+            # 判据：`allows_rewrite=False` 时**退回上限为 0**——
+            # 交给 `门禁判定` 统一裁决，不另开分支：
+            # 另开分支就多一条「不经退回上限」的路，而 D-050 的
+            # 语义正是「attempt >= 上限 → 升级裁决」。
+            允许退回 = TIER_BY_ID[档].allows_rewrite
             for 记 in 驳回:
                 # 退回数以**编排实际经手的轮次**为准（`self.轮次`），
                 # 不轻信裁定方自报的 attempt——否则上限只在脚本配合时才成立。
-                真实记 = replace(记, attempt=max(记.attempt, self.轮次))
+                真实记 = (
+                    replace(
+                        记,
+                        attempt=max(记.attempt, self.轮次),
+                        # 不许退回的档位把上限压到 0 → 必然升级裁决
+                    )
+                    if 允许退回
+                    else replace(记, attempt=退回上限)
+                )
                 判 = 门禁判定(真实记, 环境性缺失=False)
                 self.编排.发(
                     EventKind.GATE_REJECTED,
@@ -431,17 +451,27 @@ class _过程:
                 )
                 if 判 is 处置.升级裁决:
                     self._留门禁报告(裁定)
+                    if 允许退回:
+                        说明 = (
+                            f"{真实记.gate} 退回 {真实记.attempt} 次仍未过"
+                            f"（{真实记.rejection_reason}），转用户裁决"
+                        )
+                        详情 = 说明
+                    else:
+                        # **要说清是「不允许改」而非「改不动」**（D-254）：
+                        # 只说「门禁未通过」会让用户以为再试一次有用。
+                        说明 = (
+                            f"{真实记.gate} 未通过（{真实记.rejection_reason}），"
+                            f"本档位不允许退回重写，转用户裁决"
+                        )
+                        详情 = f"{说明}——该档位已关闭退回重写，无法自动修正"
                     self.编排.发(
                         EventKind.GATE_ESCALATED,
                         PhaseId.GATING,
-                        detail=f"{真实记.gate} 退回 {真实记.attempt} 次仍未过，转用户裁决",
+                        detail=说明,
                     )
                     self.编排.发(EventKind.PHASE_EXITED, PhaseId.GATING, ok=False)
-                    return Result.fail(
-                        ErrorCode.GATE_REWRITE_EXHAUSTED,
-                        f"{真实记.gate} 退回 {真实记.attempt} 次仍未过"
-                        f"（{真实记.rejection_reason}），转用户裁决",
-                    )
+                    return Result.fail(ErrorCode.GATE_REWRITE_EXHAUSTED, 详情)
             # 全部判退回 → 轮次 +1，以 REVISION 阶段重起草（call_id 天然不同）
             self.轮次 += 1
             self.编排.发(EventKind.GATE_REWORK, PhaseId.GATING, detail=f"第 {self.轮次} 轮重写")
