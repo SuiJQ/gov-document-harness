@@ -63,7 +63,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from textual.widgets import Static
+from textual.widgets import Static, TextArea
 
 from zhengtong.adapters.tui import ArtifactPanel, StatusLine
 from zhengtong.domain.event import Event
@@ -118,6 +118,30 @@ def _渲染文本(应用, 选择器: type) -> str:
     return "\n".join(str(w.content) for w in 面板.children if isinstance(w, Static))
 
 
+def _全部文档字符串(树: ast.AST) -> set[int]:
+    """收集所有 docstring 常量节点的 `id`。
+
+    ## 为什么用 `id()` 而不是值
+
+    值相同的 docstring 会互相误伤——而 `id()` 精确指向节点本身。
+    """
+    出: set[int] = set()
+    for 节点 in ast.walk(树):
+        if not isinstance(节点, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        体 = getattr(节点, "body", [])
+        if not 体:
+            continue
+        首 = 体[0]
+        if (
+            isinstance(首, ast.Expr)
+            and isinstance(首.value, ast.Constant)
+            and isinstance(首.value.value, str)
+        ):
+            出.add(id(首.value))
+    return 出
+
+
 pytest.importorskip("textual", reason="TUI 需要 textual")
 
 
@@ -164,19 +188,50 @@ class TestT1能启动:
 
         asyncio.run(跑())
 
-    def test_开始动作不说谎(self) -> None:
-        """B1 未接真实运行，界面**必须明说**，不能装作能跑。
+    def test_没编排器就明说跑不了(self) -> None:
+        """没给编排器工厂时，界面**必须明说跑不了**，不能装作在跑。
 
-        不然用户会以为「按了没反应」是程序卡了。
+        ## B1 与 B2 的这条判据不是同一条
+
+        B1 时它断的是「界面说『尚未接上』」；
+        B2 接上真实运行后那句话就该消失了——
+        留着它，等于要求界面**永远说自己没做完**。
+
+        换成 B2 真正要断的东西：**能力缺失时如实报**。
+        用户看到「没有可用的编排器」，知道该去查配置；
+        看到空白或转圈，以为程序卡了（D-027：别让用户白折腾）。
         """
 
         async def 跑() -> None:
             应用 = ZhengTongApp(桥=事件桥接())
             async with 应用.run_test() as 试点:
+                # **先填诉求**——否则空诉求分支先拦下，测不到「没有编排器」那层
+                应用.query_one("#need", TextArea).text = "写一份防汛通知"
+                await 试点.pause()
                 await 试点.press("ctrl+enter")
                 await 试点.pause()
                 文案 = str(应用.query_one("#status", StatusLine).content)
-                assert "尚未接上" in 文案 or "B2" in 文案, f"没说清还没接上：{文案}"
+                assert "未接上" in 文案 or "没有可用" in 文案, f"没说清为什么跑不了：{文案}"
+                assert "运行中" not in 文案, f"没编排器却装作在跑：{文案}"
+
+        asyncio.run(跑())
+
+    def test_空诉求不启动(self) -> None:
+        """空诉求**当场拒绝**。
+
+        不拒绝的话，编排会跑起来、卡在提问上，等一个没有上下文的答复——
+        用户白等十几分钟才知道没填。
+        """
+
+        async def 跑() -> None:
+            被调 = []
+            应用 = ZhengTongApp(桥=事件桥接(), 取编排器=lambda: 被调.append(1))
+            async with 应用.run_test() as 试点:
+                await 试点.press("ctrl+enter")
+                await 试点.pause()
+                文案 = str(应用.query_one("#status", StatusLine).content)
+                assert "诉求" in 文案, f"没提示要填诉求：{文案}"
+                assert not 被调, "空诉求却取了编排器——流程已经起了"
 
         asyncio.run(跑())
 
@@ -284,13 +339,22 @@ class TestT2与无界面同源:
         故改为解析 AST，**只看代码**：
         不许出现具体事件名的常量、不许访问事件类型属性。
         """
+        import ast
+
         源 = 仓库根 / "src" / "zhengtong" / "adapters" / "tui.py"
         树 = ast.parse(源.read_text(encoding="utf-8"))
+        文档 = _全部文档字符串(树)
         违规: list[str] = []
         for 节点 in ast.walk(树):
             if isinstance(节点, ast.Attribute) and 节点.attr in ("ARTIFACT_READY", "EventKind"):
                 违规.append(f"第 {节点.lineno} 行访问了 {节点.attr}")
             if isinstance(节点, ast.Constant) and isinstance(节点.value, str):
+                # **docstring 不算**：本判据第一版只查字符串字面量，
+                # 于是模块文档里那句「真实一轮只发 7 种事件（…/ARTIFACT_READY/…）」
+                # 直接把它判红——那条判据实际在**保护注释不许写**（D-288）。
+                # 第二次又栽在文档里提到 `gate.py` 上。
+                if id(节点) in 文档:
+                    continue
                 文 = 节点.value
                 if any(k in 文 for k in ("artifact_ready", "role.turn", "gate.")):
                     违规.append(f"第 {节点.lineno} 行硬编码了事件名 {文!r}")

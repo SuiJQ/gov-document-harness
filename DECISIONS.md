@@ -7368,3 +7368,84 @@ B1 我把 Textual 界面放进新建的 `ui/` 层——**架构里根本没有�
 > **抓错了对象**（D-288）、**查错了层因而什么都没查**（本条二）、
 > **压根没被调用**（本条一）。
 > 三种在报告里长得一模一样——都是绿的。
+
+### D-291 · 接上运行之后，五个坑全在「第三方才肯告诉你」的地方
+
+B2 把编排器接进 TUI。接上之前，这些代码**一行都没被执行过**。
+
+## 一 · `push_screen_wait` 在 `call_from_thread` 里必炸
+
+第一版答复方写的是：
+
+```python
+未来 = self.call_from_thread(self.push_screen_wait, _提问Modal(字段))
+return 未来.result()
+```
+
+运行报 `NoActiveWorker: push_screen must be run from a worker
+when wait_for_dismiss is True`。
+
+看起来荒谬——**编排确实跑在 worker 里**。
+但 worker 上下文是 `@work` 建立的，而 `call_from_thread`
+会**另起一段上下文**跑回调，**worker 身份不跟着走**。
+
+改用 `push_screen` + dismiss 回调兑现 `concurrent.futures.Future`：
+它只需要「把消息投递到事件循环」，不要求 worker 身份。
+worker 线程在 `未来.result()` 上阻塞——**这就是硬停车**。
+
+## 二 · 判据「中文 id 不许用」管不住导入期
+
+B1 判据里有 `test_标识符全是英文`，它查 `app.screen.children`——
+**只覆盖已挂载的控件**。而 `_提问Modal` 里的 `TextArea(id="答复")`
+在**导入期**就抛 `BadIdentifier`，那条判据根本到不了。
+
+> 判据覆盖的是「它看得见的那个面」。
+> 被前置的失败挡在前面时，它**连红的资格都没有**。
+
+D-286 记的是同一形态（被前置失败挡住、因而从未执行的代码里藏着第二个缺陷）。
+
+## 三 · `RadioSet` 是布尔语义，我当成了取值器
+
+想给档位按钮带上 `value="pro"`，于是：
+
+- `RadioSet(value=...)` → `TypeError`（**根本没有这个构造参数**）
+- `RadioSet(*[(标签, 值)])` → 挂载时抛「expects a str, a Text instance」
+- 终于跑起来了，类型检查报 4 处：`RadioButton.value` 声明是 **`bool`**
+
+**真相**：`RadioSet` 同一时刻只有一个按钮 `value=True`，
+选中态记在 `_selected: int` 上，**压根没有字符串取值**。
+
+按它的本意重写：只认下标，下标经 `Changed.index` 拿，再查 `TIERS`。
+全程只碰 `int`。而本项目禁 `# type: ignore`（D-018）——
+**为一个第三方控件的存根缺陷破例，本身就是错的**。
+
+## 四 · 判据命中的是我自己写的文档字符串
+
+B1 那条「视图不硬编码事件名」的 AST 判据，
+第二次栽在文档里提到 `gate.py` 上——它扫**所有**字符串常量，**包括 docstring**。
+
+改为**先剥掉所有 docstring 再查**（按节点 `id()` 精确剔除，不按值，
+否则值相同的 docstring 会互相误伤）。
+
+D-288 说「第一次栽在注释上」——**第二次栽在 docstring 上**。
+写进判据的字符串黑名单，得同时想清楚「哪些位置不算」。
+
+## 五 · 断言「问题没显示」而它好好地在那儿
+
+模态结构是 Screen → Vertical → Static，
+而我的 `_渲染()` 只扫 `children` 一层，拿到一个没有 `.content` 的 `Vertical`，
+于是报「表单没显示问题」。
+
+**断言红 ≠ 被测代码错**，也可能断在了错误的层。
+
+## 本条真正要记的
+
+> 五个坑全部只在**真跑起来**之后才暴露，而它们的共同点是：
+> **文档不写、只能起一次才知道**。
+>
+> 所以判据的价值不在「写得多全」，
+> 而在**能不能把每个「第一次才知道」的地方钉住一条**。
+> 本轮钉住的五条：worker 身份、导入期 id、控件语义、docstring 排除、渲染层级。
+
+D-287 同步销案：答复方由 `tui_app.启动` 注入、界面在 `__init__` 挂 `挂答复`，
+判据 `tests/test_tui_b2.py::Test硬停车闭环` 走完整条链。
