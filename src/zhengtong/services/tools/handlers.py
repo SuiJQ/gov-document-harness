@@ -55,6 +55,14 @@ from .calllog import 调用存档 as 调用存档类
 状态回调 = Callable[[], dict[str, str]]
 
 
+#: 工具层发事件用的回调签名（与 `EventBus.emit` 兼容）。
+#:
+#: **不传 `Event` 对象**：工具层在 L4、编排层在 L5，
+#: 低层不该构造高层的值对象。故只发 `(kind, **载荷)`，
+#: 由编排层组装成 `Event`。未接线时静默跳过（D-192）。
+记事件回调 = Callable[..., None]
+
+
 @dataclass(slots=True)
 class 工具依赖:
     """工具层需要的全部外部依赖。**全部注入，工具层不 new 任何东西。**"""
@@ -79,6 +87,15 @@ class 工具依赖:
     #: 工具调用存档（第 14.5 步）：`tool.result` 据此查回。
     #: **只在内存**——落盘会把一个查回的便利变成产物生命周期管理问题。
     调用存档: 调用存档类 | None = None
+    #: **发 `role.tool_call` / `tool.denied` 事件**（D-266）。
+    #:
+    #: 架构 §7.4 要求「每次调用三重检查 + 一条审计记录，全部进 journal」，
+    #: 而事件枚举 `ROLE_TOOL_CALL`/`TOOL_DENIED` 早已定义、注释也写清了语义，
+    #: **却从未有过发射点**——审计条目只留在内存，进程一结束即消失。
+    #:
+    #: 签名与编排层 `EventBus.emit` 一致：`(kind, phase, detail=...)`。
+    #: 工具层不该知道 Event 的完整结构，故只发最简载荷。
+    记事件: 记事件回调 | None = None
 
 
 def _未接线(工具名: str, 缺哪个: str) -> Result[str]:

@@ -27,6 +27,8 @@ from zhengtong.domain.phase import PhaseId
 from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TierId
 from zhengtong.orchestration import 编排器
+from zhengtong.ports.content_pack import ContentPackPort
+from zhengtong.ports.llm import LlmPort
 from zhengtong.ports.storage import StoragePort
 
 
@@ -35,6 +37,9 @@ def _编排(
     驳回: dict[str, int] | None = None,
     缺席: bool = False,
     storage: StoragePort | None = None,
+    llm: LlmPort | None = None,
+    容量token: int | None = None,
+    内容包: ContentPackPort | None = None,
 ) -> 编排器:
     """装一个编排器。
 
@@ -70,10 +75,14 @@ def _编排(
                 )
         return 出
 
+    # **显式传，不走 `**dict`**：`dict[str, object]` 会把参数类型
+    # 全抹成 object，一次带出 11 条类型错误（D-159 那个坑的变体）。
     return 编排器(
-        llm=FakeLlm(),
+        llm=llm if llm is not None else FakeLlm(),
         storage=storage if storage is not None else FakeStorage(),
         门禁取证=门禁取证,
+        容量token=容量token if 容量token is not None else 128_000,
+        content_pack=内容包,
     )
 
 

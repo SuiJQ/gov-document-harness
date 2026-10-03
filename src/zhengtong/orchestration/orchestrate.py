@@ -74,6 +74,7 @@ from ..ports.llm import LlmPort, LlmRequest, Message, ToolCall, ToolSchema
 from ..ports.storage import StoragePort
 from ..ports.validators import ValidatorPort
 from ..services.context import 压缩, 组装, 需要压缩
+from ..services.context.view import 估算视图
 from ..services.prompting import 装配提示词, 装配请求, 预算闸门
 from .machine import 该发请求
 
@@ -152,6 +153,40 @@ class 编排回调:
         答复 = f"（主理人已收到：{内容[:40]}）"
         self.编排.记汇报(内容, 答复)
         return 答复
+
+    def 记事件(self, kind: str, **载荷: object) -> None:
+        """工具层把工具调用/拒绝报上来，转成事件发出去（D-266）。
+
+        ## 为什么工具层不自己发 Event
+
+        工具层在 L4、编排层在 L5。低层构造高层值对象会倒置依赖方向
+        （架构 §2.3「唯一一条，不可协商」）。故工具层只传
+        `(kind, **载荷)`，由这里组装 `Event`。
+
+        ## 载荷放在 data 里，不拼进 detail
+
+        `detail` 是给人看的一句话，`data` 才是给检索与台账用的结构化字段。
+        工具名与角色将来要按字段过滤，混进 detail 就只能全文搜。
+        """
+        from ..domain.event import EventKind
+
+        try:
+            事件类 = EventKind(kind)
+        except ValueError:
+            # 工具层传了未登记的 kind：**静默丢弃比炸掉整轮好**，
+            # 但必须留痕，否则拼错的名字会永久静默（D-124 同族处理）。
+            self.编排.发(
+                EventKind.PHASE_EXITED,
+                PhaseId.INTAKE,
+                detail=f"工具层上报了未登记的事件类型「{kind}」，已忽略",
+            )
+            return
+        # **阶段填当前所处的那一段**：工具调用可能发生在任何阶段，
+        # 用 GATING 会有误导（那是门禁取证段）。此处用最新阶段——
+        # 工具层不传阶段，因为它调用时未必知道自己在哪一段。
+        过程 = self.编排._过程
+        阶段 = 过程.状态.phase if 过程 is not None else PhaseId.INTAKE
+        self.编排.发(事件类, 阶段, **载荷)
 
 
 @dataclass(slots=True)
@@ -733,6 +768,27 @@ class _过程:
             压后 = 压缩(视图, 上下文容量=self.编排.容量token, 摘要器=self.编排.摘要器)
             if 压后 is not None:
                 序列 = 压后.视图.messages()
+                self.编排.发(
+                    EventKind.CONTEXT_COMPACTED,
+                    阶段,
+                    丢弃条数=压后.丢弃条数,
+                    压缩前token=压后.压缩前token,
+                    压缩后token=压后.压缩后token,
+                    摘要token=压后.摘要token,
+                    真的变小=压后.是否真的变小了,
+                )
+            else:
+                # **压不动也要说出来**（D-266）。
+                # 原注释写「压不动就照发，由服务端判它超限」——那是诚实的选择，
+                # 但**用户与排障者无从知道本地没压**：
+                # 「服务端会超限」与「本地压过了还是超限」在 journal 里长得一样。
+                self.编排.发(
+                    EventKind.CONTEXT_COMPACTED,
+                    阶段,
+                    压不动=True,
+                    原因="恒定段（角色提示词 + 本轮任务）已超容量，压缩无可施力处",
+                    压缩前token=估算视图(视图),
+                )
             # 压不动（恒定段就超限）就照发——由服务端判它超限，
             # 比本地悄悄截断掉上下文更诚实
         return 序列
