@@ -1,57 +1,48 @@
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-build/
-dist/
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
 
-# 覆盖率数据：含绝对路径，会泄露本地目录结构，且每次跑都变
-.coverage
-.coverage.*
-htmlcov/
-
-
-# 运行期数据不进仓库
-data/
-user/
-
-# `system/` 只存运行期配置与日志（D-017）。
-# **必须忽略**：`system/config.toml` 里是 API key 明文
-# （用户明确接受明文存储，D-032），提交进仓库等于永久泄漏——
-# 且删掉该目录用户仍能重建（D-017 的启动自检），
-# 仓库里留一份只增加风险，不带来任何价值。
-system/
-
-# 本地覆盖
-.env
-config.local.toml
 # **任何**带 local/private/secret 字样的配置都排除——
+# **必须忽略**：`system/config.toml` 里是 API key 明文
 # 2026-09-30 探测期就漏过一次：`endpoint.local.toml` 当时**没被任何忽略规则覆盖**，
+# Python 开发环境
+# `system/` 只存运行期配置与日志（D-017）。
+# 且删掉该目录用户仍能重建（D-017 的启动自检），
+# 临时与本地产物
+# 仓库里留一份只增加风险，不带来任何价值。
+# 会话内的临时清单。**唯一的现状源是 `STATUS.md`**（已入库）——
+# 保留它是为了可对比、可回退。
+# 原始提示词：保留在外围，不入版本控制、不进分发包（D-098）。
 # 只因为它待在仓库外的另一个目录才没进版本控制（D-285）。
+# 旧的已移到 `_archive/`（同样不入库）。
+# 本地覆盖
+# 理由是分发包只该含重写后的正式提示词；原件体积大且非程序必需，
+# 覆盖率数据：含绝对路径，会泄露本地目录结构，且每次跑都变
+# 运行期数据不进仓库
+# 这些文件曾经堆到 45 份且互相矛盾，直接导致记忆出错，故不再保留在根目录。
+# （用户明确接受明文存储，D-032），提交进仓库等于永久泄漏——
+*.egg-info/
+*.key
+*.py[cod]
+*.tmp
+*_TODO.md
+*_原始提示词/
 *local*.toml
 *secret*.toml
-*.key
-
-# Python 开发环境
-.venv/
-
-# 原始提示词：保留在外围，不入版本控制、不进分发包（D-098）。
-# 理由是分发包只该含重写后的正式提示词；原件体积大且非程序必需，
-# 保留它是为了可对比、可回退。
-materials/
-*_原始提示词/
 *原始版*/
+.coverage
+.coverage.*
+.env
+.mypy_cache/
+.pytest_cache/
+.venv/
 CONTENT_SOURCE/
-
-# 临时与本地产物
-cross_platform_build/
-*.tmp
-
-# 会话内的临时清单。**唯一的现状源是 `STATUS.md`**（已入库）——
-# 这些文件曾经堆到 45 份且互相矛盾，直接导致记忆出错，故不再保留在根目录。
-# 旧的已移到 `_archive/`（同样不入库）。
-*_TODO.md
+__pycache__/
 _archive/
+build/
+config.local.toml
+cross_platform_build/
+data/
+dist/
+htmlcov/
+materials/
+system/
+user/
+venv/

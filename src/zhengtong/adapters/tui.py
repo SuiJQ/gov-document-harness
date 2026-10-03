@@ -45,8 +45,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Static, TextArea
 
-from ..presentation.tui import 事件桥接
-from . import theme as 主题
+from . import tui_theme as 主题
 
 #: 预览区最多渲染多少字。**超出只显示截断提示，不静默截断**
 #: （D-007 的同类纪律：截断了就要说）。
@@ -139,10 +138,29 @@ class ZhengTongApp(App[None]):
         Binding("ctrl+enter", "开始", "开始"),
     ]
 
-    def __init__(self, *, 根: Path | None = None, **kw) -> None:
+    def __init__(self, *, 桥, 根: Path | None = None, **kw) -> None:
+        """`桥`（`presentation.tui.事件桥接`）**由装配根注入，不在这里 import**。
+
+        ## 为什么绕这一下
+
+        架构有两处规定在本处相撞：
+
+        - §6：第三方库**只允许出现在适配层** → textual 的界面代码归 L2
+        - DECISIONS「TUI 桥接不 import textual」→ 桥必须保持纯净
+
+        若适配器直接 `from ..presentation.tui import 事件桥接`，
+        就是 **adapters → presentation**，那是**向上依赖**，
+        分层判据立刻拦下（本次实测拦下 3 条）。
+
+        而反过来让桥去 import textual，会毁掉便携运行时
+        （没装 textual 的机器上连无界面模式都起不来）。
+
+        故只剩注入这一条：**适配器只认「有个桥」这个形状**，
+        是谁造的不关心——这本来就是依赖倒置（D-015）。
+        """
         super().__init__(**kw)
         self._根 = 根
-        self._桥 = 事件桥接()
+        self._桥 = 桥
 
     def compose(self) -> ComposeResult:
         yield Static(主题.文案_标题, id="app-title")

@@ -24,7 +24,7 @@
 
 ## 空目录的处置
 
-L4（`services/`）、L5（`orchestration/`）、L6（`interfaces/`）目前是空目录。
+L4（`services/`）、L5（`orchestration/`）、L6（`presentation/`）目前是空目录。
 本测试**跳过**它们，而不是报「目录必须填满」——
 门禁要管的是「写出来的代码没有越界」，不是「代码写得够多」。
 空目录里没有 `.py` 文件，自然没有 import 可扫，跳过是正确的。
@@ -64,19 +64,27 @@ ALLOWED: dict[str, frozenset[str]] = {
     "adapters": frozenset({"ports", "kernel", "domain"}),
     "services": frozenset({"ports", "kernel", "domain"}),
     "orchestration": frozenset({"services", "ports", "kernel", "domain"}),
-    "interfaces": frozenset({"orchestration", "kernel", "domain"}),
+    # —— 键名此前写的是 `interfaces`，而真实目录叫 `presentation/`（D-290）。
+    # 后果不是「多了一层」，是**L6 的规则整条失效**：
+    # `_本仓导入` 末尾按 `KNOWN_LAYERS` 过滤（"presentation" 不在表里），
+    # 于是 presentation 的每个 import 都被当成「不是本仓层」丢掉。
+    # §3.4 白纸黑字写着「禁止：presentation → services」——
+    # **那条禁令六轮以来从没被检查过**。
+    "presentation": frozenset({"orchestration", "kernel", "domain"}),
 }
 
 #: §3.4：「任何层 → 自己的上层」一律禁止（除 cli/app 装配根）。
 #: 这里逐条写明「上一层是谁」，而不是靠层名排序推断——
 #: 推断规则一旦被改，门禁会跟着一起错，且没人发现。
 UPPER: dict[str, frozenset[str]] = {
-    "domain": frozenset({"kernel", "ports", "adapters", "services", "orchestration", "interfaces"}),
-    "kernel": frozenset({"ports", "adapters", "services", "orchestration", "interfaces"}),
-    "ports": frozenset({"adapters", "services", "orchestration", "interfaces"}),
-    "adapters": frozenset({"services", "orchestration", "interfaces"}),
-    "services": frozenset({"orchestration", "interfaces"}),
-    "orchestration": frozenset({"interfaces"}),
+    "domain": frozenset(
+        {"kernel", "ports", "adapters", "services", "orchestration", "presentation"}
+    ),
+    "kernel": frozenset({"ports", "adapters", "services", "orchestration", "presentation"}),
+    "ports": frozenset({"adapters", "services", "orchestration", "presentation"}),
+    "adapters": frozenset({"services", "orchestration", "presentation"}),
+    "services": frozenset({"orchestration", "presentation"}),
+    "orchestration": frozenset({"presentation"}),
 }
 
 #: §3.4 禁止：`orchestration → adapters`（编排层不得 import 适配器）。
@@ -96,9 +104,16 @@ KNOWN_LAYERS: frozenset[str] = frozenset(ALLOWED) | {"app"}
 
 
 def _层名(路径: pathlib.Path) -> str:
-    """文件属于哪一层。`app.py` 属于装配根，单列。"""
+    """文件属于哪一层。`app.py` 属于装配根，单列。
+
+    **`tui_app.py` 同样按装配根算**（D-290）。
+    它是 `cli/main.py --tui` 的导入点，职责就是「按需拉起 textual」——
+    那正是装配根干的事。若不算，规则会要求「只有 `app.py` 能 import 适配器」，
+    而 CLI 又必须能起 TUI，两边都对不上，只能靠加例外糊过去。
+    按职责归位比开例外干净。
+    """
     相对 = 路径.relative_to(SRC)
-    if 相对.name == "app.py":
+    if 相对.name in ("app.py", "tui_app.py"):
         return "app"
     return 相对.parts[0]
 

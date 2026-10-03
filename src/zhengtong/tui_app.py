@@ -17,11 +17,11 @@
 
 ## 这里只做转发
 
-实质在 `ui/app.py`。本模块存在的意义就是给 CLI 一个稳定的导入点。
+实质在 `adapters/tui.py`。本模块存在的意义就是给 CLI 一个稳定的导入点。
 """
 
 from __future__ import annotations
 
-from .ui.app import ZhengTongApp, 启动
+from .adapters.tui import ZhengTongApp, 启动
 
 __all__ = ["ZhengTongApp", "启动"]
