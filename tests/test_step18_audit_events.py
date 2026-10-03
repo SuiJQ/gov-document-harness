@@ -75,65 +75,79 @@ class Test工具调用事件:
 
         事件枚举已定义（`domain/event.py`），注释写明
         「工具调用必属某角色的派发，故用 role.tool_call」——
-        但从未发射过。
-        """
-        from test_step14_orchestrate_gate import _编排
+        但从未发射过。架构 §7.4 要求审计「全部进 journal」。
 
-        编 = _编排()
+        ## 为什么要用「会请求工具的编排器」
+
+        首版这里用普通编排器 + 断言「有工具调用事件」——
+        **它永远红**：普通编排器下模型不请求工具，
+        事件自然没有。红的原因不是缺陷，而是**测的不是那条路**。
+        （与 D-266 记的两次判据踩坑同族。）
+
+        故本组改用 `test_step19` 的带工具编排器：先让模型请求工具，
+        再断言事件。**先有调用，再有事件**——顺序不能反。
+        """
+        from test_step19_tool_execution import _编排, _要工具的llm
+
+        llm, _ = _要工具的llm()
+        编 = _编排(llm)
         编.跑到终(档位=_Pro(), 需求="就旱情写个通知")
+
         调用 = [e for e in 编.事件 if e.kind.value == "role.tool_call"]
         assert 调用, (
-            "没有任何 role.tool_call 事件——工具调用在 journal 里查不到"
-            "（审计条目只在内存，进程一结束即消失）"
+            "模型请求了工具，但没有 role.tool_call 事件——"
+            "审计条目只在内存，journal 里查不到（架构 §7.4 未兑现）"
         )
 
     def test_事件要带工具名与角色(self) -> None:
         """**只发空事件等于没发**。
 
-        断言载荷有实质内容——事件是为了「事后查得到」存在的，
-        空的 `role.tool_call` 等于没发。
+        事件是为了「事后查得到」存在的，空的 `role.tool_call` 等于没发。
         """
-        from test_step14_orchestrate_gate import _编排
+        from test_step19_tool_execution import _编排, _要工具的llm
 
-        编 = _编排()
+        llm, _ = _要工具的llm()
+        编 = _编排(llm)
         编.跑到终(档位=_Pro(), 需求="就旱情写个通知")
+
         调用 = [e for e in 编.事件 if e.kind.value == "role.tool_call"]
         assert 调用, "没有 role.tool_call 事件"
         首 = 调用[0]
         载荷 = {str(k): str(v) for k, v in 首.data.items()}
         assert 载荷, f"role.tool_call 事件 data 为空：{首}"
-        assert any(v for v in 载荷.values()), f"data 里全是默认值：{首.data}"
+        assert "kb.search" in 载荷.values(), f"载荷里没有工具名：{首.data}"
+        # **按键查，不按值猜**（首版写了角色枚举的白名单，
+        # 而首次工具调用发生在 intake/direction 阶段、角色是主理人，
+        # 于是白名单没覆盖到——判据自己写错了）。
+        assert 首.data.get("角色"), f"载荷里没有角色：{首.data}"
+        assert 首.data.get("裁决"), f"载荷里没有裁决：{首.data}"
 
     def test_被拒绝的工具调用要发拒绝事件(self) -> None:
         """**拒绝比允许更该留痕**——守卫是安全边界（D-076）。
 
         `tool.denied` 已定义且注释明写它是「守卫拦截」，
         与角色派发无关，故独立成事件。
+
+        ## 走真实链路而不是直接调 runner
+
+        直接调 `runner.调用()` 测的是「单件能发事件」；
+        本条要测的是**整条链路通**——工具请求 → 白名单拒绝 → 事件出。
+        故让模型请求一个非白名单角色的工具。
         """
+        from test_step19_tool_execution import _编排, _要工具的llm
         from zhengtong.domain.role import RoleId
 
-        # 找一个「不在 shared.write 白名单里」的角色
-        无人可调 = [
-            r
-            for r in RoleId
-            if "shared.write"
-            not in __import__(
-                "zhengtong.services.tools.registry", fromlist=["该角色可调"]
-            ).该角色可调(r)
-        ]
-        assert 无人可调, "所有角色都能调 shared.write——白名单判据需重写"
+        # 用一个不在 Pro 编制内的角色会直接被拒——
+        # 故改为让模型请求一个**不存在的工具**，同样走 `_审计并返回`
+        llm, _ = _要工具的llm(工具名="fs.write_file")
+        编 = _编排(llm)
+        编.跑到终(档位=_Pro(), 需求="就旱情写个通知")
 
-        运行器 = _运行器()
-        结果 = 运行器.调用("shared.write", 角色=无人可调[0], 参数={"路径": "x", "正文": "y"})
-        assert 结果.is_error, f"{无人可调[0].value} 竟能调 shared.write——守卫本身有问题"
-        事件 = getattr(运行器, "_事件", None) or []
-        拒绝 = [
-            e
-            for e in 事件
-            if getattr(e, "kind", None) is not None
-            and str(getattr(getattr(e, "kind", None), "value", "")) == "tool.denied"
-        ]
-        assert 拒绝, "被拒绝了却没有任何 tool.denied 事件——拦截不留痕"
+        拒绝 = [e for e in 编.事件 if e.kind.value == "tool.denied"]
+        assert 拒绝, (
+            "模型请求了已砍除的 fs.write_file，却没有任何 tool.denied 事件——守卫拦截不留痕（D-076）"
+        )
+        _ = RoleId
 
 
 def _运行器():

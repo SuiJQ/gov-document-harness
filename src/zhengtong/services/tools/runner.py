@@ -27,7 +27,7 @@ from __future__ import annotations
 from ...domain.errors import ErrorCode, Result
 from ...domain.role import RoleId
 from .audit import 审计器
-from .handlers import 处理器表, 工具依赖
+from .handlers import 处理器表, 工具依赖, 记事件回调
 from .registry import TOOL_SPECS, 取工具
 
 
@@ -41,6 +41,18 @@ class 工具运行器:
     @property
     def 审计(self) -> 审计器:
         return self._审计
+
+    def 接记事件(self, 记: 记事件回调) -> None:
+        """后补事件回调（D-266）。
+
+        ## 为什么要「后补」而不是构造时传
+
+        工具层在装配时先建好，编排器（含编排回调）后建——
+        **鸡生蛋**。故装配根在建好编排器后回来补这个字段。
+
+        从 app 访问 `runner._依赖` 会破坏封装，故留这一公开口子。
+        """
+        self._d.记事件 = 记
 
     def _发事件(self, kind: str, **载荷: object) -> None:
         """发 `role.tool_call` / `tool.denied`（D-266）。

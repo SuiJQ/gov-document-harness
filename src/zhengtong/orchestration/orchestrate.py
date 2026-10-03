@@ -70,17 +70,26 @@ from ..kernel.bus import EventBus
 from ..kernel.driver import Step, drive
 from ..kernel.scheduler import GateGroup, run_groups
 from ..ports.content_pack import ContentPackPort
-from ..ports.llm import LlmPort, LlmRequest, Message, ToolCall, ToolSchema
+from ..ports.llm import LlmPort, LlmRequest, LlmResponse, Message, ToolCall, ToolSchema
 from ..ports.storage import StoragePort
 from ..ports.validators import ValidatorPort
 from ..services.context import 压缩, 组装, 需要压缩
 from ..services.context.view import 估算视图
 from ..services.prompting import 装配提示词, 装配请求, 预算闸门
+from ..services.tools.calllog import 调用存档 as 调用存档类
+from ..services.tools.runner import 工具运行器
 from .machine import 该发请求
 
 #: 产物路径前缀。**必须以 `data/` 开头**——
 #: `paths.AI_WRITABLE` 只认 `data/`（AI 只能写 `data/`），
 #: 写成运行号开头会被路径守卫拒绝（第 13 步第九次 D-165 的教训）。
+#: **工具调用轮数上限**（D-267）。
+#:
+#: 模型可能一轮里连调多个工具，也可能据前一个结果再调后一个，
+#: 故按上限迭代。**上限不是可选的**：连续调用可能永不停止，
+#: 没有上限就是死循环（内核保险丝同族，架构 §5.2）。
+_工具轮上限 = 4
+
 _产物根: Final = "data"
 
 #: 默认预算（D-189）。真跑时应来自配置里的上下文容量；
@@ -231,6 +240,12 @@ class _过程:
         self.门禁: list[GateId] = []
         #: 《政策依据适配表》单独挂一份（D-255）；无则 None
         self._政策取证件: 阶段产物 | None = None
+        #: 工具结果存档（D-227）。跨阶段存活——
+        #: 模型在 OUTLINE 调的工具，起草阶段仍可能要查回结果。
+        self.工具存档: 调用存档类 | None = None
+        #: **工具层**（D-267）。真正执行 `tool_calls` 的是 `_过程`，
+        #: 故字段落在这一层——放编排器上会让读取跨一层中转。
+        self.工具层 = 编排.工具层
         self.出现过的状态: list[RoleState] = []
         self.动过的: list[RoleId] = []
         self.回复: dict[RoleId, str] = {}
@@ -661,13 +676,88 @@ class _过程:
                     错 = 答.error
                     assert 错 is not None
                     return Result.fail(错.code, f"{阶段.value}/{角色.value} 调用失败：{错.detail}")
-                self.回复[角色] = 答.unwrap().text
-                self._记入历史(角色, 阶段, 答.unwrap().text)
+                响应 = 答.unwrap()
+                # **执行模型请求的工具**（D-267）。
+                #
+                # 此前 `LlmResponse.tool_calls` 从不被读：请求的 `tools`
+                # 真的发给模型了（D-233），模型也会真的调用，
+                # 但响应一到就被当普通文本丢掉——**16 个工具全是死的**。
+                工具轮 = self._跑工具(角色, 阶段, 响应)
+                if 工具轮.is_error:
+                    错 = 工具轮.error
+                    assert 错 is not None
+                    return Result.fail(
+                        错.code, f"{阶段.value}/{角色.value} 工具调用失败：{错.detail}"
+                    )
+                响应 = 工具轮.unwrap()
+                self.回复[角色] = 响应.text
+                self._记入历史(角色, 阶段, 响应.text)
                 self.已完成 = (*self.已完成, cid)
             self.动过的.append(角色)
             self.出现过的状态.append(RoleState.DONE)
             self.状态 = self.状态.set_role_state(角色, RoleState.DONE)
         return Result.ok_none()
+
+    def _跑工具(self, 角色: RoleId, 阶段: PhaseId, 响应: LlmResponse) -> Result[LlmResponse]:
+        """跑完模型这一轮请求的全部工具调用，返回最终响应（D-267）。
+
+        ## 为什么结果**不**进对话序列
+
+        D-227 定的是「对话序列只记工具**动作**不记结果，
+        模型需要一条查回途径」——工具 `tool.result(call_id)` 就是那条途径，
+        存档只在内存。
+
+        结果直接塞回对话会有两个后果：
+        上下文被材料正文撑爆（D-227 原话），且违反 D-035「日志不抄正文」。
+        故此处**只记动作 + 存结果**，下一轮模型自己查。
+
+        ## 为什么要循环
+
+        模型可能一轮里连续调多个工具，也可能**根据第一个工具的结果
+        再调第二个**（先查目录再读文件）。单次执行会让后一种直接丢失。
+
+        故按上限迭代——**上限不是可选的**：模型连续调工具可能永不停止，
+        没有上限就是死循环（内核保险丝同族，架构 §5.2）。
+
+        ## 没有工具层时怎么办
+
+        静默返回原响应，不失败：工具层未接入时其余流程仍应能跑通
+        （测试与降级路径都依赖这一点，D-192）。
+        """
+        if not 响应.tool_calls:
+            return Result.ok(响应)
+        if self.工具层 is None:
+            return Result.ok(响应)
+        当前 = 响应
+        for _ in range(_工具轮上限):
+            if not 当前.tool_calls:
+                break
+            for 调用 in 当前.tool_calls:
+                self.记工具动作(角色, 调用)
+                结果 = self.工具层.调用(调用.name, 角色=角色, 参数=dict(调用.arguments))
+                正文 = 结果.unwrap() if not 结果.is_error else f"[工具失败] {结果.error}"
+                self.存档工具结果(调用.id, 正文)
+            # **再问一轮**，让模型看得到自己调过什么、决定要不要继续
+            问 = self._构造请求(角色, 阶段)
+            答 = self.llm.complete(问)
+            if 答.is_error:
+                错 = 答.error
+                assert 错 is not None
+                return Result.fail(
+                    错.code, f"{阶段.value}/{角色.value} 工具后续调用失败：{错.detail}"
+                )
+            当前 = 答.unwrap()
+        return Result.ok(当前)
+
+    def 存档工具结果(self, 调用id: str, 正文: str) -> None:
+        """把工具结果存进 `调用存档`，供 `tool.result(call_id)` 查回（D-227）。
+
+        **存在编排器上而不是 `_过程` 上**：它跨阶段存活——
+        模型在 OUTLINE 调的工具，起草阶段仍可能要查回结果。
+        """
+        if self.工具存档 is None:
+            self.工具存档 = 调用存档类()
+        self.工具存档.记(调用id, 正文)
 
     def 记工具动作(self, 角色: RoleId, 调用: ToolCall) -> None:
         """把一次**工具调用动作**记进该角色历史（第 14.5 步）。
@@ -911,6 +1001,7 @@ class 编排器:
         容量token: int = 128_000,
         温度: float = 0.3,
         摘要器: Callable[[tuple[Message, ...]], Message] | None = None,
+        工具层: 工具运行器 | None = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
@@ -934,6 +1025,11 @@ class 编排器:
         #: **此前工具层与编排器完全没连**——`msg.report_to_lead` 只存在于
         #: 提示词文本里，真跑起来会走 D-192「入口未接线」失败。
         self.工具回调 = 编排回调(self)
+        #: **工具层**（D-267）。此前编排器不持有它，
+        #: 于是 `LlmResponse.tool_calls` 无处执行——
+        #: 模型看得见工具清单、调得到接口，调用却从不被跑。
+        self.工具层 = 工具层
+
         self.容量token = 容量token
         #: 基准温度（D-234）。此前每次请求都吃 `LlmRequest` 的字段默认
         #: 0.3，`Config.temperature` 从未影响任何真实请求——

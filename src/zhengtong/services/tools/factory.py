@@ -31,7 +31,7 @@ from ...ports.storage import StoragePort
 from ...ports.user_files import UserFilesPort
 from ...ports.validators import ValidatorPort
 from .audit import 审计器
-from .handlers import 工具依赖
+from .handlers import 工具依赖, 记事件回调
 from .runner import 工具运行器
 
 
@@ -44,6 +44,7 @@ def 建工具运行器(
     validators: ValidatorPort,
     run_id: RunId,
     审计时钟: Callable[[], float] | None = None,
+    记事件: 记事件回调 | None = None,
 ) -> 工具运行器:
     """造一个工具运行器。
 
@@ -62,6 +63,10 @@ def 建工具运行器(
             content_pack=content_pack,
             validators=validators,
             run_id=run_id,
+            # **发事件的回调**（D-266）：工具调用与拒绝要进 journal，
+            # 否则审计条目只留在内存，进程一结束即消失
+            # （架构 §7.4「全部进 journal」）。
+            记事件=记事件,
         ),
         审计=审计器(时钟=审计时钟 or time.monotonic),
     )

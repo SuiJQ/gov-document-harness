@@ -141,9 +141,13 @@ class App:
         from .orchestration.orchestrate import 编排器 as 编排器类
 
         容量 = max(1, self.config.context_k) * 1024
-        return 编排器类(
+        编排 = 编排器类(
             llm=self.ports.llm,
             storage=self.ports.storage,
+            # **工具层必须一起传**（D-267）。此前 `App.tools` 备好了，
+            # 但编排器工厂没往下传——于是模型发出的 `tool_calls`
+            # 在编排层没有执行者，**16 个工具全是死的**。
+            工具层=self.tools,
             bus=self.bus,
             content_pack=self.ports.content_pack,
             validators=self.ports.validators,
@@ -167,6 +171,11 @@ class App:
             温度=self.config.temperature,
             运行号=self.run_id,
         )
+        # **工具调用与拒绝要进 journal**（D-266，架构 §7.4）。
+        # 工具层在 `装配()` 里先建好、编排器后建，故此处**后补**回调——
+        # 鸡生蛋问题：编排回调要持有编排器，工具层又要先于编排器存在。
+        self.tools.接记事件(编排.工具回调.记事件)
+        return 编排
 
     def close(self) -> None:
         """收尾。**必须排空总线**（D-087）——
