@@ -43,7 +43,7 @@ from .adapters.fs_storage import FsStorage
 from .adapters.http_llm import HttpLlm
 from .adapters.httpx_transport import HttpxTransport
 from .adapters.local_secrets import LocalSecrets
-from .adapters.paths import Workspace
+from .adapters.paths import Workspace, ensure_dirs
 from .adapters.system_clock import SystemClock
 from .adapters.userfiles.scanner import LocalUserFiles
 from .adapters.validators import 硬约束校验器
@@ -198,6 +198,34 @@ class App:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+
+def 准备目录(根: Path) -> Result[Workspace]:
+    """确保三目录存在并交出工作区（D-017）。**幂等，绝不删改已有内容。**
+
+    ## 为什么放在装配根而不是让 CLI 自己 import 适配器
+
+    架构 §3.4 的硬规则：**除 `adapters/` 与 `app.py` 外无人 import 适配器**
+    ——它防的是「依赖注入失效」。而 CLI 若是第一个绕过它的层，
+    破例就从入口开始，一路往下传染。
+
+    故**门面给在装配根**：CLI 只跟 `app.py` 打交道，
+    规则一个字都不用改。
+
+    接入层要的东西本来也只有装配根——
+    `build_app_from_workspace` 的 docstring 已经写着
+    「真实运行必须走装配根」。
+    """
+    return ensure_dirs(根)
+
+
+def 工作区(根: Path) -> Workspace:
+    """把用户给的路径包成工作区。
+
+    **只包，不建目录**——「看一眼目录」不该产生副作用（D-017 的分工）。
+    要建目录用 `准备目录`。
+    """
+    return Workspace(root=根)
 
 
 def build_app(
