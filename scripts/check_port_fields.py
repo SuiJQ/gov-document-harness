@@ -63,14 +63,12 @@ from pathlib import Path
 #: 已立案未修 → 缺陷编号。
 已立案: dict[str, str] = {
     "raw_finish_reason": "D-268 写了没人读，与 D-262 ToolSpec.effect 同型",
-    "at": "D-271 校验问题有锚点但用户看不到（has_anchor 仅内部用）",
     # —— 装配根 app.py 里直接构造这两个适配器（LocalSecrets/SystemClock），
     # 不经 PortRegistry 取。故登记册里的这两个字段确实无人取用。
     # **不是缺陷**：登记册的价值在 missing() 自检（8 个端口漏一个就炸），
     # 字段本身是「登记齐全」的凭据，取用路径另有其人。
     "secrets": "app.py 直接构造 LocalSecrets/SystemClock，不经登记册取；登记册字段用于 missing() 自检",
     "clock": "同上",
-    "rule": "D-260 校验结论丢了「命中哪条规则」",
     # —— 定性为合法：PortRegistry 由装配根消费，不在三层里 ——
     # `app.py` 用 `self.ports.llm` 等注入各层；它不是「用户可见数据」，
     # 是依赖登记册。漏掉 app.py 会误报 5 个。
@@ -112,13 +110,13 @@ from pathlib import Path
     "TokenUsage.prompt_tokens": "D-277 已修：model.response 事件带真实用量，投影累计显示",
     "TokenUsage.completion_tokens": "D-277 同上",
     "LlmResponse.usage": "D-277 已修：编排层 _记用量() 读它并发事件",
+    "ValidationIssue.rule": "D-278 已修：ValidationIssue.定位 把规则号带进两个出口",
+    "ValidationIssue.at": "D-278 已修：同上，锚点带进两个出口",
 }
 
 #: 已知的两处真缺陷（D-267 复查逐字段查出，非本脚本发现）。
 #: 列出以便对照——**本脚本的价值恰在于它们会被报出来**。
-已知缺陷 = {
-    "ValidationIssue.rule": "D-260 校验结论丢了「命中哪条规则」",
-}
+已知缺陷: dict[str, str] = {}
 
 
 def _端口字段() -> list[tuple[Path, str, str]]:
@@ -172,6 +170,67 @@ def _用户路径读取() -> dict[str, int]:
     return 索引
 
 
+def _端口自身转发(端口字段: set[str], 用户索引: dict[str, int]) -> dict[str, int]:
+    """认「**字段在端口自身被读、且承载它的 property 真被用户路径调用**」
+    （D-278 补的口子）。
+
+    ## 要解决什么假阳性
+
+    `ValidationIssue.rule` / `.at` 由 `ports/validators.py` 的
+    `定位` 属性读取，而**消费**发生在别处：
+    `orchestration/orchestrate.py` 与 `services/tools/handlers.py`
+    都调用 `i.定位`，把规则号与锚点带进给用户／给模型的文本。
+
+    读取在端口里、消费在用户路径——原脚本只看用户路径，
+    于是报「已修却零消费」，是**假阳性**。
+
+    ## 加「property 被调用过」这一条挡住了什么
+
+    不加的话，「字段在自己类里被读」一律算消费。
+    而 D-263 那类字段（构造时就没填值）也长这个样子，
+    至少不会被静默放过。
+
+    ## 诚实的局限（证伪五查出来的，别把它当万能）
+
+    **本口径挡不住「读了但读到空值」。**
+    证伪：把真实校验器的 `rule="D040-必填"` 改成 `rule=""`，
+    脚本仍报「已修并有消费 6/6」——因为 `定位` 确实读了 `self.rule`，
+    只是读到的是空串。**它证明的是「有人在读」，不是「读到的不是空的」。**
+
+    真正的兜底是判据：`tests/test_validation_localization.py` 的
+    `test_空字段带规则与锚点` 断言的是**真实校验器的实际产出**，
+    它在上述证伪下确实变红（证伪三已验证）。
+    **脚本负责指疑点，判据负责定性。**
+    """
+    命中: dict[str, int] = {}
+    for p in sorted((源码 / "ports").glob("*.py")):
+        if p.name == "__init__.py":
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        for 类 in (n for n in tree.body if isinstance(n, ast.ClassDef)):
+            for 项 in 类.body:
+                if not isinstance(项, ast.FunctionDef):
+                    continue
+                装饰 = {
+                    d.attr if isinstance(d, ast.Attribute) else getattr(d, "id", "")
+                    for d in 项.decorator_list
+                }
+                if "property" not in 装饰 and "cached_property" not in 装饰:
+                    continue
+                # 条件 2：这个 property 在用户路径里被调用过
+                if 用户索引.get(项.name, 0) == 0:
+                    continue
+                # 条件 1：property 内部读了哪些端口字段
+                for 节点 in ast.walk(项):
+                    if (
+                        isinstance(节点, ast.Attribute)
+                        and isinstance(节点.ctx, ast.Load)
+                        and 节点.attr in 端口字段
+                    ):
+                        命中[节点.attr] = 命中.get(节点.attr, 0) + 1
+    return 命中
+
+
 def _按名枚举() -> set[str]:
     """扫「字符串字面量」形式的消费。
 
@@ -207,11 +266,15 @@ def _按名枚举() -> set[str]:
 
 def main() -> int:
     索引 = _用户路径读取()
+    全部字段 = _端口字段()
+    # 补「字段在端口自身被 property 读、property 被用户路径调用」这一类（D-278）
+    for 名, 次 in _端口自身转发({名 for _, _, 名 in 全部字段}, 索引).items():
+        索引[名] = 索引.get(名, 0) + 次
     按名 = _按名枚举()
     for 名 in 按名:
         索引[名] = 索引.get(名, 0) + 1
     候选: list[tuple[str, str, str]] = []
-    for p, 类名, 字段名 in _端口字段():
+    for p, 类名, 字段名 in 全部字段:
         if 索引.get(字段名, 0) > 0:
             continue
         if 字段名 in 已立案:
@@ -222,7 +285,7 @@ def main() -> int:
 
     已 = [
         (f"{p}::{类}.{名}", 理由)
-        for p, 类, 名 in _端口字段()
+        for p, 类, 名 in 全部字段
         for 理由 in [已立案.get(名)]
         if 理由 is not None
     ]

@@ -306,7 +306,11 @@ def validate_run(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[
     详情 = 结果.unwrap()
     阻断 = 详情.blocking  # 属性，不是方法（写错会在这里炸 TypeError）
     if 阻断:
-        return Result.ok("校验未通过：\n" + "\n".join(f"- {i.message}" for i in 阻断))
+        # **带上规则号与锚点**（D-260、D-271）。此前只给 `i.message`，
+        # 于是模型拿到「G10 无取证证据」却不知道是 D-034 哪一条、
+        # 证据该挂在哪儿——而它正是要去补证据的那个角色。
+        # 格式与用户侧出口共用 `ValidationIssue.定位`，不许各写一份。
+        return Result.ok("校验未通过：\n" + "\n".join(f"- {i.定位}" for i in 阻断))
     return Result.ok("校验通过")
 
 

@@ -424,7 +424,12 @@ class _过程:
             script="hard",
         )
         if not 结.passed:
-            问题 = "；".join(i.message for i in 结.issues) or "硬约束不通过"
+            # **带上规则号与锚点**（D-260、D-271）。
+            #
+            # 此前只拼 `i.message`，`rule` 与 `at` 明明已经填好却被丢掉——
+            # 用户只看到「D1 为空」，既不知道命中哪条规则，也不知道去哪儿改。
+            # 格式化收敛在 `ValidationIssue.定位`，两处出口不许各写一份。
+            问题 = "；".join(i.定位 for i in 结.issues) or "硬约束不通过"
             return Result.fail(ErrorCode.GATE_FAILED, f"提问前硬约束不通过：{问题}")
         return Result.ok_none()
 

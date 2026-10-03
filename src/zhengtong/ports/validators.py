@@ -35,6 +35,35 @@ class ValidationIssue:
     def has_anchor(self) -> bool:
         return self.at != ""
 
+    @property
+    def 定位(self) -> str:
+        """**一行可定位的描述**：`[规则] 锚点 → 问题`（D-260、D-271）。
+
+        ## 为什么要有这个属性
+
+        此前两个出口各自拼 `i.message`，**把 `rule` 与 `at` 整个丢掉**：
+
+        - `orchestrate.py` 的提问前校验失败 → 给**用户**看
+        - `handlers.py` 的 `validate.run` → 给**模型**看
+
+        后果是两边都只得到一句「D1 为空」，既不知道命中哪条规则，
+        也不知道去哪儿改。字段明明解析器已经填好了。
+
+        ## 为什么收敛成一个属性
+
+        两个出口各写一份拼法，**改一处忘一处**就会漂移——
+        那正是本条缺陷本身的成因。故格式只有这一处定义。
+
+        ## 缺字段时的行为
+
+        **没有锚点就不显示锚点位置**，而不是显示一个空的 `[]`——
+        空标记会让读者以为「定位过了，只是没查出来」，
+        与 D-053「只给内容不给标记」是同一类陷阱。
+        """
+        规则 = f"[{self.rule}] " if self.rule else ""
+        位置 = f"{self.at} → " if self.has_anchor else ""
+        return f"{规则}{位置}{self.message}".strip()
+
 
 @dataclass(frozen=True, slots=True)
 class ValidationResult:
