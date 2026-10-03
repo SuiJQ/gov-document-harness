@@ -699,17 +699,28 @@ class _过程:
         return Result.ok_none()
 
     def _跑工具(self, 角色: RoleId, 阶段: PhaseId, 响应: LlmResponse) -> Result[LlmResponse]:
-        """跑完模型这一轮请求的全部工具调用，返回最终响应（D-267）。
+        """跑完模型这一轮请求的全部工具调用，返回最终响应（D-267、D-274）。
 
-        ## 为什么结果**不**进对话序列
+        ## 结果**要**进对话序列（D-272）
 
-        D-227 定的是「对话序列只记工具**动作**不记结果，
-        模型需要一条查回途径」——工具 `tool.result(call_id)` 就是那条途径，
-        存档只在内存。
+        此前只记动作不记结果，理由是「上下文会被材料正文撑爆」。
+        D-274 推翻了它：材料经工具读入后是 `role="tool"` 消息，
+        与对话混在同一窗口，压缩时**材料先于对话丢**
+        （`compactor.py:97 _丢弃顺序()`）——所以「白占窗口」是临时的、
+        压缩时自动回收的，而截断的代价是永久不可逆的。
+        不设额外截断，超窗口交 `CONTEXT_COMPACTED`。
 
-        结果直接塞回对话会有两个后果：
-        上下文被材料正文撑爆（D-227 原话），且违反 D-035「日志不抄正文」。
-        故此处**只记动作 + 存结果**，下一轮模型自己查。
+        ## 顺带修掉一处**协议顺序**错误（D-274 同批发现）
+
+        此前对每个调用各记一条 `assistant` 消息。一轮里调两个工具，
+        历史就成了 `assistant(c1), assistant(c2)`，
+        后面再跟两条 `tool` 结果——**OpenAI 协议要求每条 tool 消息
+        紧跟在发出该 tool_calls 的 assistant 之后**，
+        `assistant(c1), assistant(c2), tool(c1), tool(c2)` 会被判为
+        「tool 消息找不到对应的 tool_calls」而整条请求被拒。
+
+        故改为：**一轮一条 assistant 消息带全部 tool_calls，
+        随后按调用顺序各跟一条 tool 消息**。
 
         ## 为什么要循环
 
@@ -732,11 +743,18 @@ class _过程:
         for _ in range(_工具轮上限):
             if not 当前.tool_calls:
                 break
-            for 调用 in 当前.tool_calls:
-                self.记工具动作(角色, 调用)
+            本轮 = 当前.tool_calls
+            # **一条 assistant 消息带全部 tool_calls**——不是每个调用一条。
+            self.记工具动作(角色, *本轮)
+            正文组: list[tuple[str, str]] = []
+            for 调用 in 本轮:
                 结果 = self.工具层.调用(调用.name, 角色=角色, 参数=dict(调用.arguments))
                 正文 = 结果.unwrap() if not 结果.is_error else f"[工具失败] {结果.error}"
                 self.存档工具结果(调用.id, 正文)
+                正文组.append((调用.id, 正文))
+            # 全部执行完再按顺序回传，让 tool 消息紧跟那条 assistant
+            for 调用id, 正文 in 正文组:
+                self.记工具结果(角色, 调用id, 正文)
             # **再问一轮**，让模型看得到自己调过什么、决定要不要继续
             问 = self._构造请求(角色, 阶段)
             答 = self.llm.complete(问)
@@ -754,22 +772,53 @@ class _过程:
 
         **存在编排器上而不是 `_过程` 上**：它跨阶段存活——
         模型在 OUTLINE 调的工具，起草阶段仍可能要查回结果。
+
+        **D-274 后它不再是结果的唯一去处**：结果同时进了对话序列。
+        存档保留的价值是「要全文时不占常驻上下文」，
+        且跨阶段存活而对话历史不跨阶段清理。
         """
         if self.工具存档 is None:
             self.工具存档 = 调用存档类()
         self.工具存档.记(调用id, 正文)
 
-    def 记工具动作(self, 角色: RoleId, 调用: ToolCall) -> None:
-        """把一次**工具调用动作**记进该角色历史（第 14.5 步）。
+    def 记工具动作(self, 角色: RoleId, *调用: ToolCall) -> None:
+        """把一轮的**工具调用动作**记进该角色历史（D-274）。
 
-        只记动作、**不记结果**（用户定）：结果用 `tool.result(call_id)` 查回。
-        全记则上下文被材料正文撑爆，全不记则模型不知道自己查过什么、重复查询。
-
-        消息 `content` 留空而只挂 `tool_calls`——它是「我做過什么」，
+        消息 `content` 留空而只挂 `tool_calls`——它是「我做过什么」，
         不是「我看到了什么」。两者混在一处，模型会把结果当既成事实。
+
+        **一轮一条消息带全部 tool_calls**（不是一个调用一条）：
+        OpenAI 协议要求 `tool` 消息紧跟在发出该 `tool_calls` 的
+        `assistant` 之后，逐个调用各记一条会让后续所有 `tool` 消息
+        配不上号，整条请求被服务端拒收。
+
+        **结果不在这里记**：见 `记工具结果`。
+        """
+        if not 调用:
+            return
+        条 = self.历史.setdefault(角色, [])
+        条.append(Message(role="assistant", content="", tool_calls=调用))
+
+    def 记工具结果(self, 角色: RoleId, 调用id: str, 正文: str) -> None:
+        """把工具结果**按 OpenAI 协议**记进历史（D-272、D-274）。
+
+        ## 修的是什么
+
+        `Message.tool_call_id` 此前**只发不收**——适配器会把它序列化进请求体，
+        但全仓没有任何一处构造带 `tool_call_id` 的消息。
+        于是「半条协议」：模型调了工具，工具也执行了，
+        **结果却回不到模型手上**，它只能凭空猜自己查到了什么。
+
+        ## 完整回传，不截断（D-274）
+
+        正文原样进历史。超窗口由 `CONTEXT_COMPACTED` 按
+        「材料先于对话丢」的优先级回收，**不由这里截断**。
+
+        **失败也必须回传**：`[工具失败] …` 是一条 `tool` 消息而不是空串——
+        空串会让模型以为「确实没有结果」（D-227 禁止的那种欺骗）。
         """
         条 = self.历史.setdefault(角色, [])
-        条.append(Message(role="assistant", content="", tool_calls=(调用,)))
+        条.append(Message(role="tool", content=正文, tool_call_id=调用id))
 
     def 记汇报(self, 内容: str, 答复: str) -> None:
         """把一次汇报成对记进**主理人**历史（第 14.5 步）。
@@ -798,9 +847,22 @@ class _过程:
 
         ## 用户消息要打背景标签
 
-        历史里的 user 消息前缀「【背景·用户先前说明】」——
+        历史里的 user 消息前缀「【背景·{阶段}】」——
         否则模型会把它们与末位那条「本轮任务」同等对待，
         于是每轮都想回答所有以前提过的要求。
+
+        ## 工具轮之后**不需要**特殊处理（证伪记录）
+
+        D-274 让历史里出现了 `role="tool"` 消息，我一度以为
+        `_记入历史` 会破坏协议——它在 tool 消息之后插了一条 `user`。
+        **逐条核对 OpenAI 协议后确认这不违规**：
+        协议只要求 `tool` 消息紧跟在**发出该 `tool_calls` 的那条
+        assistant** 之后，而这里它确实紧跟；
+        `user` 出现在其后不影响配对。
+
+        故**保持原样**：为「显得整齐」去调换顺序，
+        反而会破坏本方法「成对记」的设计意图
+        （`user` 提问在前、`assistant` 回复在后），**且并无任何收益**。
         """
         条 = self.历史.setdefault(角色, [])
         条.append(

@@ -50,7 +50,9 @@ def _路径() -> None:
     pass
 
 
-def _要工具的llm(工具名: str = "kb.search", 调用id: str = "call-1", 参数=None):
+def _要工具的llm(
+    工具名: str = "kb.search", 调用id: str = "call-1", 参数=None, 双调用: bool = False
+):
     """造一个「第一次就请求调工具」的假 LLM。
 
     ## 为什么改 `scripted`
@@ -58,6 +60,14 @@ def _要工具的llm(工具名: str = "kb.search", 调用id: str = "call-1", 参
     `FakeLlm.scripted` 可返回任意 `LlmResponse`——
     正好用来模拟「模型请求调工具」这个此前**无法被测试**的分支。
     此前没有判据，所以这个分支从未被走到过。
+
+    ## `双调用` 为什么必须有（D-274 证伪时才发现）
+
+    一轮只调**一个**工具时，「一轮一条 assistant」与
+    「逐个调用各记一条」产生的历史**完全一样**——
+    顺序缺陷在这种假模型下**显不出来**，判据会假绿。
+
+    故要覆盖「一轮多个 tool_calls」，缺陷才暴露。
     """
     from zhengtong.adapters.fakes import FakeLlm
     from zhengtong.domain.ids import RunId
@@ -68,13 +78,21 @@ def _要工具的llm(工具名: str = "kb.search", 调用id: str = "call-1", 参
         ToolCall,
     )
 
+    首轮调用 = (
+        (
+            ToolCall(id=调用id, name=工具名, arguments=参数 or {"query": "旱情"}),
+            ToolCall(id=f"{调用id}-b", name=工具名, arguments=参数 or {"query": "灌溉"}),
+        )
+        if 双调用
+        else (ToolCall(id=调用id, name=工具名, arguments=参数 or {"query": "旱情"}),)
+    )
     return FakeLlm(
         scripted=[
             LlmResponse(
                 text="",
                 finish_reason=FinishReason.TOOL_CALLS,
                 usage=TokenUsage(),
-                tool_calls=(ToolCall(id=调用id, name=工具名, arguments=参数 or {"query": "旱情"}),),
+                tool_calls=首轮调用,
             ),
             # 第二轮：给正文，编排层才可能继续走到后面
             LlmResponse(
@@ -196,15 +214,25 @@ class Test工具真的被调用:
         assert not 结果.is_error or 结果.error is not None
 
 
-class Test结果不进对话序列:
-    def test_工具结果不直接塞进对话(self) -> None:
-        """**这是本轮修法的红线**：违反就等于推翻 D-227。
+class Test结果完整回传对话序列:
+    """D-274 推翻了 D-227 的「只记动作不记结果」，本组是**反转后的判据**。
 
-        对话序列只记**动作**、不记结果，模型用 `tool.result` 查回。
-        若把结果直接塞回对话，上下文会被材料正文撑爆，
-        且违反 D-035「日志不抄正文」。
+    旧判据的意图是「防为了让测试变绿而把结果塞回去」——
+    **这个意图是对的，但当时的结论错了**。D-274 查明：
+    压缩层本就把材料当第一批丢弃项（「材料先于对话丢」，
+    `compactor.py:97 _丢弃顺序()`），所以「结果留在历史里」的代价
+    是**临时的**，而截断的代价是永久不可逆的。
 
-        本条是**反向判据**——它防的是「为了让测试变绿而把结果塞回去」。
+    故红线方向也反过来了：新红线是「**必须**在历史里，
+    且 **tool_call_id 必须配得上号**」。
+    """
+
+    def test_工具结果完整进对话序列(self) -> None:
+        """**结果必须回传给模型**（D-272/D-274）。
+
+        此前 `role="tool"` 全仓零构造——工具跑得起来，
+        结果却回不到模型手上，模型只能凭空猜自己查到了什么。
+        `tool_call_id` 只发不收，是**半条协议**。
         """
         llm, _ = _要工具的llm()
         编 = _编排(llm)
@@ -212,17 +240,101 @@ class Test结果不进对话序列:
 
         历史 = _过程(编).历史
         assert 历史, "无历史可查"
+        带回 = [
+            (角色, m)
+            for 角色, 消息们 in 历史.items()
+            for m in 消息们
+            if m.role == "tool" and m.content
+        ]
+        assert 带回, "历史里没有 tool 结果——结果回不到模型手上（D-272）"
+
+    def test_tool_call_id必须配得上号(self) -> None:
+        """**每条 `tool` 消息的 id 必须在前面某条 assistant 的 tool_calls 里**
+        （OpenAI 协议，D-274）。
+
+        用状态机而不是「紧跟上一条」断言：**一条 assistant 带 N 个
+        tool_calls 时，后面连着 N 条 tool 消息是合法的**，
+        所以不能简单要求 tool 的上一条必须是 assistant。
+
+        服务端配不上号就**拒收整条请求**，而本地测试全绿——
+        属 D-210 那类「零件都测过、衔接没测」的静默失败。
+        """
+        llm, _ = _要工具的llm(双调用=True)
+        编 = _编排(llm)
+        编.跑到终(档位=_Pro(), 需求="就旱情写个通知")
+
+        历史 = _过程(编).历史
+        assert 历史, "无历史可查"
         for 角色, 消息们 in 历史.items():
-            for m in 消息们:
-                # assistant 消息可挂 tool_calls，但 content 必须留空
-                if m.tool_calls:
-                    assert m.content == "", (
-                        f"{角色} 的工具动作消息带了正文 {m.content[:40]!r}——"
-                        "动作与结果混在一处，模型会把结果当既成事实"
+            待配: set[str] = set()
+            for i, m in enumerate(消息们):
+                if m.role == "tool":
+                    assert 待配, (
+                        f"{角色} 第 {i} 条 tool 消息（{m.tool_call_id}）前面"
+                        "没有待回传的 tool_calls——悬空，服务端会拒收"
                     )
-                assert not (m.role == "tool" and m.content), (
-                    f"{角色} 历史里有带正文的 tool 消息——结果应走 tool.result 查回，不进对话序列"
+                    assert m.tool_call_id in 待配, (
+                        f"{角色} 第 {i} 条 tool 消息 id={m.tool_call_id} "
+                        f"不在待回传的 {sorted(待配)} 里——配不上号"
+                    )
+                    待配.discard(m.tool_call_id)
+                elif m.tool_calls:
+                    assert not 待配, (
+                        f"{角色} 第 {i} 条又发起了新动作，但上一轮 "
+                        f"{sorted(待配)} 的结果还没回传——顺序错"
+                    )
+                    待配 = {c.id for c in m.tool_calls}
+                else:
+                    # 普通消息（user/assistant 正文）**清空**待回传集合：
+                    # 它不是 tool 结果，插在中间会让后续 tool 消息配不上号
+                    待配 = set()
+
+    def test_一轮多个工具只记一条assistant(self) -> None:
+        """一轮里调 N 个工具 → **一条** assistant 带 N 个 tool_calls。
+
+        逐个调用各记一条的话，历史成为 `assistant(c1), assistant(c2)`，
+        后面的 `tool(c1)` 紧跟的是 `assistant(c2)`——**配不上号**。
+        """
+        llm, _ = _要工具的llm(双调用=True)
+        编 = _编排(llm)
+        编.跑到终(档位=_Pro(), 需求="就旱情写个通知")
+
+        for 角色, 消息们 in _过程(编).历史.items():
+            动作 = [m for m in 消息们 if m.tool_calls]
+            if not 动作:
+                continue  # 本轮没调工具的角色（如 structure），不关它的事
+            for m in 动作:
+                assert m.content == "", (
+                    f"{角色} 的工具动作消息带了正文 {m.content[:40]!r}——"
+                    "动作与结果混在一处，模型会把结果当既成事实"
                 )
+            # **相邻两条 assistant 动作消息 = 逐个调用各记一条**（旧缺陷）
+            from itertools import pairwise
+
+            for 前, 后 in pairwise(消息们):
+                assert not (前.tool_calls and 后.tool_calls), (
+                    f"{角色} 连续两条带 tool_calls 的 assistant——"
+                    "一轮多个工具必须合成一条，否则 tool 消息配不上号"
+                )
+
+    def test_工具失败也必须回传(self) -> None:
+        """失败的工具结果是一条 `tool` 消息，**不是空串**。
+
+        空串会让模型以为「我查过了，确实没有」——
+        与 D-227 禁止的欺骗是同一类。
+        """
+        llm, _ = _要工具的llm(工具名="fs.write_file")
+        编 = _编排(llm)
+        编.跑到终(档位=_Pro(), 需求="就旱情写个通知")
+
+        历史 = _过程(编).历史
+        失败回传 = [
+            m
+            for 消息们 in 历史.values()
+            for m in 消息们
+            if m.role == "tool" and m.tool_call_id and m.content
+        ]
+        assert 失败回传, "失败的工具调用没有回传结果——模型会以为没有失败过"
 
 
 def _Pro():

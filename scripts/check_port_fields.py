@@ -66,7 +66,6 @@ from pathlib import Path
     "completion_tokens": "D-269",
     "raw_finish_reason": "D-268 写了没人读，与 D-262 ToolSpec.effect 同型",
     "at": "D-271 校验问题有锚点但用户看不到（has_anchor 仅内部用）",
-    "tool_call_id": "D-272 工具结果无法回传给模型（OpenAI 协议要求 role=tool 带 tool_call_id）",
     # —— 装配根 app.py 里直接构造这两个适配器（LocalSecrets/SystemClock），
     # 不经 PortRegistry 取。故登记册里的这两个字段确实无人取用。
     # **不是缺陷**：登记册的价值在 missing() 自检（8 个端口漏一个就炸），
@@ -105,10 +104,19 @@ from pathlib import Path
     "reasoning_tokens": "响应侧：reasoning_probe.py:115 读它判定推理是否真发生（D-245）",
 }
 
-#: 已知的三处真缺陷（D-267 复查逐字段查出，非本脚本发现）。
+#: 已修（留档以免同一条再被当成新发现报一遍）。
+#:
+#: **D-272 · `Message.tool_call_id`** —— 此前只发不收：
+#: 适配器会把它序列化进请求体，但全仓没有任何一处构造带
+#: `tool_call_id` 的消息，于是工具跑得起来、结果却回不到模型手上。
+#: D-274 补 `记工具结果()` 后 `orchestrate.py` 已在用户路径消费该字段。
+已修 = {
+    "Message.tool_call_id": "D-274 已修：orchestrate.py 记工具结果() 按 OpenAI 协议完整回传",
+}
+
+#: 已知的两处真缺陷（D-267 复查逐字段查出，非本脚本发现）。
 #: 列出以便对照——**本脚本的价值恰在于它们会被报出来**。
 已知缺陷 = {
-    "Message.tool_call_id": "D-272 工具结果无法回传给模型（OpenAI 协议要求 role=tool 消息带 tool_call_id）",
     "LlmResponse.usage": "D-269 token 用量从不进入任何输出",
     "ValidationIssue.rule": "D-260 校验结论丢了「命中哪条规则」",
 }
@@ -219,6 +227,17 @@ def main() -> int:
         for 理由 in [已立案.get(名)]
         if 理由 is not None
     ]
+    # 已修字段现在**应该有消费**；若仍为零消费，说明修复被回退或漏了接线。
+    # 这一条把「已修」表接进检查——否则它只是文档，不是判据。
+    修好未接线 = [
+        f"{名}：{理由}"
+        for 名, 理由 in 已修.items()
+        if 索引.get(名.split(".", 1)[-1], 0) == 0
+    ]
+    # 已知缺陷必须仍处于「已立案」状态——两者不一致说明有人改了其中一张表。
+    对不上 = [
+        名 for 名 in 已知缺陷 if 名.split(".", 1)[-1] not in 已立案
+    ]
 
     print("端口字段用户路径消费检查")
     print("（用户路径 = orchestration / kernel / presentation；"
@@ -236,10 +255,23 @@ def main() -> int:
         print()
         print("合法零消费有四类：真适配器自我消费、端口自身内部使用、"
               "测试探针、已立案。")
-        return 1
-
-    print("端口字段在用户路径上均有消费。")
-    return 0
+        print()
+    if 已修:
+        print(f"已修并有消费（{len(已修) - len(修好未接线)}/{len(已修)} 个）：")
+        for 名, 理由 in 已修.items():
+            if 名.split(".", 1)[-1] in 索引 and 索引[名.split(".", 1)[-1]] > 0:
+                print(f"  - {名}：{理由}")
+        print()
+    if 修好未接线:
+        print(f"**已修却零消费（{len(修好未接线)} 个）——修复被回退或漏了接线**：")
+        for 条 in 修好未接线:
+            print(f"  - {条}")
+        print()
+    if 对不上:
+        print(f"**已知缺陷与已立案表不一致（{len(对不上)} 个）**：{对不上}")
+        print("  两张表必须同步：已知缺陷 = 尚未修的，已立案 = 全部登记。")
+        print()
+    return 1 if (候选 or 修好未接线 or 对不上) else 0
 
 
 if __name__ == "__main__":
