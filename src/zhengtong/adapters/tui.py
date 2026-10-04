@@ -359,6 +359,7 @@ class ZhengTongApp(App[None]):
         根: Path | None = None,
         取编排器=None,
         闸=None,
+        终端提示: str | None = None,
         **kw,
     ) -> None:
         """`桥`（`presentation.tui.事件桥接`）**由装配根注入，不在这里 import**。
@@ -388,6 +389,9 @@ class ZhengTongApp(App[None]):
         #: 没有它时界面**明说跑不了**，不假装（D-281 追加二）。
         self._取编排器 = 取编排器
         self._跑着 = False
+        #: **终端字形提示**（D-045）。由装配根算好后注入——
+        #: 界面只显示，不自己查。
+        self._终端提示 = 终端提示
         #: 本次运行的编排器。**插话要发给它**，而它由 worker 建出来，
         #: 所以只能存引用——界面侧不 import 编排层（D-063 的依赖方向）。
         self._当前编排器 = None
@@ -401,6 +405,7 @@ class ZhengTongApp(App[None]):
         yield StatusLine(id="status")
         yield ArtifactPanel(id="artifacts")
         yield PreviewPanel(id="preview")
+        yield StatusLine(id="notice", classes=主题.色_需处理)
         yield StatusLine(id="workspace")
         yield Footer()
 
@@ -425,6 +430,13 @@ class ZhengTongApp(App[None]):
         self.query_one("#status", StatusLine).update(StatusLine.DEFAULT)
         工作区 = self._根 if self._根 is not None else Path.cwd()
         self.query_one("#workspace", StatusLine).update(f"工作区：{工作区}")
+        if self._终端提示:
+            # **仅提示、不阻止**（用户明确要求）。
+            # 用 `色_需处理`（黄）而不是报错色——它不是错误，
+            # 程序照跑，只是显示可能不好看。
+            self.query_one("#notice", StatusLine).update(
+                f"{主题.符_提示} 终端提示：{self._终端提示}"
+            )
 
     def action_开始(self) -> None:  # Textual 的 action 命名
         """`Ctrl+Enter`。**同一个键，按当前状态做不同的事**。

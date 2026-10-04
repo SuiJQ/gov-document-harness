@@ -48,6 +48,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from ..adapters.terminal import 查终端显示能力
 from ..app import 准备目录, 工作区
 from ..domain.tier import TIER_BY_ID, TierId
 from ..presentation.doctor import 打印自检, 自检项, 跑自检
@@ -215,7 +216,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     if 参数.doctor:
         项 = 本地自检项(参数.root)
         项 += 远端自检项(参数.root)
-        结果 = 跑自检(探测=tuple(项))
+        # **D-045 字形检测在此接上**（B4）。
+        # 此前 `跑自检` 有 `字体` 参数、`doctor.py` 有 `字体提示` 字段，
+        # 但**没人传值**——实测 `--doctor` 输出里一个字形提示都没有。
+        # 管道建好了，实现没接。
+        #
+        # 为什么由 CLI（装配根）去调：`查终端显示能力` 在 `adapters` 层，
+        # 而 `doctor` 在 `presentation` 层，**后者不能 import 前者**（分层判据）。
+        # 故在装配根算好、按参数注入——这个参数当初就是为此留的。
+        能力 = 查终端显示能力(sys.stdout)
+        # **诊断值要一并报出去**，不只是那句提示。
+        #
+        # 只报「编码写不出字」而不说「当前编码是什么、终端多大」，
+        # 用户看到之后仍然不知道该改什么——**报问题不给依据等于没报**。
+        # 那四个字段就是为此存在的，不是探测器自娱自乐的产物。
+        # **`中文可显示` 也要报**，哪怕它为真——`提示` 只在**出问题**时说话，
+        # 于是「通过」这件事在报告里一个字都看不到。
+        # 用户跑 `--doctor` 多半是想确认「这台机器行不行」，
+        # 沉默不等于通过。
+        详情 = (
+            f"编码 {能力.编码}　"
+            f"汉字与界面符号 {'可正常显示' if 能力.中文可显示 else '无法显示'}　"
+            f"终端 {能力.宽度}×{能力.高度}　"
+            f"交互终端 {'是' if 能力.是终端 else '否'}"
+        )
+        结果 = 跑自检(探测=tuple(项), 字体=f"{详情}。{能力.提示}" if 能力.提示 else 详情)
         打印自检(结果)
         return 0 if 结果.全通过 else 1
 

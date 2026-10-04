@@ -113,7 +113,16 @@ def _层名(路径: pathlib.Path) -> str:
     按职责归位比开例外干净。
     """
     相对 = 路径.relative_to(SRC)
-    if 相对.name in ("app.py", "tui_app.py"):
+    if 相对.name in ("app.py", "tui_app.py") or 相对.parts[0] == "cli":
+        # `cli/main.py` **也是装配根**，理由与 D-290 给 `tui_app.py` 的完全相同：
+        # 它是最外层入口，职责就是 `build_app()` / `准备目录` / 接线真实适配器。
+        #
+        # B4 往里接了 `查终端显示能力`（adapters 层）之后判据立刻报红——
+        # 但那不是退化：`adapters/terminal.py` 探测的是**终端**这个外部事物，
+        # 归 adapters 正确；而**去调它**的只有最外层入口。
+        #
+        # 判据要防的是「编排层自己造适配器、自己 new 端口」，
+        # 不是「最外层入口不许碰适配器」。按职责归位，不开例外名单。
         return "app"
     return 相对.parts[0]
 

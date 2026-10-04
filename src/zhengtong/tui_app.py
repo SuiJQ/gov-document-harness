@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .adapters.terminal import 查终端显示能力
 from .adapters.tui import ZhengTongApp
 from .presentation.tui import 事件桥接
 
@@ -67,6 +68,10 @@ def 启动(根: Path | None = None) -> int:
             # 答复走界面（`闸.挂答复`）。两侧不握同一个闸，
             # 提问方就永远等不到（D-287）。
             闸=应用.问答,
+            # **字形提示（D-045，B4）**。在**装配根**算而不让界面自己去查——
+            # 界面只负责显示，查不查是装配的事。
+            # `默认 None`：测试与无界面模式不必关心终端能力。
+            终端提示=查终端显示能力().提示 or None,
         )
         界面.run()
         return 0
