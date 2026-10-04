@@ -19,8 +19,10 @@ doctor 做的是**探测**：能不能连上网、能不能鉴权、模型能不
 
 ## 流式只探测不使用
 
-用户明确：「流式能力只检测、不使用」。
-所以自检里有这一项，但编排路径上**没有**任何流式调用。
+用户明确不使用流式（D-026）。原先这里有一项「流式能力只检测」，
+已按 D-295 连同 `post_stream` 整体删除——它测出来只是「服务端认 `stream: true`」，
+而探测时被 `suppress(Exception)` 吞掉异常，成功失败一个样。
+自检路径上**没有任何流式调用**，编排路径上也没有。
 """
 
 from __future__ import annotations
@@ -33,7 +35,17 @@ from typing import Final
 
 @dataclass(frozen=True, slots=True)
 class 自检项:
-    """一项自检结论。"""
+    """一项自检结论。
+
+    ## 为什么有第三态「未测」
+
+    远端五项探测**有先后依赖**：鉴权不过，工具调用与推理探测**根本发不出请求**。
+    那种情况下报「未通过」是撒谎（它没失败，它没跑），报「通过」更糟。
+
+    故设 `未测`。**不变式：`未测=True` 蕴含 `通过=False`**——
+    这样 `全通过`（`all(项.通过)`）天然把未测算作没过，
+    体检绝不会因为「有一项压根没跑」而返回退出码 0。
+    """
 
     名称: str
     通过: bool
@@ -41,8 +53,17 @@ class 自检项:
     #: 用户可以怎么做（D-027 要求持续失败时明确告知三件事：
     #: 失败在哪一步、报了什么错、用户可以怎么处理）。
     处置: str = ""
+    #: **因前项失败而没跑到**（不是失败，是没机会跑）。
+    未测: bool = False
+
+    def __post_init__(self) -> None:
+        if self.未测 and self.通过:
+            raise ValueError(f"「{self.名称}」不能既通过又未测")
 
     def 一行(self) -> str:
+        if self.未测:
+            补 = f"（{self.详情}）" if self.详情 else ""
+            return f"{self.名称}：未测{补}"
         记 = "通过" if self.通过 else "未通过"
         补 = f"（{self.详情}）" if self.详情 else ""
         return f"{self.名称}：{记}{补}"
@@ -58,7 +79,13 @@ class 自检结果:
 
     @property
     def 失败项(self) -> tuple[自检项, ...]:
-        return tuple(项 for 项 in self.项 if not 项.通过)
+        """**真失败**，不含未测——未测项没有处置可写，
+        把它混进来会让处置清单多出无意义的条目。"""
+        return tuple(项 for 项 in self.项 if not 项.通过 and not 项.未测)
+
+    @property
+    def 未测项(self) -> tuple[自检项, ...]:
+        return tuple(项 for 项 in self.项 if 项.未测)
 
     def 行(self) -> tuple[str, ...]:
         return tuple(项.一行() for 项 in self.项)
@@ -68,9 +95,16 @@ class 自检结果:
         正文 = "\n".join(self.行())
         if self.全通过:
             return f"{抬头}\n{正文}\n全部通过。"
-        处置 = "\n".join(f"- {项.名称}：{项.处置}" for 项 in self.失败项 if 项.处置)
-        尾 = f"\n请按下列处置处理：\n{处置}" if 处置 else ""
-        return f"{抬头}\n{正文}\n共 {len(self.失败项)} 项未通过。{尾}"
+        尾 = ""
+        if self.失败项:
+            处置 = "\n".join(f"- {项.名称}：{项.处置}" for 项 in self.失败项 if 项.处置)
+            尾 = f"\n共 {len(self.失败项)} 项未通过。"
+            if 处置:
+                尾 += f"\n请按下列处置处理：\n{处置}"
+        if self.未测项:
+            # **必须单独说**，否则用户会以为那些项也测过了。
+            尾 += f"\n另有 {len(self.未测项)} 项因前项失败未测。"
+        return f"{抬头}\n{正文}{尾}"
 
 
 #: 终端字体与等宽显示（D-045）。

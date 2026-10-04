@@ -64,23 +64,5 @@ class HttpxTransport:
             # 服务端返回的不是 JSON——可能是网关的 HTML 错误页
             return resp.status_code, {}
 
-    def post_stream(self, url: str, headers: dict[str, str], body: dict[str, object]) -> int:
-        """发流式请求，**只回状态码**（D-032：流式只检测不使用）。
-
-        用 `client.stream` 而不是读完整响应：
-        检测流式只需要知道「服务端肯不肯按流式答」，
-        读完即弃，不做增量拼接。
-        """
-        try:
-            with self._客户端.stream(
-                "POST", url, headers=headers, json={**body, "stream": True}
-            ) as resp:
-                # 读第一个块：有些服务端先回 200 再在流里报错，
-                # 不读就发现不了。
-                _ = next(resp.iter_bytes(), b"")
-                return resp.status_code
-        except httpx.HTTPError:
-            return 0
-
     def close(self) -> None:
         self._客户端.close()

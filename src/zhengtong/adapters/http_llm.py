@@ -61,6 +61,7 @@ from ..ports.llm import (
     TokenUsage,
     ToolCall,
     归一化结束原因,
+    探测结论,
 )
 from ..ports.secrets import SecretsPort
 
@@ -71,9 +72,6 @@ from ..ports.secrets import SecretsPort
 #: 递增间隔的基准秒与倍数：1s、2s、4s。
 #: 指数退避——固定间隔会让重试打在同一个瞬时故障窗口上。
 _退避基准秒 = 1.0
-
-#: 探测提示词。极短——探测的是链路，不是写作能力。
-_探测词 = "ping"
 
 
 @runtime_checkable
@@ -86,14 +84,13 @@ class Transport(Protocol):
     有了这一层，测试能构造任意 JSON，真端点走 `HttpxTransport`。
     """
 
+    #: **没有 `post_stream`**：流式探测已按 D-295 作废。
+    #: 全系统所有请求都走 `post_json`（`HttpxTransport` 把
+    #: `httpx.HTTPError` 统一转成状态码 0），不引入第二条传输路径。
     def post_json(
         self, url: str, headers: dict[str, str], body: dict[str, object]
     ) -> tuple[int, dict[str, object]]:
         """POST 一个 JSON，返回 `(状态码, 解析后的 JSON)`。"""
-        ...
-
-    def post_stream(self, url: str, headers: dict[str, str], body: dict[str, object]) -> int:
-        """发流式请求，**只回状态码**（D-032：流式只检测不使用）。"""
         ...
 
 
@@ -504,25 +501,15 @@ class HttpLlm:
     def model(self) -> str:
         return self._model
 
-    def 探测流式(self) -> int:
-        """发一次流式请求，只回状态码（D-032：只检测不使用）。"""
-        return self._transport.post_stream(
-            self._endpoint,
-            self._头(),
-            {
-                "model": self._model,
-                "messages": [{"role": "user", "content": _探测词}],
-                "stream": True,
-            },
-        )
-
-    def probe(self) -> Result[TokenUsage]:
+    def probe(self) -> Result[探测结论]:
         """D-048 五项检测。
 
         逐项发**小请求**——连接检测要的是「通不通、能不能干这活」，
         不是「模型答得好不好」，所以不跑真实业务提示词。
-        流式**只检测不使用**（D-032），故只发一次流式请求收状态码，
-        读完即弃，不做增量拼接。
+        **返回逐项结论而非一个总判**（D-295）：体检要回答
+        「这台机器到底行不行」，中途失败后面的项根本没跑，
+        笼统报一条「连接失败」等于让用户自己猜还有几项没验。
+        第 5 项是推理开关（D-048），取代原先的流式探测。
 
         实现放在 `llm_probe.py`（与本文件分开，因为它要构造
         一整套探测请求，塞在这里会把 `complete` 的逻辑冲淡）。

@@ -41,6 +41,7 @@ from ..ports.llm import (
     LlmRequest,
     LlmResponse,
     TokenUsage,
+    探测结论,
 )
 from ..ports.retriever import RetrieverPort, SearchHit, 文档条目
 from ..ports.secrets import SecretsPort
@@ -189,8 +190,18 @@ class FakeLlm:
             )
         )
 
-    def probe(self) -> Result[TokenUsage]:
-        return Result.ok(TokenUsage(prompt_tokens=1, completion_tokens=1))
+    def probe(self) -> Result[探测结论]:
+        """假探测：**五项全过**（D-295）。
+
+        假件不该制造失败——它代表「链路是通的」这个正常态。
+        真失败形态由 `tests/test_doctor_probe.py` 用脚本化假端点穷举。
+        """
+        return Result.ok(
+            探测结论(
+                通过项=探测结论.项序,
+                详情=dict.fromkeys(探测结论.项序, "假实现：未真正探测"),
+            )
+        )
 
 
 # ── Storage ──

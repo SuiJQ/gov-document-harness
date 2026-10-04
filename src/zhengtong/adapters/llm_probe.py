@@ -10,7 +10,7 @@
 | 2 | 鉴权 | 带密钥发一次 | 密钥错、没填 |
 | 3 | 模型可调 | 发一次极短请求 | 模型名错、服务端不认 |
 | 4 | 支持工具调用 | 带 `tools` 发一次 | 专家团跑不了 |
-| 5 | 流式能力 | 发一次流式收状态码 | **只检测不使用**（D-032） |
+| 5 | 推理开关 | 按四种写法试探，看 `reasoning_tokens` 降为 0 | 推理关不掉则按开启运行（D-048，D-295 取代原流式项） |
 
 ## 为什么逐项而不多发一次
 
@@ -33,7 +33,8 @@
 ## 为什么这里不 import HttpLlm
 
 探测要用 `LlmRequest`/`ToolSchema`（来自端口，可以直接 import），
-但**不需要** `HttpLlm` 本身——它只用到 `model`、`complete`、`探测流式` 三样。
+但**不需要** `HttpLlm` 本身——它只用到 `model` 与 `complete` 两样。
+（原先还有 `探测流式`，已按 D-295 随流式探测整体删除。）
 故这里声明一个本地 `Protocol` 而不是 import 具体类：
 
 - import `HttpLlm` 会与 `http_llm` 构成**环**（`http_llm.probe` 调本模块），
@@ -44,11 +45,13 @@
 
 from __future__ import annotations
 
-import contextlib
 from typing import Protocol
 
 from ..domain.errors import ErrorCode, Result
-from ..ports.llm import LlmRequest, LlmResponse, Message, TokenUsage, ToolSchema
+from ..ports.llm import LlmRequest, LlmResponse, Message, ToolSchema, 探测结论
+from .reasoning_probe import 探测推理
+
+__all__ = ["探测五项", "探测结论"]
 
 
 #: 探测只用得上这三样。**声明 Protocol 而非 import `HttpLlm`**，理由见模块文档。
@@ -62,8 +65,6 @@ class _可探测(Protocol):
     # 只在类型检查时暴露。**这类错最险：看起来对，跑起来也对，
     # 直到某次重构按类型去改它。**
     def complete(self, request: LlmRequest) -> Result[LlmResponse]: ...
-
-    def 探测流式(self) -> int: ...
 
 
 #: 探测提示词。**极短**——探测的是链路，不是写作能力。
@@ -94,12 +95,52 @@ def _请求(
     )
 
 
-def 探测五项(llm: _可探测) -> Result[TokenUsage]:
-    """跑完五项，全过才返回用量。
+def 探测五项(llm: _可探测) -> Result[探测结论]:
+    """跑完五项，逐项收集结论。
 
-    **任一项不过立即返回**，带该项对应的错误码与中文原因——
+    每项失败都带该项对应的错误码与中文原因——
     用户要能据此知道该改哪一项，而不是笼统的「连接失败」。
+
+    **前项失败则后项记为未测**，不硬试：鉴权没过时再发工具请求
+    只会得到同一个 401，多花一次往返还多一条误导性错误。
     """
+    详情: dict[str, str] = {}
+
+    def 结论(
+        *,
+        通过项: tuple[str, ...] = (),
+        未测: tuple[str, ...] = (),
+    ) -> Result[探测结论]:
+        return Result.ok(
+            探测结论(
+                通过项=通过项,
+                详情=dict(详情),
+                未测=未测,
+            )
+        )
+
+    def 半途而废(
+        项名: str,
+        说明: str,
+        *,
+        网络连通: bool = False,
+        鉴权: bool = False,
+    ) -> Result[探测结论]:
+        """前项失败：**已确认过的项如实标通过**，其余记未测。
+
+        不这么做就会说谎——比如工具探测失败时，
+        网络与鉴权明明已确认通过，却显示成未通过，
+        用户会去查错方向（D-295）。
+        """
+        详情[项名] = 说明
+        已过 = tuple(n for n, ok in (("网络连通", 网络连通), ("鉴权", 鉴权)) if ok)
+        # **后项一律未测**，由项序推出来，不手写——
+        # 手写会漏：网络失败时鉴权也该是未测（没送达就没有鉴权可言），
+        # 早先手写 `("工具调用", "推理开关")` 就漏了鉴权那一项。
+        序 = 探测结论.项序
+        后项 = 序[序.index(项名) + 1 :]
+        return 结论(通过项=已过, 未测=后项)
+
     # 1 网络可达 + 2 鉴权 + 3 模型可调：一次极短请求即可确认。
     #    拆成三次要多花两次往返，而这三项的失败原因可以从
     #    同一个响应的错误码里区分出来（见 http_llm 的错误映射）。
@@ -107,23 +148,32 @@ def 探测五项(llm: _可探测) -> Result[TokenUsage]:
     if got.is_error:
         err = got.error
         assert err is not None
-        # 重试用尽不改变「连不上」这个事实，但错误码要说清
-        if err.code is ErrorCode.LLM_RETRY_EXHAUSTED:
-            return Result.fail(
-                ErrorCode.LLM_REQUEST_FAILED,
-                f"网络可达但调用失败：{err.detail}",
-            )
-        return Result.fail(err.code, err.detail)
+        # **状态码 0 = 压根没送达**（`_映射错误` 把所有 `httpx.HTTPError`
+        # 统一转成 0）。这才是「网络连通」失败；其余都说明网络是通的。
+        if "连不上端点" in err.detail:
+            return 半途而废("网络连通", err.detail)
+        if err.code is ErrorCode.LLM_AUTH_FAILED:
+            return 半途而废("鉴权", err.detail, 网络连通=True)
+        return 半途而废("模型调用", err.detail, 网络连通=True, 鉴权=True)
 
     响应 = got.unwrap()
     if not 响应.text.strip():
         # 有响应但正文空——多半是 max_tokens 不够或模型异常
-        return Result.fail(
-            ErrorCode.LLM_REQUEST_FAILED,
-            "模型返回了空正文（可能输出额度不足或模型不可用）",
+        详情["网络连通"] = "请求已送达并收到响应"
+        详情["鉴权"] = "服务端未拒绝该密钥"
+        return 结论(
+            # 模型调用是**真失败**（拿到了响应但正文空），
+            # 不是未测——只有它后面那两项才是没机会跑。
+            通过项=("网络连通", "鉴权"),
+            未测=("工具调用", "推理开关"),
         )
 
+    详情["网络连通"] = "请求已送达并收到响应"
+    详情["鉴权"] = "服务端未拒绝该密钥"
+    详情["模型调用"] = f"模型 {llm.model} 已返回正文"
+
     # 4 工具调用支持
+    工具通过 = True
     工具请求 = _请求(
         llm.model,
         "调用 ping 工具",
@@ -133,18 +183,33 @@ def 探测五项(llm: _可探测) -> Result[TokenUsage]:
     if got2.is_error:
         err2 = got2.error
         assert err2 is not None
-        return Result.fail(
-            ErrorCode.LLM_REQUEST_FAILED,
-            f"工具调用探测失败：{err2.detail}",
-        )
-    # **服务端接受但不触发不阻断**：有些模型不主动调工具。
-    # 专家团运行时靠提示词引导，硬拦在这里会误杀可用端点。
+        工具通过 = False
+        详情["工具调用"] = f"工具调用探测失败：{err2.detail}"
+    else:
+        # **服务端接受但不触发不阻断**：有些模型不主动调工具。
+        # 专家团运行时靠提示词引导，硬拦在这里会误杀可用端点。
+        详情["工具调用"] = "服务端接受了带工具定义的请求"
 
-    # 5 流式能力（只检测不使用，D-032）
-    # `suppress` 而非 `try/except/pass`——后者读起来像漏写了处理。
-    with contextlib.suppress(Exception):
-        _ = llm.探测流式()
+    # 5 推理开关（D-048）：能不能把推理关掉。
+    # 这一项**不参与整体成败**——关不掉也能写公文，
+    # 只是要多花推理额度。故它失败时单项记未通过，
+    # 而 `远端自检项` 据此只提示不判死。
+    推理通过 = True
+    got3 = 探测推理(llm.model, llm.complete)
+    if got3.is_error:
+        err3 = got3.error
+        assert err3 is not None
+        推理通过 = False
+        详情["推理开关"] = f"推理探测失败：{err3.detail}"
+    else:
+        详情["推理开关"] = got3.unwrap().说明()
 
-    # 这里没有类型标注可用：**实测过，标注只是把 `Unknown`
-    # 从返回值搬到变量上，消不掉**。理由见 D-163。
-    return Result.ok(响应.usage)
+    return 结论(
+        通过项=(
+            "网络连通",
+            "鉴权",
+            "模型调用",
+            *(("工具调用",) if 工具通过 else ()),
+            *(("推理开关",) if 推理通过 else ()),
+        ),
+    )

@@ -87,6 +87,13 @@ from pathlib import Path
     "raw_error_code": "真适配器回传后端原始错误码，供错误映射用（§6）",
     # 端口自身内部使用
     "role": "Message.role 是协议字段，装配与回传时按值取用",
+    # —— 三态取值靠本类方法，不经外部属性读（D-295）——
+    # `探测结论.通过项` 由 `取()` 读（`项名 in self.通过项`），
+    # 而 `取()` 由 `cli/main.py::_探测转自检项` 逐项调用——
+    # 它驱动的是「通过/未通过/未测」三态的真实显示。
+    # 「用户路径」口径认不出这一层（只认 `x.字段` 直接读），
+    # 与 `role` 同类：字段在端口自身内部被用。
+    "通过项": "端口自身内部使用：探测结论.取() 读它判三态，取() 由 doctor 逐项调用",
     # —— 请求侧字段：编排层构造，适配器读 ——
     # 「用户路径」不含 adapters，但**请求字段的消费者本来就该是适配器**
     # （它要发 HTTP 请求）。故这几个是合法的跨层消费，不是零消费。
@@ -120,7 +127,20 @@ from pathlib import Path
 
 
 def _端口字段() -> list[tuple[Path, str, str]]:
-    """抽出 ports/ 下所有 dataclass 的字段。"""
+    """抽出 ports/ 下所有 dataclass 的字段。
+
+    ## 为什么跳过 `ClassVar`
+
+    `ClassVar` **不是 dataclass 的实例字段**——它不进 `__init__`，
+    也不随实例走。本函数原先只认「带注解的类体赋值」，
+    于是把 `项序: ClassVar[tuple[str, ...]] = (...)` 这类**类常量**
+    也当成字段收进来。
+
+    后果：类常量按定义就该被所有代码读，脚本却因为
+    「用户路径里没直接读它」而报成零消费候选——
+    **一个必然报红的判据，等于用红灯掩盖真实状态**。
+    首次撞上是 D-295 新增 `探测结论.项序` 时。
+    """
     出: list[tuple[Path, str, str]] = []
     for p in sorted((源码 / "ports").glob("*.py")):
         if p.name == "__init__.py":
@@ -128,10 +148,14 @@ def _端口字段() -> list[tuple[Path, str, str]]:
         tree = ast.parse(p.read_text(encoding="utf-8"))
         for 类 in (n for n in tree.body if isinstance(n, ast.ClassDef)):
             for 项 in 类.body:
-                if isinstance(项, ast.AnnAssign) and isinstance(项.target, ast.Name):
-                    名 = 项.target.id
-                    if not 名.startswith("_"):
-                        出.append((p, 类.name, 名))
+                if not isinstance(项, ast.AnnAssign) or not isinstance(项.target, ast.Name):
+                    continue
+                注解 = ast.unparse(项.annotation) if 项.annotation is not None else ""
+                if "ClassVar" in 注解:
+                    continue
+                名 = 项.target.id
+                if not 名.startswith("_"):
+                    出.append((p, 类.name, 名))
     return 出
 
 

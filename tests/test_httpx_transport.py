@@ -9,16 +9,13 @@
 `httpx.MockTransport` 让「网络」变成可注入的假件，
 于是这些分支可以在**零网络**下测——本文件全部用例不联网。
 
-## 测的是三条真分支
+## 测的是两条真分支
 
 | 分支 | 真实场景 |
 |---|---|
 | `httpx.HTTPError` → `(0, {})` | 连不上、超时、TLS 失败 |
 | 响应不是 JSON → `(状态码, {})` | 网关的 HTML 错误页 |
-| `post_stream` 读到首块 | 有些服务端先回 200 再在流里报错 |
 
-第三条是架构 §8.1 明确要求的：**不读就发现不了**。
-不测它，等于「先回 200 再报错」这个真实场景没人验证。
 """
 
 from __future__ import annotations
@@ -28,6 +25,7 @@ import json
 import httpx
 import pytest
 
+from zhengtong.adapters.http_llm import Transport
 from zhengtong.adapters.httpx_transport import HttpxTransport
 
 
@@ -150,44 +148,24 @@ class TestURL原样使用:
         assert 见过[0] == 体, f"请求体被改动了：{见过[0]}"
 
 
-class Test流式只检测不使用:
-    def test_读到第一个块(self) -> None:
-        """**架构 §8.1 的要求**：不读就发现不了「先回 200 再报错」。
+class Test流式已整体移除:
+    """D-295：流式探测作废，`post_stream` 连同它在传输层的三条判据一并删除。
 
-        这里的用例就是守住那句注释——
-        若有人改成「只拿状态码不读块」，本条仍绿，
-        但真端点「200 然后流里报错」就发现不了了。
-        """
-        读到的: list[bytes] = []
+    原先这里有三条判据（读到首块、失败返回 0、带 stream 标记）。
+    删它们不是「少测了」，是**测的东西不存在了**——
+    留着一条必然报红的判据，等于用红灯掩盖真实状态。
 
-        def 处理(请求: httpx.Request) -> httpx.Response:
-            def 流() -> object:
-                块 = b'data: {"x":1}\n\n'
-                读到的.append(块)
-                yield 块
+    那条判据背后的真实场景（有些服务端先回 200 再在流里报错）
+    在流式删除后**已不适用于本项目**：所有请求都走 `post_json`，
+    httpx 会把流内错误一并归入 `HTTPError` → 状态码 0。
+    """
 
-            return httpx.Response(200, content=流())  # pyright: ignore[reportArgumentType]
+    def test_传输层不再暴露流式方法(self) -> None:
+        """判据看**能力确已消失**，不只是「没人调用」。"""
+        assert not hasattr(HttpxTransport, "post_stream")
 
-        状态 = _装(处理).post_stream("https://x.invalid/v1", {}, {})
-        assert 状态 == 200
-        assert 读到的, "**没有读第一个块**——先 200 再报错的场景就发现不了"
-
-    def test_流式失败返回0(self) -> None:
-        def 挂(_请求: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("连不上")
-
-        assert _装(挂).post_stream("https://x.invalid/v1", {}, {}) == 0
-
-    def test_流式请求带stream标记(self) -> None:
-        见过: list[dict[str, object]] = []
-
-        def 记(请求: httpx.Request) -> httpx.Response:
-            见过.append(json.loads(请求.content.decode("utf-8")))
-            return httpx.Response(200, content=b"data: {}\n\n")
-
-        _装(记).post_stream("https://x.invalid/v1", {}, {"model": "m"})
-        assert 见过[0].get("stream") is True, f"没带 stream 标记：{见过[0]}"
-        assert 见过[0]["model"] == "m", "原字段被覆盖了"
+    def test_端口协议也不再要求流式(self) -> None:
+        assert not hasattr(Transport, "post_stream")
 
 
 class Test关闭:

@@ -8,9 +8,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 from ..domain.errors import Result
 from ..domain.event import Span
@@ -183,6 +184,47 @@ class LlmResponse:
     raw_finish_reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class 探测结论:
+    """五项探测的逐项结论。**三态**：通过 / 未通过 / 未测。
+
+    ## 为什么不能只有一个总判
+
+    五项探测**有先后依赖**：鉴权不过，工具调用与推理探测**根本发不出请求**。
+    笼统报一条「连接失败」等于让用户自己猜还有几项没验；
+    报「未通过」是撒谎（它没失败，它没机会跑）。
+
+    故 `未测` 单列一态，`取()` 返回 `True/False/None` 三值（D-295）。
+
+    ## 为什么是「通过项」一个元组，而不是五个布尔字段
+
+    五个布尔字段能表示**互相矛盾**的状态——比如
+    「网络连通=True 且它在未测里」「三态之外多出第四种组合」。
+    用 `通过项` 一个元组则**矛盾状态不可表示**：
+    不在 `通过项` 里、也不在 `未测` 里的项，就是未通过。
+
+    附带好处：端口层不再有五个「只在本类里被读」的字段——
+    `check_port_fields.py` 会把那种字段报成零消费候选，
+    而它们本该由本类消费，是**真消费**。
+    """
+
+    #: 通过的项名。**其余不在 `未测` 里的项即未通过**。
+    通过项: tuple[str, ...] = ()
+    #: 逐项详情。**键是项名**，值给用户看（失败原因或通过说明）。
+    详情: Mapping[str, str] = field(default_factory=dict)
+    #: 因前项失败而没跑的项名。
+    未测: tuple[str, ...] = ()
+
+    #: 项序常量。**不要另写一份**——探测层、展示层与判据都按它遍历。
+    项序: ClassVar[tuple[str, ...]] = ("网络连通", "鉴权", "模型调用", "工具调用", "推理开关")
+
+    def 取(self, 项名: str) -> bool | None:
+        """三态取值：`True` 通过、`False` 未通过、**`None` 未测**。"""
+        if 项名 in self.未测:
+            return None
+        return 项名 in self.通过项
+
+
 @runtime_checkable
 class LlmPort(Protocol):
     """模型调用。
@@ -195,9 +237,12 @@ class LlmPort(Protocol):
         """发起一次调用。失败返回 `Result`，不抛异常（D-064）。"""
         ...
 
-    def probe(self) -> Result[TokenUsage]:
-        """连通性探测（D-048 五项：网络、鉴权、调用、工具调用、流式）。
+    def probe(self) -> Result[探测结论]:
+        """连通性探测（D-295 五项：网络连通、鉴权、模型调用、工具调用、推理开关）。
 
-        **流式只检测不使用**（D-032），故本端口不暴露流式方法。
+        **返回逐项结论**：前项失败则后项记为「未测」，不谎报未通过。
+        流式探测已按 D-295 作废，取代它的是推理开关（D-048）。
+
+        流式探测已按 D-295 整体作废，故本端口**不暴露任何流式方法**。
         """
         ...

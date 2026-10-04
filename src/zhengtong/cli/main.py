@@ -44,12 +44,14 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Final
 
 from ..adapters.terminal import 查终端显示能力
 from ..app import 准备目录, 工作区
 from ..domain.tier import TIER_BY_ID, TierId
+from ..ports.llm import 探测结论
 from ..presentation.doctor import 打印自检, 自检项, 跑自检
 
 #: 中文档位名 → 内部标识。用户输入中文，程序内部用英文（D-008）。
@@ -117,8 +119,8 @@ def 本地自检项(根: Path) -> list[自检项]:
 
     ## 为什么先只做这些
 
-    用户要求自检覆盖网络连通、鉴权、模型调用、工具调用支持、流式能力
-    五项（D-024）。那五项**都要真凭据**，而本命令的第一要务是
+    远端五项（网络连通、鉴权、模型调用、工具调用、推理开关，D-295）
+    **都要真凭据**，而本命令的第一要务是
     「**没有配置时也能给出有用的结论**」——
     一个连工作区都没建起来的程序，不该先问 key。
 
@@ -164,15 +166,41 @@ def 本地自检项(根: Path) -> list[自检项]:
     return 项
 
 
+#: 每一项失败时给用户的处置（D-027：说清失败在哪、报了什么、用户能做什么）。
+_探测处置: Final[Mapping[str, str]] = {
+    "网络连通": (
+        "检查 config.toml 里的 endpoint 是否写完整（含 http:// 与 /v1 路径）、"
+        "网络是否可达、该服务是否已启动；断网或换网络环境也会失败"
+    ),
+    "鉴权": "检查 config.toml 里的 api_key 是否正确、是否已过期、是否用错了服务商的密钥",
+    "模型调用": "检查 config.toml 里的 model 是不是这个端点真有的模型名；空正文通常是输出额度不足",
+    "工具调用": "该服务可能不支持工具调用。程序靠提示词引导模型调工具，不支持会显著影响成文质量",
+    "推理开关": "该服务关不掉推理，将按开启运行：成文更慢、额度消耗更高，但不影响可用性",
+}
+
+
+def _探测转自检项(结论: 探测结论) -> list[自检项]:
+    """把逐项结论转成自检项。**按 `探测结论.项序` 遍历，不另写一份顺序**。"""
+    项: list[自检项] = []
+    for 名 in 探测结论.项序:
+        详情 = 结论.详情.get(名, "")
+        态 = 结论.取(名)
+        if 态 is None:
+            项.append(自检项(名, False, 详情 or "前项失败，未能跑到这一项", 未测=True))
+        else:
+            项.append(自检项(名, 态, 详情, "" if 态 else _探测处置.get(名, "")))
+    return 项
+
+
 def 远端自检项(根: Path) -> list[自检项]:
-    """装配真实端口后探测远端（D-024 五项）。
+    """装配真实端口后探测远端（D-295 五项）。
 
     **装配失败就把失败原样呈现，不抛异常**——
     自检的核心价值是「不管多坏都要给出结论」。
 
-    目前只报「能不能装配起来」这一项，逐项细分待凭据就位后再补。
-    **不做半成品的探测**：宁可少报一项，也不要报一个假的「通过」——
-    自检里出现假通过，比缺一项危险得多（D-024「不提供测速按钮」同源）。
+    五项（网络连通、鉴权、模型调用、工具调用、推理开关）**逐项显示**：
+    中途失败时后续项标「未测」而不是谎报未通过——
+    它没失败，它是没机会跑（D-295）。
     """
     from ..app import build_app_from_workspace
 
@@ -184,10 +212,26 @@ def 远端自检项(根: Path) -> list[自检项]:
     应用 = got.unwrap()
     try:
         规 = TIER_BY_ID[默认档位]
-        return [
+        项 = [
             自检项("端点装配", True, f"模型 {应用.config.model}"),
             自检项("专家团", True, f"当前档位「{规.display_name}」含 {len(规.roster)} 位成员"),
         ]
+        probed = 应用.ports.llm.probe()
+        if probed.is_error:
+            # **探测本身失败要说清是哪一步**，不能只报「探测失败」。
+            错2 = probed.error
+            assert 错2 is not None
+            项.append(
+                自检项(
+                    "远端探测",
+                    False,
+                    错2.detail,
+                    "这是探测过程本身出错，与端点可用性无关；请把详情反馈给程序维护者",
+                )
+            )
+            return 项
+        项 += _探测转自检项(probed.unwrap())
+        return 项
     finally:
         应用.close()
 
