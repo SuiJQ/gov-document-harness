@@ -496,6 +496,10 @@ class ZhengTongApp(App[None]):
         self._当前编排器 = 编排器
         self._桥.刷屏 = lambda: self.call_from_thread(self._刷新)
         try:
+            # **订阅与否是装配事实，不由桥接层决定**——
+            # 桥接有判据守着「这里不做决策」（test_tui桥接不含任何决策）。
+            if 编排器.bus is not None:
+                self._桥.订阅(编排器.bus)
             self._桥.在worker里跑(编排器, 档位=档位, 需求=需求)
         finally:
             self._桥.刷屏 = None
