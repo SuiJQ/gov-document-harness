@@ -20,6 +20,7 @@
 | | `run.finished` | 两边一致 | — |
 | | `run.failed` | **架构补** | 失败原因 |
 | | `run.resumed` | 两边一致 | 续跑点 |
+| | `run.audit_summary` | 仅调试可见 | 收尾审计摘要（D-258）——含拒绝数属审核信息，按 D-046 不进标准界面 |
 | 阶段 | `phase.started` | **代码** | `phase` |
 | | `phase.advanced` | **代码** | `phase` |
 | | `phase.exited` | **架构补** | `phase` |

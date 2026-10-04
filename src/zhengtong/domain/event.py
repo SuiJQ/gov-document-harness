@@ -45,6 +45,12 @@ class EventKind(StrEnum):
     RUN_FINISHED = "run.finished"
     RUN_FAILED = "run.failed"
     RUN_RESUMED = "run.resumed"
+    #: 收尾时的审计摘要（D-258）。
+    #: 此前审计条目只写进 `audit.jsonl`，运行结束后**没有任何出口**
+    #: 把「这次调用了多少工具、被拒了多少次」告诉用户——
+    #: 落盘了但没人看，与只记在内存里对用户是同一件事。
+    #: 界面按需订阅；调试模式据此显示（D-027「尽可能完整输出」）。
+    RUN_AUDIT_SUMMARY = "run.audit_summary"
 
     # ── 阶段 ──
     PHASE_STARTED = "phase.started"
@@ -204,6 +210,10 @@ DEBUG_ONLY_KINDS: Final[frozenset[EventKind]] = frozenset(
         EventKind.MODEL_REQUEST,
         EventKind.MODEL_ERROR,
         EventKind.MODEL_RETRY,
+        #: 审计摘要进**调试**而非标准（D-258）：它含「被拒了多少次越权尝试」，
+        #: 那是审核/安全信息。按 D-046「标准模式不展示审核意见」，
+        #: 放进 `USER_VISIBLE_KINDS` 会直接违反用户定的展示边界。
+        EventKind.RUN_AUDIT_SUMMARY,
     }
 )
 

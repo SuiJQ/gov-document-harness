@@ -320,7 +320,7 @@
 319	D-255	规则	生效	RULES	· 政策取证（Phase 0.5）与 `policy_retrieval` 接线
 320	D-256	规则	生效	RULES	· 离线环境下政策依据从哪来（**这是设计，不是缺陷**）
 321	D-257	规则	生效	RULES	· 数据字段消费检查（`scripts/check_field_consumption.py`）
-322	D-258	经历·未解决	未解决	EXPERIENCE	· 审计条目零消费，架构 §7.4「全部进 journal」未兑现
+322	D-258	经历·已解决	已解决	EXPERIENCE	· 审计条目零消费，架构 §7.4「全部进 journal」未兑现
 323	D-259	经历·已解决	已解决	EXPERIENCE	· `SearchHit.score` 零消费
 324	D-260	经历·已解决	已解决	EXPERIENCE	· 校验结论丢了「命中哪条规则」
 325	D-261	经历·已解决	已解决	EXPERIENCE	· 压缩省了多少从不显示

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from ...domain.ids import RunId
 from ...domain.role import RoleId
@@ -52,6 +53,9 @@ def 建工具运行器(
     validators: ValidatorPort,
     run_id: RunId,
     审计时钟: Callable[[], float] | None = None,
+    #: **审计落盘路径**（D-258）。不给则审计只在内存，
+    #: 进程一结束留痕全丢——架构 §7.4 要求「全部进 journal」。
+    审计落盘: Path | None = None,
     记事件: 记事件回调 | None = None,
     # ── 编排回调（第 0 步接；此前一个都没在工厂里露过面，D-286）──
     #
@@ -95,7 +99,7 @@ def 建工具运行器(
             唤醒=唤醒,
             回滚=回滚,
         ),
-        审计=审计器(时钟=审计时钟 or time.monotonic),
+        审计=审计器(时钟=审计时钟 or time.monotonic, 落盘=审计落盘),
     )
 
 

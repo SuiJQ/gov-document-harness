@@ -426,7 +426,7 @@ D-064 决定门禁走线程池，于是门禁线程与编排线程会并发调 `
 
 | 组 | 事件 | 携带 |
 |---|---|---|
-| 运行 | `run.started` / `run.finished` / `run.failed` / `run.resumed` | `tier` / `run_id` / 失败原因 |
+| 运行 | `run.started` / `run.finished` / `run.failed` / `run.resumed` / `run.audit_summary` | `tier` / `run_id` / 失败原因 / 审计摘要 |
 | 阶段 | `phase.started` / `phase.advanced` / `phase.exited` | `phase_id` |
 | **阶段成果** | `phase.artifact_ready` / `phase.artifact_updated` | `phase_id` / `name` / `kind` / **`content` 全文** / `hash` / `is_gate` |
 | 方向 | `direction.confirmed` | 方向确认单已确认 |

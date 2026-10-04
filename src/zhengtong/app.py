@@ -218,6 +218,28 @@ class App:
             关 = getattr(端口, "close", None)
             if callable(关):
                 _ = 关()  # 有些 close 返回 client，丢弃即可
+        审计 = self.tools.审计  # property，不是方法
+        # **审计摘要出口**（D-258）：`条目`/`该角色的条目`/`拒绝数`
+        # 此前**三个接口零消费**——记了、落盘了，但运行结束后
+        # 没有任何出口告诉用户「调了多少工具、被拒了多少次」。
+        # 落盘了却没人看，对用户而言与只记在内存里是同一件事。
+        # 故收尾时汇总成一条事件：进 journal，且调试模式（D-027）可见。
+        拒绝 = 审计.拒绝数
+        if 审计.条目:
+            self.bus.emit(
+                Event(
+                    seq=0,
+                    kind=EventKind.RUN_AUDIT_SUMMARY,
+                    run_id=self.run_id,
+                    phase=PhaseId.DIRECTION,
+                    level=Level.WARN if 拒绝 else Level.INFO,
+                    data={
+                        "调用总数": len(审计.条目),
+                        "拒绝数": 拒绝,
+                        "按角色": {str(r): len(审计.该角色的条目(r)) for r in RoleId},
+                    },
+                )
+            )
         self.bus.stop()
 
     def __enter__(self) -> App:
@@ -320,7 +342,11 @@ def build_app(
     # 不报错，但产出建立在空字段上（D-007 的反例）。
     闸 = 问答 if 问答 is not None else 问答闸门()
 
+    # **审计落盘**（D-258）：与 journal 同目录、独立文件。
+    # 审计不依赖事件总线那条路——直接调工具层时不经过编排，
+    # 事件回调没接上就一条都不留（本次实测复现）。
     tools = 建工具运行器(
+        审计落盘=log_path.with_name("audit.jsonl") if log_path is not None else None,
         storage=st,
         user_files=ports.user_files,
         retriever=ports.retriever,
