@@ -133,8 +133,26 @@ class App:
     #: 此前这里是 `model="stub-model"` 写死的，
     #: 第 5 步接真配置时换掉。
     config: Config = field(default_factory=Config)
+    #: 工作区根。**`build_app`（测试入口）不给**，故默认 None——
+    #: 拿不到根就退化成「不做推理控制」，那本来就是改之前的行为。
+    根: Path | None = None
     #: 收集全部事件，供测试与调试
     collected: list[Event] = field(default_factory=list)
+
+    def _推理关闭(self) -> tuple[tuple[tuple[str, object], ...], str]:
+        """读回探测结论并翻译成「怎么关」（D-380）。
+
+        **本方法是装配根 import 适配器的地方**，也只有这里可以（D-070）。
+        返回 `((), "")` 表示「不做任何控制」，此时行为与改之前逐字节相同。
+
+        `system/` 读不到、或模型对不上，都按「没有结论」处理——
+        那不是错误，只是退回老行为。
+        """
+        from .adapters.reasoning_cache import 关闭方案, 读推理结论
+
+        if self.根 is None:
+            return ((), "")
+        return 关闭方案(读推理结论(self.根 / "system", 模型=self.config.model))
 
     def 编排器(self) -> 编排器:
         """从装配根取出编排器，**端口全是真件**。
@@ -153,6 +171,16 @@ class App:
 
         容量 = max(1, self.config.context_k) * 1024
         编排 = 编排器类(
+            # **推理关闭方案**（D-380）：读 doctor 探测时落盘的结论。
+            #
+            #: 此前 `reasoning_probe` 测出「这个后端怎么关推理」，
+            #: 只变成一句中文显示给用户就丢了——而 doctor 与写作文
+            #: 是两个进程，不落盘就传不过来。故由本装配根读回，
+            #: 在**适配层翻译成值**（请求体字段 + 提示词前缀）再传下去：
+            #: 编排层自始至终不认识「写法序号」，守住 D-070。
+            #:
+            #: 读不到 / 写法为 0 → `((), "")` → 请求体与从前逐字节相同。
+            推理关闭=self._推理关闭(),
             llm=self.ports.llm,
             storage=self.ports.storage,
             # **工具层必须一起传**（D-267）。此前 `App.tools` 备好了，
@@ -281,6 +309,8 @@ def build_app(
     run_id: RunId | None = None,
     *,
     log_path: Path | None = None,
+    #: 工作区根（D-380）。**测试入口不传**，故默认为 None。
+    根: Path | None = None,
     #: 运行期配置。**不给就用默认空配置**——
     #: 第 4 步的测试全是假端口，不需要真实端点，
     #: 强制要配置会把它们全变成「先造一份配置」的仪式。
@@ -372,6 +402,7 @@ def build_app(
         tools=tools,
         导出=导出件,
         config=config if config is not None else Config(),
+        根=根,
     )
     # 订阅顺序即处理顺序：标准投影与调试投影互不影响（D-023）
     bus.subscribe(app.standard.accept)
@@ -706,6 +737,10 @@ def build_app_from_workspace(
         build_app(
             run_id,
             log_path=log_path,
+            # **工作区根**（D-380）：装配根要据此读 `system/reasoning.json`
+            # ——doctor 探测出的「这个后端怎么关推理」得跨进程传过来，
+            # 而这是唯一持有根的地方。不给就退化成「不做推理控制」。
+            根=ws.root,
             config=cfg,
             # 真实密钥源接在这里（D-030：唯一返回明文的端口）
             secrets=真密钥,

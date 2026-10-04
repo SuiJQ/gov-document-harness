@@ -266,8 +266,36 @@ def check_decision_ids_unique() -> list[str]:
     ② 全仓引用的决策号必须在 DECISIONS.md 里存在
     """
     import re as _re
-    dec = (ROOT / "DECISIONS.md").read_text(encoding="utf-8")
-    编号 = _re.findall(r"^### (D-\d+)", dec, _re.M)
+
+    # **决策台账已拆成四份**（D-379 那轮之后）：
+    # 规则 / 经验 / 欠账的正文都在 `RULES.md` 等文件里，
+    # `DECISIONS.md` 只留一行存根。
+    # 此处**只读 `DECISIONS.md`** 的话，新立的决策号会一律判成「不存在」——
+    # 本轮就撞上了：D-380 的正文进了 `RULES.md`，15 处引用全红。
+    # 与 `check_decision_refs.py` 当初同一个坑，故这里认全部四份。
+    台账集 = ("DECISIONS.md", "RULES.md", "EXPERIENCE.md", "TODO.md")
+    编号: list[str] = []
+    for 名 in 台账集:
+        f = ROOT / 名
+        if not f.is_file():
+            continue
+        for 块 in _re.split(r"^### ", f.read_text(encoding="utf-8"), flags=_re.M)[1:]:
+            m = _re.match(r"(D-\d+)", 块)
+            if not m:
+                continue
+            # **只跳过「全文见」存根**：`DECISIONS.md` 里搬走正文的条目
+            # 留一行 `→ 全文见 X.md`，正文只在目标文件里存一份，
+            # 两处都算同一条。不跳过会报出 374 条假重号——
+            # 判据一旦必红就等于没有判据。
+            #:
+            #: **不能按「整块都是 `→`/`>` 开头」来判**：标了「已归档」的条目
+            # （D-106 那类快照、D-037 那类已作废决定）也是这个形状，
+            # 但它们**并没有正文搬走**，跳过后会让代码里的引用变成悬空
+            # ——本轮实测 D-037/D-106 各有一处引用就是这么红的。
+            体 = [行.strip() for 行 in 块.split("\n")[1:] if 行.strip()]
+            if 体 and all(行.startswith("→ 全文见") for 行 in 体):
+                continue
+            编号.append(m.group(1))
     problems = []
     重号 = sorted({n for n in 编号 if 编号.count(n) > 1})
     if 重号:

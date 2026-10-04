@@ -66,7 +66,7 @@ from ..domain.phase import PhaseId, PhaseState
 from ..domain.role import RoleId, RoleState, display_name, 取温度
 from ..domain.run_state import GateRecord, RunState, new_run_state
 from ..domain.task import TaskSpec
-from ..domain.tier import TIER_BY_ID, TierId
+from ..domain.tier import TIER_BY_ID, ReasoningPolicy, TierId
 from ..domain.validation import g3降级标注, validate_task
 from ..kernel.bus import EventBus
 from ..kernel.driver import Step, drive
@@ -1096,7 +1096,30 @@ class _过程:
             # 同一个全局基准，「各角色可不同温度」这条约束从未实现。
             # 取值在 `domain/role.py` 的常量表里，用户不可配（D-146 的坑）。
             temperature=取温度(角色),
+            # **按档位开关推理**（D-380）。
+            #
+            # 此处曾是一个彻底的空壳：`TierSpec.reasoning_policy`
+            # 在 `domain/tier.py` 定义了、给了类型、Pro 档也确实是 `ON`，
+            # **全仓无一处读它**；而 `reasoning_probe` 实测出的
+            # 「这个后端怎么关推理」被压成一句中文显示就丢掉了。
+            # 于是 `写法表` 里那四道关闭写法**从未用于关闭任何一次请求**。
+            #
+            # **ON 档不附加任何字段**：后端默认就是开着的，
+            # 要关反倒是多此一举（且部分后端关了反而更差）。
+            # 只有 OFF 档（咨询/Flash）才用探测出来的办法关——
+            # 那两档按定义就不该付推理的钱。
+            额外字段=self._推理字段(),
         )
+        前缀 = self.编排.推理关闭[1]
+        if 前缀 and 角色 is RoleId.TEAM_LEAD and 消息:
+            # **前缀只加在用户诉求上**（第 4 种写法是提示词前缀）。
+            # 加在每条系统消息上会污染公文正文，
+            # 而模型看到 `/no_think` 开头的公文会当成用户真写的字。
+            首 = 消息[0]
+            内容 = 首.content if isinstance(首.content, str) else ""
+            请求 = replace(
+                请求, messages=(replace(首, content=f"{前缀} {内容}"), *请求.messages[1:])
+            )
         # 并行取证时多线程共写这张表，故加锁（D-049）
         with self.编排.请求锁:
             self.编排.发出的请求.append(请求)
@@ -1104,6 +1127,23 @@ class _过程:
 
     def _路径(self, 名称: str) -> str:
         return f"{_产物根}/{self.编排.运行号}/{名称}"
+
+    def _推理字段(self) -> tuple[tuple[str, object], ...]:
+        """该角色这次请求要不要附加「关推理」的字段。
+
+        **按档位决定**：Pro 档是深度思考档，返回空——
+        后端默认开着，多加字段只会多一分与后端不一致的风险。
+        咨询 / Flash 两档才关。
+
+        **按探测结论决定**：写法为 0（关不掉或没探测过）返回空。
+        此时行为与从前**逐字节相同**，故这个功能最坏等于没做。
+        """
+        字段 = self.编排.推理关闭[0]
+        if not 字段:
+            return ()
+        if TIER_BY_ID[self.编排.档位].reasoning_policy is ReasoningPolicy.ON:
+            return ()
+        return 字段
 
     def _导出交付物(self) -> None:
         """把最终交付物落盘。**扫描不过就不写**（D-296）。
@@ -1236,6 +1276,13 @@ class 编排器:
         门禁取证: Callable[[tuple[GateId, ...]], dict[str, GateRecord]] | None = None,
         容量token: int = 128_000,
         温度: float = 0.3,
+        #: **关掉推理的办法**（D-380）：`(请求体字段, 提示词前缀)`。
+        #:
+        #: 由装配根从 `system/reasoning.json` 读出、并在适配层翻译成值传下来。
+        #: 编排层**不认识「写法序号」这个概念**——D-070 要求只有装配根 import 适配器。
+        #:
+        #: 默认 `((), "")` = 不做任何控制，此时请求体与从前逐字节相同。
+        推理关闭: tuple[tuple[tuple[str, object], ...], str] = ((), ""),
         摘要器: Callable[[tuple[Message, ...]], Message] | None = None,
         工具层: 工具运行器 | None = None,
         导出: ExportPort | None = None,
@@ -1288,6 +1335,8 @@ class 编排器:
         #: 0.3，`Config.temperature` 从未影响任何真实请求——
         #: 用户改配置里的温度**完全无效**。
         self.温度 = 温度
+        self.推理关闭 = 推理关闭
+        self.档位: TierId = TierId.CONSULT
         #: 压缩摘要器。为 None 时走「有界原文」兜底并标明未经摘要。
         self.摘要器 = 摘要器
 
@@ -1452,6 +1501,10 @@ class 编排器:
             初始已完成=self.初始已完成,
         )
         self.进度终值 = None
+        # **记住档位**（D-380）：此前档位只逐层传参、编排器自己不存，
+        # 于是构造请求时无从判断该档该不该关推理。
+        # `跑到终` 是唯一入口，在这里定死即可。
+        self.档位 = 档位
         # **取消标志必须重置**（与 `进度终值` 同一处理由：同一编排器可跑多次）。
         # 不重置的话，用户取消一次之后，这个编排器**再也跑不动**——
         # 第二次 `推到终` 第一步就撞上残留的标志，立刻返回 done，

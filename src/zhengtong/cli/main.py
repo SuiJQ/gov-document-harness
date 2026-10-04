@@ -48,6 +48,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final
 
+from ..adapters.reasoning_cache import 写推理结论
 from ..adapters.terminal import 查终端显示能力
 from ..app import 准备目录, 工作区
 from ..domain.tier import TIER_BY_ID, TierId
@@ -230,7 +231,11 @@ def 远端自检项(根: Path) -> list[自检项]:
                 )
             )
             return 项
-        项 += _探测转自检项(probed.unwrap())
+        探 = probed.unwrap()
+        项 += _探测转自检项(探)
+        # **把「用第几种写法关推理」落盘**（D-380）。
+        # doctor 与写作文是两个进程，不落盘运行时永远拿不到它。
+        写推理结论(根 / "system", 模型=应用.config.model, 写法=探.推理写法)
         return 项
     finally:
         应用.close()
