@@ -173,6 +173,16 @@ class StandardProjection:
             # 而它不在白名单里，分支**永不可达**，`errors` 因此永远是空的。
             self.errors = (*self.errors, str(data.get("detail", "")))
             self.progress = "运行失败"
+        elif event.kind is EventKind.RUN_CANCELLED:
+            # **取消不算失败**，故进 `progress` 而不是 `errors`——
+            # 塞进 `errors` 会让标准界面显示成「运行失败」，
+            # 把用户自己的动作说成系统出错。
+            #
+            # 带上进度数字：取消是「停在第几段」而不是「什么都没了」，
+            # 用户需要知道已完成的成果在哪。
+            已完成 = data.get("已完成进度", 0)
+            总数 = data.get("总进度", 0)
+            self.progress = f"已取消：完成 {已完成}/{总数} 段（已完成的内容保留）"
         elif event.kind is EventKind.EXPORT_BLOCKED:
             # 审计 D-118：原先**没有任何分支处理它**——在白名单里却毫无效果。
             # 后果：导出被残留占位符拦下时，用户看不到任何提示，

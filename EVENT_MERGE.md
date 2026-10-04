@@ -21,6 +21,7 @@
 | | `run.failed` | **架构补** | 失败原因 |
 | | `run.resumed` | 两边一致 | 续跑点 |
 | | `run.audit_summary` | 仅调试可见 | 收尾审计摘要（D-258）——含拒绝数属审核信息，按 D-046 不进标准界面 |
+| | `run.cancelled` | 标准可见 | 用户按 Esc 取消（TUI 协作式中断）——是用户自己的动作，必须给回音，故标准可见 |
 | 阶段 | `phase.started` | **代码** | `phase` |
 | | `phase.advanced` | **代码** | `phase` |
 | | `phase.exited` | **架构补** | `phase` |

@@ -51,6 +51,12 @@ class EventKind(StrEnum):
     #: 落盘了但没人看，与只记在内存里对用户是同一件事。
     #: 界面按需订阅；调试模式据此显示（D-027「尽可能完整输出」）。
     RUN_AUDIT_SUMMARY = "run.audit_summary"
+    #: 用户主动取消（TUI `Esc`，协作式）。
+    #:
+    #: **不是 `run.failed`**：用户中止是预期行为，不是错误。
+    #: 把它算失败，会让界面弹出错误提示、让续跑把它当崩溃处理——
+    #: 而实际上已完成阶段的产物与状态**原样保住了**，可以直接续跑。
+    RUN_CANCELLED = "run.cancelled"
 
     # ── 阶段 ──
     PHASE_STARTED = "phase.started"
@@ -260,6 +266,11 @@ USER_VISIBLE_KINDS: Final[frozenset[EventKind]] = frozenset(
         EventKind.RUN_FAILED,
         EventKind.USER_QUESTION_RAISED,
         EventKind.MODEL_RESPONSE,
+        # 用户按 Esc 是**用户自己的动作**，界面必须给回音——
+        # 屏幕毫无变化会让用户以为程序死了，于是再按几次。
+        # 它进标准界面不违反 D-046：那张表禁的是「模型间交互与审核意见」，
+        # 用户自己的动作不在其列。
+        EventKind.RUN_CANCELLED,
     }
 )
 

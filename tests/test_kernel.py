@@ -179,10 +179,14 @@ def test_标准模式只放行六项四类事() -> None:
     # 用户新增第 7 项：「标准模式也显示 Token」（D-277）——
     # 用量是账单不是模型间交互，故进白名单
     assert is_user_visible(EventKind.MODEL_RESPONSE)
-    # 事件共 38 项，标准界面只放行 7 项——这正是 D-046 的意义
-    # （第 6 项 `RUN_STARTED` 见 D-150，第 7 项 `MODEL_RESPONSE` 见 D-277）
-    assert len({k for k in EventKind if is_user_visible(k)}) == 7
-    assert len(EventKind) == 38, "事件总数变了，架构 §5.4 与 EVENT_MERGE.md 需同步"
+    # 用户按 Esc 后界面必须有回音：屏幕毫无变化会让人以为程序死了（D-046 不禁这一项，
+    # 它禁的是模型间交互与审核意见）。
+    assert is_user_visible(EventKind.RUN_CANCELLED)
+    # 事件共 39 项，标准界面只放行 8 项——这正是 D-046 的意义
+    # （第 6 项 `RUN_STARTED` 见 D-150，第 7 项 `MODEL_RESPONSE` 见 D-277，
+    #  第 8 项 `RUN_CANCELLED` 是用户自己的动作）
+    assert len({k for k in EventKind if is_user_visible(k)}) == 8
+    assert len(EventKind) == 39, "事件总数变了，架构 §5.4 与 EVENT_MERGE.md 需同步"
 
 
 def test_错误事件不直接进标准模式() -> None:

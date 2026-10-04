@@ -32,7 +32,7 @@ from zhengtong.kernel.projection import DebugProjection, StandardProjection
 # ═══ 白名单本身的形状 ═══
 
 
-def test_白名单恰好六项() -> None:
+def test_白名单恰好八项() -> None:
     """架构 §5.4 原本写「表内 **5 项**」，现为 **6 项**。
 
     用户明确要求新增：
@@ -47,10 +47,10 @@ def test_白名单恰好六项() -> None:
     模型间交互），而"程序读到了哪些用户文件"是**系统对用户输入的确认**，
     用户有权知道。
     """
-    assert len(USER_VISIBLE_KINDS) == 7
+    assert len(USER_VISIBLE_KINDS) == 8
 
 
-def test_白名单恰为架构指定的六项() -> None:
+def test_白名单恰为架构指定的八项() -> None:
     期望 = {
         EventKind.RUN_STARTED,  # 用户新增：扫描到几个文件、哪些文件名
         EventKind.ARTIFACT_READY,
@@ -59,6 +59,7 @@ def test_白名单恰为架构指定的六项() -> None:
         EventKind.RUN_FAILED,
         EventKind.USER_QUESTION_RAISED,
         EventKind.MODEL_RESPONSE,  # 用户新增：token 用量是账单（D-277）
+        EventKind.RUN_CANCELLED,  # 用户按 Esc 是用户自己的动作，界面必须有回音
     }
     assert set(USER_VISIBLE_KINDS) == 期望
 
@@ -152,6 +153,7 @@ def test_白名单内每类都有对应处理分支() -> None:
         EventKind.RUN_FAILED: {"detail": "调用失败"},
         EventKind.USER_QUESTION_RAISED: {"fields": "D1"},
         EventKind.MODEL_RESPONSE: {"prompt_tokens": 800, "completion_tokens": 200},
+        EventKind.RUN_CANCELLED: {"已完成进度": 2, "总进度": 6},
     }
     for kind in USER_VISIBLE_KINDS:
         p = StandardProjection()
