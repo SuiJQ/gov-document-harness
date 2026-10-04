@@ -91,17 +91,65 @@ def _字符串字面量(文本: str) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("名字", sorted(路径.name for 路径 in Path("tests").glob("test_*.py")))
-def test_测试文件没有硬编码平台路径(名字: str) -> None:
-    """**含本文件自己**——它自己也持有那几个字符串当反例。"""
-    for 字面量 in _字符串字面量((Path("tests") / 名字).read_text(encoding="utf-8")):
+def _该扫的目录() -> tuple[str, ...]:
+    """**扫哪些目录——这一条本身就是判据的一部分。**
+
+    只扫 `tests/` 会漏掉 `scripts/`：实测那里就有一个
+    `TMP = pathlib.Path("/tmp/rows.json")`（`scripts/backfill_decisions.py`）。
+    只扫测试还会漏 `src/`——今天干净不代表明天干净。
+
+    故三个都扫，且**递归**、不限文件名前缀。
+    """
+    return ("src", "tests", "scripts")
+
+
+def _待扫文件() -> list[Path]:
+    出: list[Path] = []
+    for 目录 in _该扫的目录():
+        根 = Path(目录)
+        if not 根.is_dir():
+            continue
+        出 += [q for q in 根.rglob("*.py") if "__pycache__" not in q.parts]
+    return sorted(出)
+
+
+@pytest.mark.parametrize("路径", [str(q) for q in _待扫文件()], ids=lambda x: x)
+def test_没有硬编码平台路径(路径: str) -> None:
+    """**扫 `src/` + `tests/` + `scripts/` 全部 `.py`，递归。**
+
+    Windows 上没有 `/tmp`。而 `Path("/tmp/x")` 在那儿不报错，
+    它静默变成 `\\tmp\\x`——判据换了平台就换了含义，
+    而**没有一行会红**。这类退化最难发现。
+    """
+    for 字面量 in _字符串字面量(Path(路径).read_text(encoding="utf-8")):
         命中 = 平台硬编码.search(字面量)
         # 本文件里那几条是**故意的反例**，必须留着：自查被证伪时要靠它们。
-        if 名字 == Path(__file__).name and 命中:
+        if Path(路径).name == Path(__file__).name and 命中:
             continue
         assert 命中 is None, (
-            f"{名字} 里硬编码了平台路径 {字面量!r}，换到 Windows 会静默变形——改用 tmp_path fixture"
+            f"{路径} 里硬编码了平台路径 {字面量!r}，换到 Windows 会静默变形——"
+            f"改用 tmp_path fixture 或 tempfile"
         )
+
+
+def test_扫描范围本身够宽() -> None:
+    """**范围缩小了这道判据不会报警——所以要自己报警。**
+
+    ## 为什么必须单独有一条
+
+    「反硬编码检查」只看 `tests/` 时，判据照样全绿：
+    它把自己该管的事全漏了，而**表面上它在自己正常工作**。
+    这正是上一轮 `test_reexport_golden.py` 那个假判据的同型——
+    一个永远通过的判据比没有判据更糟。
+
+    故逐目录断言**扫到了多少文件**：少了谁都要在这里现形，
+    而不是等哪天有人在 `scripts/` 里写个 `/tmp`。
+    """
+    文件 = _待扫文件()
+    for 目录 in _该扫的目录():
+        数量 = sum(1 for q in 文件 if q.parts[0] == 目录)
+        assert 数量 > 0, f"{目录}/ 整个目录没被扫到——范围被缩小了"
+    assert len(文件) >= 120, f"共扫到 {len(文件)} 个文件，明显偏少——范围被缩了吗？"
 
 
 def test_本自查能抓住它要抓的东西() -> None:
@@ -309,3 +357,72 @@ def test_cleanup对空路径安全() -> None:
 def test_cleanup对不存在文件安全(tmp_path: Path) -> None:
     """清不掉就算了——它只是垃圾文件，不值得把结果变成另一类错误。"""
     assert atomic.cleanup(tmp_path / "根本没有.tmp") is None
+
+
+# ═══ 路径长度预算（MAX_PATH）═══
+
+#: Windows **传统**上限 260 个字符（含结尾 NUL，即路径字符串 ≤ 259）。
+#:
+#: Win11 默认开着长路径支持（`LongPathsEnabled`），所以 260 不是硬墙；
+#: 但集团版/未启用/域策略关掉时就是硬墙，而且**报错发生在内核那一刻**，
+#: 提示含糊、位置难猜。故这里按传统上限留预算。
+MAX_PATH = 260
+
+
+def test_产物路径在传统上限内() -> None:
+    """**产物路径必须有预算判据，否则没人知道它有多长。**
+
+    路径形如 `<根>/data/<run-id>/01-主件-通知.txt`。
+    三段都不可控：工作区根由用户放在哪、run-id 带时间戳与随机后缀、
+    产物名是中文（NTFS 按 UTF-16 计，一个汉字也是一个字符）。
+
+    中文这一段最容易被漏算——按字节算是 3 倍，按字符算才是 Windows 的算法。
+    """
+    最长根 = "D:/Users/一个名字相当长的用户/Documents/项目/政通工作区"
+    run_id = "r-20261004-120000-abcdef01"
+    产物名 = "01-主件-关于防汛工作的通知.txt"
+    全 = f"{最长根}/data/{run_id}/{产物名}"
+    assert len(全) < MAX_PATH, (
+        f"最坏情形 {len(全)} 字符，已达/超传统上限 {MAX_PATH}：{全}\n"
+        f"开长路径支持能绕，但**报错点在��核**，提示含糊、难定位。"
+    )
+
+
+def test_产物名长度本身有界() -> None:
+    """产物名由程序拼出来，**这一段是自己能控的**。
+
+    `run-id` 与文件名叠加若能失控，那是自己挖的坑，不该指望长路径支持兜。
+    """
+    from zhengtong.domain.ids import RunId
+
+    短 = RunId("r-20261004-120000-abcdef01")
+    assert len(str(短)) <= 32, f"run-id {短} 过长，会把产物路径顶出预算"
+    assert not any(c in str(短) for c in '\\/:*?"<>|'), "run-id 含 Windows 非法字符"
+
+
+# ═══ 中文路径往返 ═══
+
+
+def test_中文目录名往返无损(tmp_path: Path) -> None:
+    """中文路径在 NTFS 上完全合法（UTF-16），
+    但**程序不能因此把它判成非法**——那是 Windows 上才会暴露的退化。"""
+    from zhengtong.adapters.atomic import read_text, write_atomic
+
+    目录 = tmp_path / "中文目录" / "更深一层"
+    目录.mkdir(parents=True)
+    文件 = 目录 / "01-主件-通知.txt"
+    写 = write_atomic(文件, "正文内容", encoding="utf-8")
+    assert 写.is_ok, f"中文路径写入失败：{写.error}"
+    读 = read_text(文件)
+    assert 读.is_ok, f"中文路径读取失败：{读.error}"
+    assert 读.unwrap() == "正文内容"
+
+
+def test_中文名不被判非法() -> None:
+    """`winname` 判的是保留设备名与非法字符，**不是「像不像中文」**。"""
+    from zhengtong.adapters import winname
+
+    for 名 in ("主件-通知.txt", "正文【待填 · D3】.txt", "数据 2026.txt"):
+        assert winname.why_rejected(名) is None, (
+            f"合法中文名被误判为不可用：{名} —— {winname.why_rejected(名)}"
+        )

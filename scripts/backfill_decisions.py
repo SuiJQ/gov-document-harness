@@ -12,10 +12,16 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import sys
+import tempfile
 
 ARCH = pathlib.Path("docs/ARCHITECTURE.md")
 OUT = pathlib.Path("DECISIONS.md")
-TMP = pathlib.Path("/tmp/rows.json")
+#: 输入文件的缺省位置。**用系统临时目录而不是写死 `/tmp`**——
+#: Windows 上没有 `/tmp`，而 `pathlib.Path("/tmp/rows.json")` 在那儿不报错，
+#: 它静默变成 `\tmp\rows.json`，于是这个脚本在 Windows 上读不到、
+#: 或者更糟：读到了另一个文件（D-381 同型）。
+缺省输入 = pathlib.Path(tempfile.gettempdir()) / "rows.json"
 
 #: 分组：(标题, 起, 止)
 GROUPS: tuple[tuple[str, int, int], ...] = (
@@ -44,7 +50,10 @@ def parse() -> dict[str, tuple[str, str, str]]:
 
 
 def main() -> None:
-    rows = json.loads(TMP.read_text(encoding="utf-8"))
+    # 输入路径可由命令行给出——它是**人工准备的中间产物**，
+    # 不该被钉死在某个平台上。`python backfill_decisions.py 别的路径.json`
+    输入 = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else 缺省输入
+    rows = json.loads(输入.read_text(encoding="utf-8"))
     parts: list[str] = []
     for title, lo, hi in GROUPS:
         body: list[str] = []
