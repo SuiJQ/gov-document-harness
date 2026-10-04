@@ -48,6 +48,7 @@ from queue import Empty, SimpleQueue
 from threading import Lock
 from typing import Final
 
+from ..domain.artifact import ArtifactKind
 from ..domain.errors import ErrorCode, Result
 from ..domain.event import Event, EventKind, Level, make_call_id
 from ..domain.gate import (
@@ -71,6 +72,7 @@ from ..kernel.bus import EventBus
 from ..kernel.driver import Step, drive
 from ..kernel.scheduler import GateGroup, run_groups
 from ..ports.content_pack import ContentPackPort
+from ..ports.export import ExportPort, 未接线导出
 from ..ports.llm import (
     FinishReason,
     LlmPort,
@@ -85,6 +87,7 @@ from ..ports.storage import StoragePort
 from ..ports.validators import ValidatorPort
 from ..services.context import 压缩, 组装, 需要压缩
 from ..services.context.view import 估算视图
+from ..services.export import 导出文件
 from ..services.prompting import 装配提示词, 装配请求, 预算闸门
 from ..services.tools.calllog import 调用存档 as 调用存档类
 from ..services.tools.runner import 工具运行器
@@ -99,6 +102,11 @@ from .machine import 该发请求
 #: 故按上限迭代。**上限不是可选的**：连续调用可能永不停止，
 #: 没有上限就是死循环（内核保险丝同族，架构 §5.2）。
 _工具轮上限 = 4
+
+#: 最终主件的落盘文件名（D-296）。
+#: 用户约束：最终产出是 TXT，保留主送机关等必要内容要素，
+#: **不加 YAML 元数据头**。
+_主件文件名 = "01-主件.txt"
 
 _产物根: Final = "data"
 
@@ -221,6 +229,9 @@ class 编排结果:
     出现过的成员状态: tuple[RoleState, ...]
     成果标注: tuple[str, ...] = ()
     已完成调用: tuple[str, ...] = ()
+    #: **最终落盘的文件名**（D-296）。空元组 = 没导出成功。
+    #: 不靠「有没有报错」推断成败——那是 D-283 记的原委。
+    导出文件名: tuple[str, ...] = ()
 
     def 该段产物(self, 阶段: PhaseId) -> tuple[阶段产物, ...]:
         return tuple(p for p in self.产物 if p.阶段 is 阶段)
@@ -256,6 +267,11 @@ class _过程:
         #: **工具层**（D-267）。真正执行 `tool_calls` 的是 `_过程`，
         #: 故字段落在这一层——放编排器上会让读取跨一层中转。
         self.工具层 = 编排.工具层
+        #: **导出器**（D-296）。同 `工具层` 的理由——
+        #: 真正落盘的是 `_过程`，故字段落在这层。
+        self.导出 = 编排.导出
+        #: 导出落盘的文件名。成功时并进 `编排结果.导出文件名`。
+        self.导出文件名: tuple[str, ...] = ()
         self.出现过的状态: list[RoleState] = []
         self.动过的: list[RoleId] = []
         self.回复: dict[RoleId, str] = {}
@@ -1074,6 +1090,48 @@ class _过程:
     def _路径(self, 名称: str) -> str:
         return f"{_产物根}/{self.编排.运行号}/{名称}"
 
+    def _导出交付物(self) -> None:
+        """把最终交付物落盘。**扫描不过就不写**（D-296）。
+
+        ## 为什么放在 FINAL 而不是编排器外面
+
+        「导出前必须扫描残留占位符，存在未处理占位符时禁止导出」
+        是硬约束，它要有一个**明确的执行点**。放在编排层 FINAL 末尾，
+        用户看到的顺序才是：正文成形 → 扫描 → 放行或拒绝。
+
+        ## 拦住为什么不发 `run.failed`
+
+        用户约束原文是「**禁止导出**，并列出待补信息」——
+        禁的是**写文件**，不是判整轮失败。文稿本身已经成形，
+        是「交付这一步没过去」。发 `run.failed` 会让界面显示运行失败，
+        而用户的稿件其实好好的。
+
+        故发 `export.blocked`：它带待补清单，且已在用户可见白名单里。
+        `export.blocked` / `export.done` 这两个事件与 `导出交付物.取拦截事件`
+        **早就定义了却零调用**——正是 D-118「白名单里有、却没有分支」的老病。
+        """
+        交付 = self.交付物.strip()
+        if not 交付:
+            return
+        got = self.导出(
+            文件=(
+                导出文件(
+                    文件名=_主件文件名,
+                    内容=交付,
+                    种类=ArtifactKind.MAIN_DOCUMENT,
+                ),
+            )
+        )
+        if got.is_error:
+            错 = got.error
+            assert 错 is not None
+            # **必须让用户看见**（D-296）。占位符没补完却写不出文件，
+            # 用户至少要知道「哪些还没填」。
+            self.编排.发(EventKind.EXPORT_BLOCKED, PhaseId.FINAL, 详情=错.detail)
+            return
+        self.导出文件名 = got.unwrap()
+        self.编排.发(EventKind.EXPORT_DONE, PhaseId.FINAL, 文件名=self.导出文件名)
+
     def 收结果(self) -> 编排结果:
         档 = self.状态.task.tier
         # 《政策依据适配表》落盘并入库（G7 门禁与起草阶段按名取，D-255）
@@ -1088,6 +1146,7 @@ class _过程:
             self.产物.append(
                 阶段产物(阶段=PhaseId.FINAL, 名称="g3-降级标注.md", 内容="\n".join(self.标注))
             )
+        self._导出交付物()
         return 编排结果(
             终态阶段=PhaseId.DONE,
             完整阶段序列=self.序列,
@@ -1098,6 +1157,7 @@ class _过程:
             出现过的成员状态=tuple(dict.fromkeys(self.出现过的状态)),
             成果标注=self.标注,
             已完成调用=self.已完成,
+            导出文件名=self.导出文件名,
         )
 
 
@@ -1163,6 +1223,7 @@ class 编排器:
         温度: float = 0.3,
         摘要器: Callable[[tuple[Message, ...]], Message] | None = None,
         工具层: 工具运行器 | None = None,
+        导出: ExportPort | None = None,
     ) -> None:
         #: **用户插话指令队列**（D-012：指令队列 + 阶段边界检查）。
         #:
@@ -1172,6 +1233,14 @@ class 编排器:
         #:
         #: `SimpleQueue` 是标准库自带的线程安全队列，不引新依赖（D-003）。
         self._指令队列: SimpleQueue[str] = SimpleQueue()
+        #: **导出器**（D-296）。原先 `services/export.py` 在生产路径
+        #: 零调用——全仓只有测试实例化它，于是「导出前必须扫描残留占位符」
+        #: 这条用户硬约束**没有代码在执行**。
+        #:
+        #: 默认是 `未接线导出()`，它**返回 fail 而非静默成功**——
+        #: 静默成功过一次，是 D-192 记的原委。
+        self.导出: ExportPort = 导出 if 导出 is not None else 未接线导出()
+
         self.llm = llm
         self.storage = storage
         self.bus = bus

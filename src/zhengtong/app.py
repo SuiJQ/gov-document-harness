@@ -62,6 +62,7 @@ from .kernel.redactor import Redactor
 from .orchestration.orchestrate import 编排器
 from .ports.clock import ClockPort
 from .ports.content_pack import ContentPackPort
+from .ports.export import ExportPort, 未接线导出
 from .ports.llm import LlmPort, LlmRequest, Message
 from .ports.registry import PortRegistry
 from .ports.retriever import RetrieverPort
@@ -70,6 +71,7 @@ from .ports.storage import StoragePort
 from .ports.user_files import UserFilesPort
 from .ports.validators import ValidatorPort
 from .presentation.gate import 问答闸门
+from .services.export import 导出交付物
 from .services.retrieval.search import 中文检索
 from .services.tools import 工具运行器, 建工具运行器
 
@@ -122,6 +124,10 @@ class App:
     #: 提问走工具层（`闸.问`）、答复走界面（`闸.挂答复`），
     #: 两侧必须握同一个闸，否则提问方永远等不到。
     问答: 问答闸门
+    #: **导出器**（D-296）。与 `tools` 同理：装配时造好挂在这儿，
+    #: `App.编排器()` 才拿得到——工作区根只有装配那一刻有，
+    #: 事后无处可取。
+    导出: ExportPort
     #: 运行期配置。**模型名只能从这里取**（D-082）——
     #: 代码不得自动填写，用户填什么就用什么。
     #: 此前这里是 `model="stub-model"` 写死的，
@@ -153,6 +159,14 @@ class App:
             # 但编排器工厂没往下传——于是模型发出的 `tool_calls`
             # 在编排层没有执行者，**16 个工具全是死的**。
             工具层=self.tools,
+            # **导出器必须一起传**（D-296）。此前
+            # `services/export.py` 在生产路径零调用——全仓只有测试实例化它，
+            # 于是「导出前必须扫描残留占位符」这条用户硬约束
+            # **没有代码在执行**，最终 TXT 也从不落盘。
+            #
+            # 与 D-267（工具层没往下传）是同一个形状：件备好了，
+            # 工厂没传，于是那一层全是死的。
+            导出=self.导出,
             bus=self.bus,
             content_pack=self.ports.content_pack,
             validators=self.ports.validators,
@@ -263,6 +277,7 @@ def build_app(
     content_pack: ContentPackPort | None = None,
     retriever: RetrieverPort | None = None,
     llm: LlmPort | None = None,
+    导出: ExportPort | None = None,
     #: 问答闸门（D-287）。**不给就用一个新的**——
     #: 没闸门等于「无人应答」，而强制等待正是这个语义。
     问答: 问答闸门 | None = None,
@@ -315,6 +330,12 @@ def build_app(
         问用户=闸.问,
     )
 
+    # **不给默认真件，就用会失败的占位**（D-296）。
+    # `build_app` 是测试入口、不持有工作区根，造不出真落盘路径；
+    # 硬造一个临时目录只会在测试里写出一堆没人看的文件。
+    # 占位**返回 fail 不静默成功**——静默成功过一次，是 D-192 记的原委。
+    # 真实运行路径（`build_app_from_workspace`）传真件。
+    导出件 = 导出 if 导出 is not None else 未接线导出()
     app = App(
         ports=ports,
         bus=bus,
@@ -323,6 +344,7 @@ def build_app(
         问答=闸,
         run_id=生效run,
         tools=tools,
+        导出=导出件,
         config=config if config is not None else Config(),
     )
     # 订阅顺序即处理顺序：标准投影与调试投影互不影响（D-023）
@@ -668,5 +690,16 @@ def build_app_from_workspace(
             user_files=user_files,
             content_pack=content_pack,
             retriever=retriever,
+            # **导出器在真实运行路径上传真件**（D-296）。
+            # 工作区根只有这一层拿得到（`build_app` 是测试入口，没有它），
+            # 所以必须在这里造好往下传——
+            # 否则「导出前扫残留占位符」那条硬约束仍然没有执行者。
+            #
+            # 编码只喂最终 TXT，**不能**让日志与界面跟着变 GB18030（D-235）。
+            导出=导出交付物(
+                根=ws.dir("data"),
+                运行号=run_id if run_id is not None else RunId("r-0001"),
+                编码=cfg.encoding.name(),
+            ),
         )
     )

@@ -43,6 +43,7 @@ from pathlib import Path
 
 from ..domain.artifact import ArtifactKind
 from ..domain.errors import ErrorCode, Result
+from ..ports.export import 待落盘
 
 #: 占位符：`【待填 · D3】` / `【待核实 · D7】`。
 #:
@@ -130,7 +131,7 @@ class 导出交付物:
     因为它们与放行判定是同一件事的两面——
     拆到别处就会出现「判了不报」的老毛病。"""
 
-    def __init__(self, 根: Path, *, 运行号: str = "r-0001") -> None:
+    def __init__(self, 根: Path, *, 运行号: str = "r-0001", 编码: str = "utf-8") -> None:
         #: `data/` 本身。**运行目录这层由本类自己拼**——
         #: 交给调用方拼就等于把「两次运行不覆盖」这条约束
         #: 散到每个调用点，漏一处就覆盖一次
@@ -138,6 +139,13 @@ class 导出交付物:
         #: 约束该落在产生它的那一层）。
         self.根 = 根
         self.运行号 = 运行号
+        #: **最终 TXT 的编码**（D-235）。此前这里硬写 `encoding="utf-8"`，
+        #: 于是存储层按配置写对了、导出层又写回 UTF-8——
+        #: 用户配的 `gb18030: true` 管得到过程产物，管不到最终交付件。
+        #:
+        #: **由装配根从 `config.encoding` 注入**，不是自己读全局配置——
+        #: 导出层若自己去拿配置，就等于又多一条事实源（D-008）。
+        self.编码 = 编码
 
     @property
     def 输出目录(self) -> Path:
@@ -147,7 +155,7 @@ class 导出交付物:
         """
         return self.根 / self.运行号 / "output"
 
-    def __call__(self, *, 文件: Sequence[导出文件]) -> Result[tuple[str, ...]]:
+    def __call__(self, *, 文件: Sequence[待落盘]) -> Result[tuple[str, ...]]:
         """扫 → 判 → 落盘。**任一步不过就不写任何文件。**
 
         ## 顺序是硬要求
@@ -177,7 +185,7 @@ class 导出交付物:
         try:
             self.输出目录.mkdir(parents=True, exist_ok=True)
             for f in 可导:
-                (self.输出目录 / f.文件名).write_text(f.内容, encoding="utf-8")
+                (self.输出目录 / f.文件名).write_text(f.内容, encoding=self.编码)
         except OSError as exc:
             return Result.fail(ErrorCode.STORAGE_WRITE_FAILED, f"导出失败：{exc}")
         return Result.ok(tuple(f.文件名 for f in 可导))
