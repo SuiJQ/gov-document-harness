@@ -66,6 +66,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -79,6 +80,18 @@ from zhengtong.domain.task import TaskSpec
 from zhengtong.domain.tier import TierId
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
+
+
+def 含绝对路径(*, 文本: str, 平台临时: str) -> bool:
+    """文本里有没有「绝对路径」——两个平台各自要查的东西都查。
+
+    ## 为什么拎成一个函数
+
+    因为它需要**被单独证伪**：上面那条判据查的是「导出物里没有绝对路径」，
+    可它万一是因为「导出物里压根没有路径」而通过的呢？
+    把判据本身拎出来，才能拿一段已知的脏文本去撞它。
+    """
+    return 平台临时 in 文本 or bool(re.search(r"[A-Za-z]:\\", 文本))
 
 
 def _状态(要求: str = "就旱情写个通知", run_id: str = "r-det") -> RunState:
@@ -194,15 +207,42 @@ class Test键序稳定:
 class Test无时间戳混入:
     """时间戳是导出不确定性最常见的来源。"""
 
-    def test_导出内容不含绝对路径(self) -> None:
+    def test_导出内容不含绝对路径(self, tmp_path: Path) -> None:
         """**换台机器就不同**，是最难排查的一种。
 
         状态里存的是 `ArtifactRef.path` 这类**相对**路径，
         一旦混入绝对路径，导出的文件就无法在别的机器上比对。
+
+        ## 判据必须跨平台，否则它在 Windows 上是假绿
+
+        原先写的是 `assert "/tmp/" not in 文本`。在 Windows 上
+        导出物里根本没有 `/tmp/` 这三个字符，那条断言**永远通过**——
+        一个永远通过的判据比没有判据更糟：它让人以为查过了。
         """
         文本 = dumps(_状态())
-        assert "/tmp/" not in 文本, "导出含临时目录路径"
+        assert str(tmp_path) not in 文本, "导出含本机临时目录路径"
         assert str(Path.home()) not in 文本, "导出含用户主目录路径"
+        # Windows 盘符同样要查——`C:\` 那三个字符在 Linux 上不会出现，
+        # 只查 `/tmp/` 等于在两个平台上测的根本不是同一件事。
+        assert not re.search(r"[A-Za-z]:\\\\", 文本), f"导出含 Windows 盘符路径：{文本[:200]}"
+
+    def test_本条判据在本机上真能逮到东西(self, tmp_path: Path) -> None:
+        """**判据自身必须被证伪一次。**
+
+        上面那条查的是「导出物里没有绝对路径」。可它万一是因为
+        「导出物里压根什么路径都没有」而通过的呢？那它已经失效，
+        而表面全绿。
+
+        故把本机临时目录硬塞进一段文本，用**同一个判据函数**去查：
+        必须能逮到，否则说明这个判据在本平台上根本不工作。
+        """
+        含路径 = f'{{"path": "{tmp_path}/产物.txt"}}'
+        assert 含绝对路径(文本=含路径, 平台临时=str(tmp_path)), (
+            "判据在本机上没能逮到绝对路径——它可能因为导出物里没有路径而假绿"
+        )
+        assert not 含绝对路径(文本=dumps(_状态()), 平台临时=str(tmp_path)), (
+            "判据把干净状态误判成有绝对路径"
+        )
 
     def test_连续导出不含时间戳(self) -> None:
         """**间隔一秒再导一次**——只同一时刻导出查不出真时钟。

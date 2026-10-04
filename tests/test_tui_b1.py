@@ -235,7 +235,7 @@ class TestT1能启动:
 
         asyncio.run(跑())
 
-    def test_页脚报出工作区(self) -> None:
+    def test_页脚报出工作区(self, tmp_path: Path) -> None:
         """用户按 ---tui 起来后**首先要知道程序在动哪个工作区**。
 
         写错了地方，后面生成的文件落到别处去，还很难察觉。
@@ -243,11 +243,15 @@ class TestT1能启动:
         """
 
         async def 跑() -> None:
-            应用 = ZhengTongApp(桥=事件桥接(), 根=Path("/tmp/测试工作区"))
+            # 根用 `tmp_path` 而非写死 `/tmp/…`：
+            # 后者在 Windows 上会静默变成 `\tmp\…`——不报错，
+            # 但下面那句 `in 文案` 的断言就换了含义。
+            工作区 = tmp_path / "测试工作区"
+            应用 = ZhengTongApp(桥=事件桥接(), 根=工作区)
             async with 应用.run_test():
                 文案 = str(应用.query_one("#workspace", StatusLine).content)
                 assert "工作区" in 文案, f"页脚没报工作区：{文案}"
-                assert "/tmp/测试工作区" in 文案, f"页脚工作区不是传进来的那个：{文案}"
+                assert str(工作区) in 文案, f"页脚工作区不是传进来的那个：{文案}"
 
         asyncio.run(跑())
 

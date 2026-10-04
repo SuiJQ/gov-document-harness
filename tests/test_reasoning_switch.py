@@ -54,10 +54,9 @@ def test_越界序号返回空(序号: int) -> None:
     assert 关闭方案(序号) == ((), "")
 
 
-def test_落盘与读回() -> None:
-    根 = Path("/tmp/_d380_用例")
-    写推理结论(根, 模型="模型甲", 写法=2)
-    assert 读推理结论(根, 模型="模型甲") == 2
+def test_落盘与读回(tmp_path: Path) -> None:
+    写推理结论(tmp_path, 模型="模型甲", 写法=2)
+    assert 读推理结论(tmp_path, 模型="模型甲") == 2
 
 
 def test_模型对不上当没有结论(tmp_path: Path) -> None:

@@ -77,12 +77,21 @@ class Test残留占位符拦截:
 
 
 class Test导出:
-    def test_拦截时不落任何文件(self) -> None:
+    def test_拦截时不落任何文件(self, tmp_path: Path) -> None:
         """**核心判据**：拦截必须是**真的不写**，
-        不是「写了再删」或「标记一下」。"""
+        不是「写了再删」或「标记一下」。
+
+        ## 根目录用 `tmp_path` 而不是写死
+
+        原先写 `Path("/tmp/不存在的目录")`。在 Windows 上它会变成
+        `\\tmp\\不存在的目录`——**不报错，只是静默变形**，
+        于是这条判据在两个平台上测的不是同一件事。
+        `tmp_path` 下再拼一个确定不存在的名字，意图不变而跨平台成立。
+        """
         from zhengtong.services.export import 导出交付物
 
-        got = 导出交付物(根=Path("/tmp/不存在的目录"))(
+        根 = tmp_path / "不存在的目录"
+        got = 导出交付物(根=根)(
             文件=(导出文件("01-主件-通知.txt", "正文【待填 · D3】", ArtifactKind.MAIN_DOCUMENT),)
         )
         assert got.is_error, "有待填项却导出成功了"

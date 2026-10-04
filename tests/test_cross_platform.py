@@ -1,4 +1,4 @@
-"""跨平台兼容性测试。
+r"""跨平台兼容性测试。
 
 ## 诚实声明：本文件哪些是实测，哪些是静态推理
 
@@ -15,11 +15,24 @@
 保留设备名这类缺陷**在 Linux 上永远测不出来**——
 因为它们在 Linux 上全部合法，一测就"通过"。
 要抓出这类 bug，只能**在 Linux 上按 Windows 的规则去测**。
+
+## 末节：本文件自己不许有平台假设
+
+本文件曾经在一处 `tmp_path` 上断言 `.is_absolute()`（无害），
+但真正的教训来自**别的文件**：有四处硬编码了 `/tmp`。
+
+其中最坏的一处**不会报错，只会变成必绿的假判据**——
+在 Linux 上「导出内容不含 `/tmp/`」成立，
+换到 Windows 上导出的是 `C:\...`，那条断言**永远通过**。
+一个永远通过的判据比没有判据更糟：它让人以为已经查过了。
+
+故本文件加了自查：**任何测试文件都不得再出现硬编码的平台路径**。
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -29,6 +42,81 @@ from zhengtong.adapters.atomic import read_text, write_atomic
 from zhengtong.adapters.guard import ensure_within
 from zhengtong.adapters.paths import Workspace, ensure_dirs
 from zhengtong.domain.errors import ErrorCode
+
+# ═══ 测试文件不许硬编码平台路径 ═══
+
+#: **写死的平台路径**。查的是字符串**字面量**，不是文件文本——
+#: 写在文档字符串里讲解「为什么不能这么写」是应该的，��能算违规。
+#:
+#: `Path("/tmp/x")` 在 Windows 上会变成 `\tmp\x`——不是报错，是**静默变形**，
+#: 于是判据换了平台就换了含义，而**没有一行会红**。这类退化最难发现。
+#:
+#: 盘符那个前瞻是为了不把 `https://` 里的 `s:/` 当成 `C:\`。
+平台硬编码 = re.compile(
+    r"""^[/\\](?:tmp|var|Users|home)[/\\]"""
+    r"""|^[A-Za-z]:[/\\]""",
+)
+
+
+def _字符串字面量(文本: str) -> list[str]:
+    """取文件里所有字符串字面量，**跳过文档字符串**。
+
+    ## 为什么不能用正则扫全文
+
+    一开始就是这么干的，结果一片误报：
+    `https://example.invalid` 里的 `s:/` 被当成了 Windows 盘符、
+    `PATH": "/usr/bin:/bin"` 同理、连本文件自己的说明文字都被算成违规。
+    **判据一误报就没人敢信它**，比没有判据更糟。
+    """
+    import ast
+
+    树 = ast.parse(文本)
+    文档位置: set[int] = set()
+    for 节 in ast.walk(树):
+        if (
+            isinstance(节, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            and ast.get_docstring(节, clean=False) is not None
+        ):
+            # **显式收窄而不是 `cast`**：有 docstring 的节点，
+            # `body[0]` 按构造必然是 `Expr(Constant)`，
+            # 但类型系统不知道——那就不让它假装知道。
+            首 = 节.body[0]
+            assert isinstance(首, ast.Expr), f"{节.__class__.__name__} 的首句不是表达式"
+            assert isinstance(首.value, ast.Constant), "docstring 不是字符串常量"
+            文档位置.add(id(首.value))
+    return [
+        节.value
+        for 节 in ast.walk(树)
+        if isinstance(节, ast.Constant) and isinstance(节.value, str) and id(节) not in 文档位置
+    ]
+
+
+@pytest.mark.parametrize("名字", sorted(路径.name for 路径 in Path("tests").glob("test_*.py")))
+def test_测试文件没有硬编码平台路径(名字: str) -> None:
+    """**含本文件自己**——它自己也持有那几个字符串当反例。"""
+    for 字面量 in _字符串字面量((Path("tests") / 名字).read_text(encoding="utf-8")):
+        命中 = 平台硬编码.search(字面量)
+        # 本文件里那几条是**故意的反例**，必须留着：自查被证伪时要靠它们。
+        if 名字 == Path(__file__).name and 命中:
+            continue
+        assert 命中 is None, (
+            f"{名字} 里硬编码了平台路径 {字面量!r}，换到 Windows 会静默变形——改用 tmp_path fixture"
+        )
+
+
+def test_本自查能抓住它要抓的东西() -> None:
+    """**自查本身也得被证伪一次。**
+
+    构造几条假的违规，若这条判据不红，说明它压根没在工作——
+    一个永远绿的「反硬编码检查」是最讽刺的东西。
+    """
+    assert 平台硬编码.search("/tmp/x"), "漏了 Unix 临时目录"
+    assert 平台硬编码.search("C:\\Users\\x"), "漏了 Windows 盘符"
+    # 下面这些**不该**被算成违规
+    assert not 平台硬编码.search("https://example.invalid/v1/chat"), "URL 被误判成盘符"
+    assert not 平台硬编码.search("/usr/bin:/bin"), "PATH 里的冒号被误判成盘符"
+    assert not 平台硬编码.search("data/output/主件.txt"), "普通相对路径被误判"
+
 
 # ═══ 保留设备名（Linux 上也必须按 Windows 规则判）═══
 
