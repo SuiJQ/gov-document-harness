@@ -27,7 +27,7 @@ from __future__ import annotations
 from ...domain.errors import ErrorCode, Result
 from ...domain.role import RoleId
 from .audit import 审计器
-from .handlers import 处理器表, 工具依赖, 记事件回调, 问用户回调
+from .handlers import 处理器表, 工具依赖, 记事件回调, 转达回调, 问用户回调
 from .registry import TOOL_SPECS, 取工具
 
 
@@ -69,6 +69,18 @@ class 工具运行器:
         从 app 访问 `runner._依赖` 会破坏封装，故留这一公开口子。
         """
         self._d.记事件 = 记
+
+    def 接转达(self, 转达: 转达回调) -> None:
+        """后补插话转达（D-012）。
+
+        与 `接记事件` 同一个鸡生蛋：工具层先建、编排器后建，
+        而 `flow.inject_directive` 的回调要持有编排器的指令队列。
+
+        **此前没有这个口子**，`工具依赖.转达` 恒为 `None`——
+        模型调插话只得到「未接线」，而且**不报错**，
+        用户的插话静默消失（与 D-286 问用户同型）。
+        """
+        self._d.转达 = 转达
 
     def _发事件(self, kind: str, **载荷: object) -> None:
         """发 `role.tool_call` / `tool.denied`（D-266）。

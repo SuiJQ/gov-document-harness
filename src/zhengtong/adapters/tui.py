@@ -68,7 +68,7 @@ class RequestBox(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(f"{主题.符_标题} {主题.文案_诉求}", classes=主题.色_标题)
-        yield TextArea(id="need")
+        yield TextArea(id="need", placeholder=主题.提示_诉求)
         yield Static(f"{主题.文案_档位}（开始前选定，程序不自动判断）", classes=主题.色_标题)
         # **档位表从 `TIERS` 生成，不在这里另写一份**（D-067：三档是数据）。
         # 另写一份就会出现「代码说三档、领域说三档、内容包说两档」——
@@ -126,6 +126,65 @@ class RequestBox(Vertical):
 
     def 诉求(self) -> str:
         return self.query_one("#need", TextArea).text.strip()
+
+    # ── 一个框，两种角色（B3）──────────────────────────────────
+    #
+    # ## 为什么不是两个框
+    #
+    # 提过的方案：再加一个插话框。问题很直白——**用户打开程序看到两个输入框，
+    # 不知道该往哪个里打字**。要靠标签、靠颜色、靠提示语去区分，
+    # 都是在给一个本来不该存在的问题打补丁。
+    #
+    # 故改成**同一个框变两种角色**：
+    # - 未开始：五行多行，标题「诉求」
+    # - 运行中：一行单行，标题「插话」
+    #
+    # 形态变化本身就是状态提示——比任何文字说明都直接，
+    # 而且**只有一个焦点落点**，不需要额外的焦点规则。
+    #
+    # ## 提交后不换框、只变小
+    #
+    # 提交诉求 → 开始运行 → 框缩成单行。
+    # **焦点必须留在框里**：用户提交完通常马上想说点什么，
+    # 焦点跳走就得再点一次，那「一个框」的连贯性就断了。
+
+    def 切到插话(self) -> None:
+        """变成插话框：单行 + 换标题。"""
+        self._设标题(主题.文案_插话)
+        self._设高度(1)
+        self.query_one("#need", TextArea).placeholder = 主题.提示_插话
+
+    def 切回诉求(self) -> None:
+        """回到诉求框。**完成态不调用**——完成后是禁用，不是变回诉求。"""
+        self._设标题(主题.文案_诉求)
+        self._设高度(5)
+        self.query_one("#need", TextArea).placeholder = 主题.提示_诉求
+
+    def 锁定(self) -> None:
+        """完成态：禁用并变灰。
+
+        **不做成「再写一份」**——那会引入重跑语义（新建 run？
+        覆盖产物？），远超当前范围。禁用是唯一诚实的表达。
+        """
+        self._设标题(主题.文案_已完成)
+        框 = self.query_one("#need", TextArea)
+        框.disabled = True
+        框.placeholder = 主题.提示_已完成
+
+    def 清空并交焦点(self) -> None:
+        """提交后清空，并把焦点留在框里。"""
+        框 = self.query_one("#need", TextArea)
+        框.text = ""
+        框.focus()
+
+    def _设标题(self, 文案: str) -> None:
+        for 节点 in self.query(Static):
+            if 节点.has_class(主题.色_标题) and 节点.id is None:
+                节点.update(文案)
+                return
+
+    def _设高度(self, 行: int) -> None:
+        self.query_one("#need", TextArea).styles.height = 行
 
 
 class _提问Modal(ModalScreen[str]):
@@ -269,9 +328,29 @@ class ZhengTongApp(App[None]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("ctrl+q", "quit", "退出"),
-        Binding("ctrl+enter", "开始", "开始"),
+        Binding("ctrl+enter", "开始", "提交"),
+        Binding("escape", "取消", "取消"),
+        Binding("ctrl+o", "退出", "退出"),
+        # **覆盖 Textual 默认的 `ctrl+q` → quit**（B3）。
+        #
+        # 不覆盖的话 `ctrl+o` 和 `ctrl+q` 都能退出，用户得记两个——
+        # 而退出是低频动作，记两个比记一个更容易记混。
+        #
+        # 写法说明：子类 BINDINGS 在同键上**覆盖**父类，
+        # 所以绑到一个空动作即可，`show=False` 让它不出现在帮助栏。
+        #
+        # 曾试 `ENABLED_BINDINGS = []`——**没用**，那个字段管的是
+        # 「启用哪些绑定组」，不是「解绑某个键」。判据
+        # `test_ctrl_q按了不退` 直接把它顶掉了。
+        Binding("ctrl+q", "noop", show=False),
     ]
+
+    def action_noop(self) -> None:
+        """**故意什么都不做**。存在只为让 `ctrl+q` 有一个可绑的落点。
+
+        写成 `Binding("ctrl+q", "noop")` 而不加 `show=False` 也有效，
+        但帮助栏会多出一条没有意义的键位。
+        """
 
     def __init__(
         self,
@@ -309,6 +388,9 @@ class ZhengTongApp(App[None]):
         #: 没有它时界面**明说跑不了**，不假装（D-281 追加二）。
         self._取编排器 = 取编排器
         self._跑着 = False
+        #: 本次运行的编排器。**插话要发给它**，而它由 worker 建出来，
+        #: 所以只能存引用——界面侧不 import 编排层（D-063 的依赖方向）。
+        self._当前编排器 = None
         self._接上答复方(闸)
 
     def compose(self) -> ComposeResult:
@@ -345,6 +427,23 @@ class ZhengTongApp(App[None]):
         self.query_one("#workspace", StatusLine).update(f"工作区：{工作区}")
 
     def action_开始(self) -> None:  # Textual 的 action 命名
+        """`Ctrl+Enter`。**同一个键，按当前状态做不同的事**。
+
+        - 未运行 → 开始
+        - 运行中 → 把框里的内容作为插话送出（D-012）
+
+        ## 为什么共用一个键而不是两个
+
+        两件事都是「提交手上这个框」，用户视角是**同一个动作**。
+        分成两个键（开始 / 插话）就是让用户先判断状态再选键——
+        而状态在界面上明明写着，那是把判断推给用户。
+        """
+        if self._跑着:
+            self._送插话(self.query_one(RequestBox).诉求())
+            return
+        self._开始一次()
+
+    def _开始一次(self) -> None:
         """校验 → 取编排器 → 起 worker。
 
         ## 空诉求不启动
@@ -364,6 +463,11 @@ class ZhengTongApp(App[None]):
             self._说(f"{主题.符_失败} 运行未接上：没有可用的编排器。")
             return
         档位 = 诉求框.当前档位()
+        # **框变插话框，焦点留在原地**——用户提交后通常马上想补充，
+        # 焦点跳走就得再点一次，那「一个框」的连贯性就断了。
+        诉求框.切到插话()
+        诉求框.清空并交焦点()
+        self._说(f"{主题.符_进行中} 诉求已提交，此处改为插话（下一个阶段生效）")
         self._跑着 = True
         self._跑一轮(档位, 需求)
 
@@ -377,6 +481,7 @@ class ZhengTongApp(App[None]):
         「从别的线程改界面」的方式。
         """
         编排器 = self._取编排器()  # pyright: ignore[reportOptionalCall]
+        self._当前编排器 = 编排器
         self._桥.刷屏 = lambda: self.call_from_thread(self._刷新)
         try:
             self._桥.在worker里跑(编排器, 档位=档位, 需求=需求)
@@ -387,6 +492,38 @@ class ZhengTongApp(App[None]):
     def _收尾(self) -> None:
         self._跑着 = False
         self._刷新()
+        产出 = self._桥.投影.artifacts
+        if 产出:
+            self.query_one(RequestBox).锁定()
+
+    def action_取消(self) -> None:
+        """`Esc`。**只在有可取消的东西时才做事**。
+
+        主界面无事可取消时**不弹任何东西**——
+        按了没反应比弹个「没有可取消的」干净。
+        """
+        return
+
+    def _送插话(self, 文本: str) -> None:
+        """把用户插话送给编排器。
+
+        **空的不送**：给模型塞一条空消息没有任何用处，
+        而界面没提示的话用户会以为刚才那句丢了。
+        """
+        净 = 文本.strip()
+        if not 净:
+            self._说("插话是空的，没有送出。")
+            return
+        if not self._跑着:
+            self._说("现在不在运行中，插话无处可送。")
+            return
+        编排器 = self._当前编排器
+        if 编排器 is None:
+            self._说("插话无处可送：没有编排器。")
+            return
+        编排器.收用户指令(净)  # pyright: ignore[reportAttributeAccessIssue]
+        self.query_one(RequestBox).清空并交焦点()
+        self._说(f"{主题.符_成功} 插话已送出，在下一个阶段生效")
 
     def _说(self, 文案: str) -> None:
         self.query_one("#status", StatusLine).update(文案)

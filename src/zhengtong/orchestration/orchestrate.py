@@ -44,6 +44,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from queue import Empty, SimpleQueue
 from threading import Lock
 from typing import Final
 
@@ -264,6 +265,11 @@ class _过程:
         #: 而重试不得重复问（D-065）；差异由阶段（REVISION vs DRAFTING）承担，
         #: **不掺进 call_id**——架构 §8.6 判「轮次」是第几次尝试而非哪一件事。
         self.轮次 = 0
+        #: **本阶段生效中的指令**（D-012）。在阶段边界整体换新：
+        #: 上一阶段的已经随那批请求发出去了，再发一遍是白烧 token。
+        #: 队列本体挂在**编排器**上（长寿命），不在过程上——
+        #: 界面可能在 `跑到终` 建过程之前就提交插话，那时过程还不存在。
+        self._生效指令: list[str] = []
         #: 每角色一份对话历史（D-041「每角色一个 ContextView」）。
         #: **第 14.5 步接线**：此前 `self.回复` 存了却从不进下一次请求，
         #: 模型每轮从零开始——只知用户为啥，不知自己干了什么。
@@ -292,6 +298,10 @@ class _过程:
             return Result.ok(Step(phase=PhaseId.DONE, state=进度, done=True))
 
         阶段 = self.序列[进度]
+        # **D-012：插话在检查点生效**。
+        # 边界上取一次，本阶段的所有模型请求都带上，取完即换新——
+        # 天然不打断正在进行的模型请求。
+        self._生效指令 = self.编排._取新指令()
         self.编排.发(EventKind.PHASE_STARTED, 阶段)
 
         跑段 = self._跑一段(阶段)
@@ -950,6 +960,19 @@ class _过程:
             本轮任务=_本轮任务(需求, 角色, 阶段),
         )
         序列 = 视图.messages()
+        # **插话接在末位之后，不进 `组装`**（D-012）。
+        #
+        # 为什么放在组装外面：`组装` 的入参是「静态块 / 动态规则 / 工具 / 对话 /
+        # 本轮任务」五个语义位，插话不属于任何一个——
+        # 它是**跨越本阶段的偏重**，硬塞进「本轮任务」会让每一阶段都重复一遍，
+        # 塞进「对话」则会混进该角色的历史里、下一阶段继续带着走。
+        #
+        # 放末位之后还有个结构好处：与「本轮任务恒为末位」的既有约定一致，
+        # 插话紧跟在任务后面，模型读到的最后一段就是
+        # 「这轮要做什么 + 用户额外插了什么」。
+        指令 = self._指令消息()
+        if 指令:
+            序列 = (*序列, *指令)
         if 需要压缩(视图, 上下文容量=self.编排.容量token):
             # 压缩接在这里——此前整个压缩模块**生产零引用**（第 14.5 步接线）
             压后 = 压缩(视图, 上下文容量=self.编排.容量token, 摘要器=self.编排.摘要器)
@@ -979,6 +1002,21 @@ class _过程:
             # 压不动（恒定段就超限）就照发——由服务端判它超限，
             # 比本地悄悄截断掉上下文更诚实
         return 序列
+
+    def _指令消息(self) -> tuple[Message, ...]:
+        """把生效中的插话变成消息。
+
+        ## 为什么包成 `user` 角色而不是塞进 system
+
+        插话是**用户说的话**，不是系统设定。
+        塞进 system 会让模型当成规则来遵守；
+        而用户说的「这次重点改 X」是本轮的任务偏重——按 `user` 更准，
+        也更符合 D-215 那条「它是谁说的话，就标成谁」。
+
+        标注成 `user_directive` 前缀是为了让模型知道这是**插进来的**，
+        而不是原始诉求的一部分。
+        """
+        return tuple(Message(role="user", content=f"[用户插话] {条}") for 条 in self._生效指令)
 
     def _构造请求(self, 角色: RoleId, 阶段: PhaseId) -> LlmRequest:
         """**走第 11 步的装配器**——不再手搓 Message。
@@ -1081,6 +1119,32 @@ class 编排器:
     而事件流正是本轮要接的缝之一。
     """
 
+    def 收用户指令(self, 文本: str) -> None:
+        """**UI 线程调用**：收下用户插话，排进队列。
+
+        ## 为什么不直接改历史
+
+        见 `self._指令队列` 的注释：并发写消息列表是最难查的一类缺陷，
+        而这里能避免——排队，边界上统一取。
+
+        ## 空文本不入队
+
+        空插话是无意义的输入，入队只会给模型塞一条空消息。
+        但**不静默吞掉**：调用方（界面）本来就不该提交空的。
+        """
+        净 = 文本.strip()
+        if 净:
+            self._指令队列.put(净)
+
+    def _取新指令(self) -> list[str]:
+        """把队列里排队的指令一次取干。**保持到达顺序。**"""
+        出: list[str] = []
+        while True:
+            try:
+                出.append(self._指令队列.get_nowait())
+            except Empty:
+                return 出
+
     def __init__(
         self,
         *,
@@ -1100,6 +1164,14 @@ class 编排器:
         摘要器: Callable[[tuple[Message, ...]], Message] | None = None,
         工具层: 工具运行器 | None = None,
     ) -> None:
+        #: **用户插话指令队列**（D-012：指令队列 + 阶段边界检查）。
+        #:
+        #: 为什么用队列而不是直接改消息列表：插话来自 **UI 线程**，
+        #: 而编排跑在 **worker 线程**（D-024 / 架构 §8.1）。
+        #: 直接往 `self.历史` 里塞就是并发写——那是最难查的一类缺陷。
+        #:
+        #: `SimpleQueue` 是标准库自带的线程安全队列，不引新依赖（D-003）。
+        self._指令队列: SimpleQueue[str] = SimpleQueue()
         self.llm = llm
         self.storage = storage
         self.bus = bus
