@@ -160,37 +160,13 @@ class Test调试模式完整:
         assert "RUNNING" in 屏, f"调试模式看不到成员状态：{屏}"
 
 
-class Test三驱动同源:
-    def test_同一事件流两个投影的最终显示一致(self) -> None:
-        """**核心判据·同源**：同样喂事件流，
-        标准投影与无界面驱动必须给出**同一份最终显示**。
+class TestTUI与投影同源:
+    """D-294：无界面模式已删除，TUI 侧唯一判据。
 
-        不一致就说明某个驱动自己另算了一套——
-        那正是 D-037 要消灭的情况。
-        """
-        from zhengtong.presentation.headless import 无界面驱动
-
-        标 = StandardProjection()
-        for e in _事件流():
-            标.accept(e)
-        无界面 = 无界面驱动().跑(_事件流())
-        assert 无界面.最终显示 == "\n".join(标.lines()), (
-            f"无界面与标准投影不一致：\n无界面={无界面.最终显示!r}\n"
-            f"标准={chr(10).join(标.lines())!r}"
-        )
-
-    def test_无界面直接跑不回喂编排(self) -> None:
-        """无界面与 TUI **共用编排内核**（用户约束）。
-
-        判据看依赖方向：无界面不得自己实现一套编排。
-        """
-        import inspect
-
-        from zhengtong.presentation import headless
-
-        源 = inspect.getsource(headless)
-        assert "编排器" in 源, "无界面没接编排内核"
-        assert "def 跑完整流程" in 源 or "drive(" in 源, "无界面没走 drive"
+    原先这里有三条判据（无界面 vs 投影、无界面不回喂编排、三驱动共用投影类），
+    前两条随无界面一起作废；第三条收缩为只查 TUI。
+    「TUI 显示确实来自投影」这条由 `test_TUI显示来自投影` 覆盖，未重复。
+    """
 
     def test_tui桥接不含任何决策(self) -> None:
         """**这条才是「桥接很薄」的真实含义**。
@@ -249,13 +225,12 @@ class Test三驱动同源:
             f"TUI 显示不是投影给的：\nTUI={桥.行()}\n投影={期望.lines()}"
         )
 
-    def test_三驱动共用同一投影类(self) -> None:
-        """**同源的硬判据**：三个驱动都从**同一个投影**取显示内容。
+    def test_TUI共用投影类(self) -> None:
+        """**同源的硬判据**：TUI 从**投影**取显示内容。
 
-        这比"跑出来一样"更强：跑出来一样可能只是巧合，
-        共用投影类才是结构上的保证。
+        「跑出来一样」可能只是巧合，共用投影类才是结构上的保证。
+        D-294 起无界面模式已删，这里只查 TUI 一侧。
         """
-        from zhengtong.presentation import headless, tui
+        from zhengtong.presentation import tui
 
-        assert headless.无界面驱动().投影类 is StandardProjection
         assert tui.事件桥接().投影类 is StandardProjection

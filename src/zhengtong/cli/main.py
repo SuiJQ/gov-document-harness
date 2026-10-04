@@ -24,18 +24,17 @@ D-003 与架构 §15 的依赖策略：便携运行时必须能在**没有 textu
 的环境里跑（断网 Windows 便携 zip、依赖越少越好）。
 
 故本模块**纯标准库**：
-`--doctor` 与 `--run` 都不碰 textual，Textual App 放在
+`--doctor` 不碰 textual，Textual App 放在
 `zhengtong.tui_app` 里由 `--tui` 按需导入——
-**让「缺 textual」只影响 TUI，不影响自检与无界面模式**。
+**让「缺 textual」只影响 TUI，不影响自检**。
 
 ## 命令面保持极简
 
 | 命令 | 用途 |
 |---|---|
 | `--doctor` | 健康自检（探测能不能用，不跑编排） |
-| `--run` | 跑一次任务（无界面模式） |
 | `--tui` | 交互界面（需 textual） |
-| `--debug` | 打开调试显示（与 `--run` 配合） |
+| `--debug` | 打开调试显示（配合 `--tui`） |
 
 **不设子命令层级**：`zhengtong --doctor` 而不是 `zhengtong doctor check`
 ——本项目是给非专业用户用的单任务工具，命令面越短越不容易错。
@@ -85,15 +84,16 @@ def 造解析器() -> argparse.ArgumentParser:
     )
     组 = 解析器.add_mutually_exclusive_group()
     组.add_argument("--doctor", action="store_true", help="健康自检：探测能不能用，不跑编排")
-    组.add_argument("--run", action="store_true", help="跑一次任务（无界面模式）")
     组.add_argument("--tui", action="store_true", help="交互界面（需要 textual）")
+    # **需求与档位不再有命令行参数**（D-294）：这两个原本只服务无界面模式。
+    # TUI 在诉求输入屏里收多行需求、并让用户在开始前选定档位
+    # （`adapters/tui.py` 的诉求输入屏，D-067 档位是数据），
+    # 用户要求本来就是「用多行输入框」与「开始前选择」，不是「敲命令行」。
+    # 留着两个零引用的死参数，只会让用户以为还有第二条路。
+    #
+    # **--debug 保留并接进 TUI**：用户明确「调试模式通过命令行开启」，
+    # 它原先只接在无界面驱动上，删掉那条路就断了。
     解析器.add_argument("--debug", action="store_true", help="调试模式：尽可能完整输出")
-    解析器.add_argument("--需求", default="", help="配合 --run：要写的公文要求")
-    解析器.add_argument(
-        "--档位",
-        default="",
-        help="配合 --run：咨询 / flash / pro（用户开始前选定，不自动判断）",
-    )
     return 解析器
 
 
@@ -209,7 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     解析器 = 造解析器()
     参数 = 解析器.parse_args(list(argv) if argv is not None else None)
 
-    if not any((参数.doctor, 参数.run, 参数.tui)):
+    if not any((参数.doctor, 参数.tui)):
         解析器.print_help()
         return 0
 
@@ -247,7 +247,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if 参数.tui:
         return _进tui(参数)
 
-    return _跑无界面(参数)
+    解析器.print_help()
+    return 2
 
 
 def _tui缺依赖提示(缺: str) -> str:
@@ -268,12 +269,12 @@ def _tui缺依赖提示(缺: str) -> str:
         return (
             "交互界面需要 textual 组件，但当前环境没有装。\n"
             "请在联网环境执行：pip install textual\n"
-            "或改用无界面模式：zhengtong --run --需求「…」\n"
+            "装好后再运行：zhengtong --tui\n"
         )
     return (
         f"交互界面还没接上（缺少模块：{缺}）。\n"
         "这是程序自身尚未完成的部分，不是你的环境问题。\n"
-        "当前可用：zhengtong --doctor（自检）、zhengtong --run（无界面模式）\n"
+        "当前可用：zhengtong --doctor（健康自检）\n"
     )
 
 
@@ -304,49 +305,4 @@ def _进tui(参数: argparse.Namespace) -> int:
         缺 = getattr(错, "name", None) or "zhengtong.tui_app"
         sys.stderr.write(_tui缺依赖提示(缺))
         return 1
-    return 启动(参数.root)
-
-
-def _跑无界面(参数: argparse.Namespace) -> int:
-    """跑一次任务，把标准投影的输出逐行打到标准输出。
-
-    **与 TUI 走同一个投影**（D-063）——所以界面里看到什么，
-    这里就是什么；差别只在有没有交互。
-    """
-    from ..app import build_app_from_workspace
-    from ..presentation.headless import 无界面驱动
-
-    if not 参数.需求.strip():
-        sys.stderr.write("请用 --需求 给出要写的公文要求。\n")
-        return 2
-
-    档位, 错 = 取档位(参数.档位)
-    if 档位 is None:
-        sys.stderr.write(错 + "\n")
-        return 2
-
-    got = build_app_from_workspace(工作区(参数.root))
-    if got.is_error:
-        错2 = got.error
-        assert 错2 is not None
-        sys.stderr.write(f"装配失败：{错2.detail}\n")
-        return 1
-
-    应用 = got.unwrap()
-    try:
-        驱动 = 无界面驱动(调试=参数.debug)
-        显示 = 驱动.跑完整流程(
-            应用.编排器(),
-            档位=档位,
-            需求=参数.需求,
-        )
-        显示.打印()
-        # **用显式字段判成败，不猜字符串**（D-283）。
-        #
-        # 我第一版写的是 `endswith("运行失败：")`——实测真实失败时末行是
-        # 「运行失败：<详细原因>」，endswith 判 False，
-        # **于是运行失败却返回退出码 0**。脚本会以为跑成功了，
-        # 白拿一份没成文的文档。这比崩掉更糟，因为它不报错。
-        return 0 if 显示.成功 else 1
-    finally:
-        应用.close()
+    return 启动(参数.root, debug=参数.debug)

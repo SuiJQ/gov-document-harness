@@ -7,7 +7,7 @@
 
 本包**不 import textual**（D-003 / 架构 §15 依赖策略）：
 便携运行时必须能在没有 textual 的环境里跑，
-故 `--doctor` 与无界面模式走纯标准库路径。
+故 `--doctor` 走纯标准库路径。
 """
 
 from .main import main

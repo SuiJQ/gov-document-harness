@@ -119,7 +119,9 @@ class Test真能启动:
 
 
 class Test参数错在哪一步说得清:
-    def test_run缺需求退出码2(self, tmp_path: Path) -> None:
+    def test_已删的run报参数错退出码2(self, tmp_path: Path) -> None:
+        """`--run` 已按 D-294 删除。**删掉的东西必须报参数错，不能静默接受**——
+        argparse 认不出的参数会自动退 2 并打印用法，这是契约的一部分。"""
         r = subprocess.run(
             [sys.executable, "-m", "zhengtong", "--run", "--root", str(tmp_path)],
             capture_output=True,
@@ -130,7 +132,7 @@ class Test参数错在哪一步说得清:
             check=False,
         )
         assert r.returncode == 2, r.stderr
-        assert "--需求" in r.stderr, f"没说清缺哪个参数：{r.stderr}"
+        assert "--run" in r.stderr, f"没说清哪个参数不认：{r.stderr}"
 
     def test_坏档位不静默回落(self) -> None:
         """用户选 Pro 却跑成咨询，比报错糟得多（D-082 同理）。"""
@@ -191,11 +193,15 @@ class TestTui缺依赖时区分成因:
         assert "程序自身" in 出, 出
 
     def test_程序缺口要给可用出路(self) -> None:
-        """说清不行之后，得告诉用户现在还能用什么。"""
+        """说清不行之后，得告诉用户现在还能用什么。
+
+        D-294 起出路只有 `--doctor`——**出路上不许留已删的参数**，
+        照着提示敲一次却报参数错，比不给提示更糟。"""
         from zhengtong.cli.main import _tui缺依赖提示
 
         出 = _tui缺依赖提示("zhengtong.tui_app")
-        assert "--doctor" in 出 and "--run" in 出, 出
+        assert "--doctor" in 出, 出
+        assert "--run" not in 出, f"出路上还留着已删的 --run：{出}"
 
     def test_两支提示不相同(self) -> None:
         from zhengtong.cli.main import _tui缺依赖提示
