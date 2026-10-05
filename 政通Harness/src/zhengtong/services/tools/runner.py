@@ -103,13 +103,6 @@ class 工具运行器:
             return
         记(kind, **载荷)
 
-    def 可调清单(self, role: RoleId) -> tuple[str, ...]:
-        """某角色可调的工具名。**这就是给模型看的那份清单**——
-        模型能调什么应当是一个可枚举的事实，不是「你去试试看」。"""
-        from .registry import 该角色可调
-
-        return tuple(s.name for s in 该角色可调(role))
-
     def 调用(
         self,
         工具名: str,
