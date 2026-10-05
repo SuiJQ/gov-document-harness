@@ -38,7 +38,9 @@ from typing import cast
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
 from zhengtong.domain.artifact import ArtifactKind
 from zhengtong.domain.errors import ErrorCode
-from zhengtong.domain.event import Event, EventKind
+from zhengtong.domain.event import Event, EventKind, Level
+from zhengtong.domain.ids import RunId
+from zhengtong.domain.phase import PhaseId
 from zhengtong.domain.role import RoleId
 from zhengtong.domain.run_state import new_run_state
 from zhengtong.domain.task import TaskSpec
@@ -47,9 +49,12 @@ from zhengtong.domain.tier import TierId
 # `_过程` 是编排层的推进状态机，本就不该被外部构造；
 # 判据要直接驱动导出这一步，只能碰它。这两处 ignore 是**明知故犯**，
 # 且范围限定在「构造它」这一行，不是掩盖未知类型。
+from zhengtong.kernel.projection import Projection, StandardProjection
 from zhengtong.orchestration.orchestrate import (
     _过程,  # pyright: ignore[reportPrivateUsage]
+    _重写沿用名,  # pyright: ignore[reportPrivateUsage]
     编排器,
+    阶段产物,
     阶段序列,
 )
 from zhengtong.services.export import 导出交付物
@@ -434,3 +439,110 @@ def test_没挂记事件时提问仍能成功() -> None:
     got = flow_ask_user(d, RoleId.TEAM_LEAD, {"fields": [{"code": "D1"}]})
     assert got.is_ok, f"没挂记事件不该让提问失败：{got.error.detail if got.error else ''}"
     assert got.unwrap() == "答复"
+
+
+# ── phase.artifact_updated：只显示最新版（用户裁决） ──────────────
+
+
+def _产物(阶段: PhaseId, 名称: str, 内容: str) -> 阶段产物:
+    return 阶段产物(阶段=阶段, 名称=名称, 内容=内容)
+
+
+def _投一份(p: Projection, kind: EventKind, 名称: str, 内容: str) -> None:
+    p.accept(
+        Event(
+            seq=1,
+            kind=kind,
+            run_id=RunId("r-1"),
+            phase=PhaseId.DRAFTING.value,
+            level=Level.INFO,
+            data={"name": 名称, "content": 内容},
+        )
+    )
+
+
+def test_重写后屏幕上只剩最新版() -> None:
+    """**用户裁决：只显示第 2 版。**
+
+    第一版正文与第二版是**同一份文稿**，不是两份不同的稿子。
+    若按 `ARTIFACT_READY` 那样追加，屏幕上会出现两张同名卡，
+    用户会以为是两份文稿——而标准模式的定位就是极简（D-046）。
+    """
+    p = StandardProjection()
+    _投一份(p, EventKind.ARTIFACT_READY, "正文初稿", "第一版正文")
+    _投一份(p, EventKind.ARTIFACT_UPDATED, "正文初稿", "第二版正文")
+
+    名单 = [n for n, _ in p.artifacts]
+    assert 名单 == ["正文初稿"], f"重写后应只剩一份，实得 {名单}"
+    assert p.artifacts[0][1] == "第二版正文", f"留下的必须是最新版，实得 {p.artifacts[0][1]!r}"
+
+
+def test_更新只影响同名那一份() -> None:
+    """三份阶段成果都在，重写正文**不得动到方向确认单和大纲**。"""
+    p = StandardProjection()
+    for 名, 文 in (("方向确认单", "方向"), ("文章大纲", "大纲"), ("正文初稿", "初稿")):
+        _投一份(p, EventKind.ARTIFACT_READY, 名, 文)
+    _投一份(p, EventKind.ARTIFACT_UPDATED, "正文初稿", "修订稿")
+
+    assert [n for n, _ in p.artifacts] == ["方向确认单", "文章大纲", "正文初稿"]
+    assert dict(p.artifacts)["方向确认单"] == "方向"
+    assert dict(p.artifacts)["文章大纲"] == "大纲"
+    assert dict(p.artifacts)["正文初稿"] == "修订稿"
+
+
+def test_更新找不到同名时当作新增() -> None:
+    """**找不到同名就追加，绝不丢弃修订版**。
+
+    替换失败时静默丢掉内容，比出现两张卡坏得多——
+    用户会以为拿到了定稿，实际屏幕上是旧版。
+    """
+    p = StandardProjection()
+    _投一份(p, EventKind.ARTIFACT_UPDATED, "一份没人见过的东西", "内容")
+    assert [n for n, _ in p.artifacts] == ["一份没人见过的东西"]
+
+
+def test_编排层重写时沿用被重写那份的名字() -> None:
+    """**这一条是「只显示第 2 版」能被确定保证的前提。**
+
+    编排层在 revision 阶段**强制沿用起草阶段那份的产物名**，
+    而不是用模型这轮返回的名字。否则模型若命名为
+    「正文初稿（第 2 稿）」，投影按名替换就匹配不上，屏幕上还是两份。
+
+    ## 这里直接调生产函数，不在判据里重抄一遍
+
+    第一版判据把 `_重写沿用名` 的逻辑**抄进了判据**，
+    于是生产代码改了它照样绿——验的是「判据抄的那份对不对」。
+    判据与实现必须共用一份代码，否则那份重抄就是永久绿的摆设。
+    """
+    已有 = [
+        _产物(PhaseId.DRAFTING, "正文初稿", "初稿"),
+        _产物(PhaseId.GATING, "门禁报告", "有问题"),
+    ]
+    本次 = _产物(PhaseId.REVISION, "正文初稿（第 2 稿）", "第二版")
+    assert _重写沿用名(已有, 本次) == "正文初稿", "重写必须沿用被重写那份的名字，否则投影匹配不上"
+
+
+def test_起草阶段不沿用任何名字() -> None:
+    """**只有 revision 才沿用**。
+
+    首次起草时若也去找「被重写的那份」，会把别的阶段产物
+    （比如门禁报告）错认成前身。
+    """
+    已有 = [_产物(PhaseId.DRAFTING, "文章大纲", "大纲")]
+    本次 = _产物(PhaseId.DRAFTING, "正文初稿", "初稿")
+    assert _重写沿用名(已有, 本次) is None, "非 revision 阶段不应沿用名字"
+
+
+def test_门禁报告不会被当成被重写的那份() -> None:
+    """**GATING 阶段的报告不在候选里**。
+
+    门禁打回后 `self.产物` 末尾就是门禁报告；
+    若筛选口径放宽到「所有产物」，重写时会沿用
+    「门禁报告」这个名字，界面上正文就消失了。
+    """
+    已有 = [
+        _产物(PhaseId.DRAFTING, "正文初稿", "初稿"),
+        _产物(PhaseId.GATING, "门禁报告", "有问题"),
+    ]
+    本次 = _产物(PhaseId.REVISION, "随便什么名字", "第二版")
+    assert _重写沿用名(已有, 本次) == "正文初稿"

@@ -416,7 +416,7 @@ D-064 决定门禁走线程池，于是门禁线程与编排线程会并发调 `
 `SecretPort` 进一步保证：编排层拿到的 `SecretRef` 根本不是明文，
 要到 L2 适配器构造 HTTP 请求的那一刻才解出真值。**上层永远拿不到明文。**
 
-### 5.4 事件目录（`EventKind`，37 项）
+### 5.4 事件目录（`EventKind`，38 项）
 
 事件种类要**少而正交**，每种都对应一个用户能问的问题。
 
@@ -429,7 +429,6 @@ D-064 决定门禁走线程池，于是门禁线程与编排线程会并发调 `
 | 运行 | `run.started` / `run.finished` / `run.failed` / `run.resumed` / `run.audit_summary` / `run.cancelled` | `tier` / `run_id` / 失败原因 / 审计摘要 / 已完成进度 |
 | 阶段 | `phase.started` / `phase.advanced` / `phase.exited` | `phase_id` |
 | **阶段成果** | `phase.artifact_ready` / `phase.artifact_updated` | `phase_id` / `name` / `kind` / **`content` 全文** / `hash` / `is_gate` |
-| 方向 | `direction.confirmed` | 方向确认单已确认 |
 | 角色 | `role.state_changed` / `role.turn` / `role.tool_call` / `role.sleep` / `role.wake` / `role.report` | `role_id` / 工具名 / 轮次 |
 | 守卫 | `tool.denied` | 越权尝试（路径/权限），**不归属某角色派发** |
 | 检索 | `retrieval.done` | 命中数 / 耗时 |
@@ -488,6 +487,19 @@ D-031 明确"不编造数字"。所以 `zhengtong` 在**没有同类步骤历史
 界面如实显示"暂无法估计"，而不是填一个假数。遥测台账是唯一数据来源。
 
 ---
+
+
+### 5.6 事件目录变更记录
+
+| 变更 | 内容 | 依据 |
+|---|---|---|
+| 删除 `direction.confirmed` | 原列「方向确认单已确认」，**从未被发射**；消费侧在 D-118 删除，结论是「方向确认单本就是三份阶段成果之一，走 `phase.artifact_ready` 即可」，与那条**语义重复**。留着它会让读架构的人以为方向确认有独立事件（定义即完成） | D-118 + 用户裁决（2026-10） |
+| 新增发射 `phase.artifact_updated` | 门禁打回重写时发，用户裁决「**只显示第 2 版**」——投影同名替换而非追加 | 架构 §5.4「阶段成果」组 |
+
+> **本节刻意放在 §5.5 之后**：§5.4 内的任何 `` `x.y` `` 形式都会被
+> `tests/test_arch_sync.py` 的正则抓成事件名，与代码双向比对。
+> 变更记录里提到已删除的事件名，放在事件表同一节会让那条判据误报。
+> 这是「文档结构被判据约束」的又一个例子——与代码里的 docstring 同源。
 
 ## 6. 适配层（L2）
 

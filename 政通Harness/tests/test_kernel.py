@@ -182,11 +182,16 @@ def test_标准模式只放行六项四类事() -> None:
     # 用户按 Esc 后界面必须有回音：屏幕毫无变化会让人以为程序死了（D-046 不禁这一项，
     # 它禁的是模型间交互与审核意见）。
     assert is_user_visible(EventKind.RUN_CANCELLED)
-    # 事件共 39 项，标准界面只放行 8 项——这正是 D-046 的意义
+    # 重写后的成果必须可见（用户裁决：只显示第 2 版）。
+    # 它承载的**就是那份阶段成果本身**，不是「模型间交互」也不是「审核意见」，
+    # 故不进白名单的话投影会直接丢掉它，界面停在第一版。
+    assert is_user_visible(EventKind.ARTIFACT_UPDATED)
+    # 事件共 38 项，标准界面只放行 9 项——这正是 D-046 的意义
     # （第 6 项 `RUN_STARTED` 见 D-150，第 7 项 `MODEL_RESPONSE` 见 D-277，
-    #  第 8 项 `RUN_CANCELLED` 是用户自己的动作）
-    assert len({k for k in EventKind if is_user_visible(k)}) == 8
-    assert len(EventKind) == 39, "事件总数变了，架构 §5.4 与 EVENT_MERGE.md 需同步"
+    #  第 8 项 `RUN_CANCELLED` 是用户自己的动作，
+    #  第 9 项 `ARTIFACT_UPDATED` 是重写后的那份阶段成果）
+    assert len({k for k in EventKind if is_user_visible(k)}) == 9
+    assert len(EventKind) == 38, "事件总数变了，架构 §5.4 与 EVENT_MERGE.md 需同步"
 
 
 def test_错误事件不直接进标准模式() -> None:

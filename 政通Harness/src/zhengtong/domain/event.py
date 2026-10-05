@@ -70,7 +70,6 @@ class EventKind(StrEnum):
     ARTIFACT_UPDATED = "phase.artifact_updated"
 
     # ── 方向 ──
-    DIRECTION_CONFIRMED = "direction.confirmed"
 
     # ── 角色 ──
     ROLE_STATE_CHANGED = "role.state_changed"
@@ -223,7 +222,12 @@ DEBUG_ONLY_KINDS: Final[frozenset[EventKind]] = frozenset(
     }
 )
 
-#: **标准模式唯一可见的五类**（架构 §5.4，对齐 D-023 / D-046 / D-030）。
+#: **标准模式可见的事件类别**（架构 §5.4，对齐 D-023 / D-046 / D-030）。
+#:
+#: 原注释写「唯一可见的五类」，早已过时：之后按用户要求先后加入过
+#: `run.started`（告知扫到几个用户文件）、`model.response`（token 账单，
+#: D-277）、`run.cancelled`（用户按 Esc 要有回音）以及
+#: `phase.artifact_updated`（重写只显示最新版）。数量以本集合为准。
 #:
 #: 合并裁决（`EVENT_MERGE.md`）：`export.blocked` 与 `export.done`
 #: 属同一族，分开计为两项。故表内 5 项、语义上仍是 D-023 说的"四件事"：
@@ -261,6 +265,15 @@ USER_VISIBLE_KINDS: Final[frozenset[EventKind]] = frozenset(
     {
         EventKind.RUN_STARTED,
         EventKind.ARTIFACT_READY,
+        # `ARTIFACT_UPDATED` 必须可见（用户裁决：门禁打回重写后
+        # **只显示第 2 版**）。
+        #
+        # 它进白名单**不违背 D-046**——那张表禁的是「模型间交互」
+        # 与「审核意见」，而重写后的正文**就是那份阶段成果本身**，
+        # 是用户要拿的东西。放在 INTERNAL 里的话，投影第 179 行
+        # `if not is_user_visible(...): return` 会把它直接丢掉，
+        # 界面于是停在**第一版**——恰恰是用户明确不要的那个结果。
+        EventKind.ARTIFACT_UPDATED,
         EventKind.EXPORT_BLOCKED,
         EventKind.EXPORT_DONE,
         EventKind.RUN_FAILED,

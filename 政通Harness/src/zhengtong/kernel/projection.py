@@ -199,6 +199,27 @@ class StandardProjection:
             content = str(data.get("content", ""))
             self.artifacts = (*self.artifacts, (name, content))
             self.progress = f"已完成：{name}"
+        elif event.kind is EventKind.ARTIFACT_UPDATED:
+            # **`phase.artifact_updated`：重写而非新增**。
+            #
+            # 用户裁决：**门禁打回重写后，屏幕上只显示最新版**。
+            # 若按 `ARTIFACT_READY` 那样追加，同一份正文会出现两张卡
+            # （「正文初稿」+「正文初稿（修订）」），
+            # 而标准模式的定位就是极简（D-046）——多一版既显乱，
+            # 又让用户以为是两份不同的文稿。
+            #
+            # **同名替换，不存在则当作新增**：替换是本事件的语义，
+            # 而「找不到同名」说明编排层给的 name 与既有成果对不上，
+            # 此时追加比丢弃修订版安全（内容不能凭空消失）。
+            content = str(data.get("content", ""))
+            位置 = next((i for i, (n, _) in enumerate(self.artifacts) if n == name), None)
+            if 位置 is None:
+                self.artifacts = (*self.artifacts, (name, content))
+            else:
+                新 = list(self.artifacts)
+                新[位置] = (name, content)
+                self.artifacts = tuple(新)
+            self.progress = f"已更新：{name}"
         elif event.kind is EventKind.USER_QUESTION_RAISED:
             fields = str(data.get("fields", ""))
             self.questions = (*self.questions, f"需要确认：{fields}")

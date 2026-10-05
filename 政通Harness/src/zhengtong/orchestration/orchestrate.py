@@ -42,7 +42,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from queue import Empty, SimpleQueue
 from threading import Lock
@@ -207,6 +207,38 @@ class 阶段产物:
     阶段: PhaseId
     名称: str
     内容: str
+
+
+def _重写沿用名(产物: Sequence[阶段产物], 本次: 阶段产物) -> str | None:
+    """本次若是**重写**，返回被重写那份成果的名字；否则返回 `None`。
+
+    ## 为什么必须沿用原名（用户裁决：只显示第 2 版）
+
+    门禁打回重写后，界面上**只应显示最新版**——第一版与第二版
+    是同一份文稿，不是两份不同的稿子。
+
+    而投影是按**名字**替换的（同名 → 替换，不同名 → 追加）。
+    若直接用模型这轮返回的名字，它可能叫「正文初稿（第 2 稿）」，
+    替换就匹配不上，屏幕上还是会出现两份。
+
+    ## 按阶段筛，而不是 `is_gate`
+
+    `阶段产物` 里**没有** `is_gate` 字段；而门禁报告的 `阶段`
+    是 `GATING`，本来就被这个筛法排除掉了。
+
+    ## 为什么要单独成函数
+
+    判据要直接调它才能验真实行为。若这段逻辑只写在 `_跑段` 里，
+    判据就只能在判据里**重抄一遍**——而重抄的那份永远不会变红，
+    生产代码改了它照样绿。**判据与实现必须共用一份代码**，
+    否则验的是「判据抄的那份对不对」，不是「生产的那份对不对」。
+    """
+    if 本次.阶段 is not PhaseId.REVISION:
+        return None
+    return next(
+        (p.名称 for p in reversed(产物[:-1]) if p.阶段 in (PhaseId.DRAFTING, PhaseId.REVISION)),
+        None,
+    )
 
 
 class 编排回调:
@@ -472,11 +504,16 @@ class _过程:
         # 先落一个空产物会把上次的成果抹掉。落盘挪到复用判定之后。
 
         self.产物.append(件)
-        # **只有 ARTIFACT_READY 携全文**（D-072/D-046）
+        # **重写沿用被重写那份的名字**——「界面上只显示最新版」
+        # 能被**确定**保证的前提（用户裁决：只显示第 2 版）。
+        # 理由与筛选口径见 `_重写沿用名` 的 docstring。
+        被重写名 = _重写沿用名(self.产物, 件)
+        是修订 = 被重写名 is not None
+        # **只有 ARTIFACT_READY / ARTIFACT_UPDATED 携全文**（D-072/D-046）
         self.编排.发(
-            EventKind.ARTIFACT_READY,
+            EventKind.ARTIFACT_UPDATED if 是修订 else EventKind.ARTIFACT_READY,
             阶段,
-            name=件.名称,
+            name=被重写名 if 是修订 and 被重写名 else 件.名称,
             artifact_kind="note",
             content=件.内容,
         )

@@ -58,9 +58,9 @@ def test_架构事件表与代码逐字一致() -> None:
     assert not only_code, f"代码有而架构没有：{sorted(only_code)}（须先改架构 §5.4）"
 
 
-def test_事件总数为39() -> None:
+def test_事件总数为38() -> None:
     """锁定事件总数。改动它就得同步改架构、EVENT_MERGE.md 与本断言。"""
-    assert len(EventKind) == 39, "事件数变了：架构 §5.4、EVENT_MERGE.md、本行都要改"
+    assert len(EventKind) == 38, "事件数变了：架构 §5.4、EVENT_MERGE.md、本行都要改"
 
 
 #: 合法领域前缀。加新领域时须同时更新本表与架构 §5.4。

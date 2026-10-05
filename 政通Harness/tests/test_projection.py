@@ -32,8 +32,18 @@ from zhengtong.kernel.projection import DebugProjection, StandardProjection
 # ═══ 白名单本身的形状 ═══
 
 
-def test_白名单恰好八项() -> None:
-    """架构 §5.4 原本写「表内 **5 项**」，现为 **6 项**。
+def test_白名单恰好九项() -> None:
+    """白名单从 5 项一路增到 9 项，每次都有用户明确要求。
+
+    5 → `RUN_STARTED`（D-150：告知扫到几个文件）→ 6
+    6 → `MODEL_RESPONSE`（D-277：token 是账单）→ 7
+    7 → `RUN_CANCELLED`（用户按 Esc 要有回音）→ 8
+    8 → `ARTIFACT_UPDATED`（用户裁决：只显示第 2 版）→ 9
+
+    原注释说架构 §5.4 是「5 项」，现已过时，故在此复述演进过程——
+    **只写当前数字的话，下一个人会以为它是随手定的**。
+
+    架构 §5.4 原本写「表内 **5 项**」，首次修订为 **6 项**。
 
     用户明确要求新增：
     > 「界面上能不能告诉用户扫描到了几个用户给 AI 的文件，
@@ -47,13 +57,19 @@ def test_白名单恰好八项() -> None:
     模型间交互），而"程序读到了哪些用户文件"是**系统对用户输入的确认**，
     用户有权知道。
     """
-    assert len(USER_VISIBLE_KINDS) == 8
+    # 用户裁决（2026-10）：门禁打回重写后**只显示第 2 版**，
+    # 实现它的 `ARTIFACT_UPDATED` 必须可见——它承载的就是那份阶段成果
+    # 本身，不是「模型间交互」也不是「审核意见」（D-046 不禁）。
+    assert len(USER_VISIBLE_KINDS) == 9
 
 
-def test_白名单恰为架构指定的八项() -> None:
+def test_白名单恰为架构指定的九项() -> None:
     期望 = {
         EventKind.RUN_STARTED,  # 用户新增：扫描到几个文件、哪些文件名
         EventKind.ARTIFACT_READY,
+        # 重写后的成果即那份阶段成果本身；留在 INTERNAL 的话，
+        # 投影开头就 return，界面会停在第一版——用户明确不要那个结果
+        EventKind.ARTIFACT_UPDATED,
         EventKind.EXPORT_BLOCKED,
         EventKind.EXPORT_DONE,
         EventKind.RUN_FAILED,
@@ -148,6 +164,7 @@ def test_白名单内每类都有对应处理分支() -> None:
     样例: dict[EventKind, dict[str, object]] = {
         EventKind.RUN_STARTED: {"user_files": 2, "file_names": ("a.md", "b.docx")},
         EventKind.ARTIFACT_READY: {"name": "正文初稿", "content": "全文"},
+        EventKind.ARTIFACT_UPDATED: {"name": "正文初稿", "content": "重写后的全文"},
         EventKind.EXPORT_BLOCKED: {"placeholders": ("【发文机关】",)},
         EventKind.EXPORT_DONE: {"files": ("正文.txt",)},
         EventKind.RUN_FAILED: {"detail": "调用失败"},
