@@ -151,7 +151,8 @@ class Test档位是数据:
     def test_咨询档不触发门禁(self) -> None:
         """咨询档「不触发方向确认、不做政策检索、不走门禁」（§8.3）。"""
         结果 = _跑(TierId.CONSULT).unwrap()
-        assert not 结果.走过的门禁, "咨询档竟然过了门禁"
+        assert not 结果.门禁账.已取证, "咨询档竟然过了门禁"
+        assert 结果.门禁账.缺席 == (), "咨询档不该有缺席门禁"
 
     def test_咨询档只有主理人(self) -> None:
         结果 = _跑(TierId.CONSULT).unwrap()

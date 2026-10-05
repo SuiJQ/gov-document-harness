@@ -45,12 +45,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent / "政通Harness"
 NEW = ROOT / "content"
-MATERIALS = (
-    ROOT.parent
-    / "default"
-    / "materials"
-    / "党政公文全套资料_v2.1_20260930"
-)
+MATERIALS = ROOT.parent / "default" / "materials" / "党政公文全套资料_v2.1_20260930"
 
 #: 原文 → 新包 的映射。
 #: 只列**知识源**：示例（22 篇成文样例）与 assets 是语料，不是规则，
@@ -93,20 +88,41 @@ SOURCE_TO_TARGET: dict[str, str] = {
 #: 属于用户批准的必要修改，不计入缺失。
 APPROVED_RENAMES = {
     # 来源系统
-    "WorkBuddy", "SuiJQ", "CodeBuddy",
-    "gov-document-team", "official-document-writing",
-    "gongwen-deai", "lieflat", "skill-creator",
+    "WorkBuddy",
+    "SuiJQ",
+    "CodeBuddy",
+    "gov-document-team",
+    "official-document-writing",
+    "gongwen-deai",
+    "lieflat",
+    "skill-creator",
     # 工具名
-    "TeamCreate", "SendMessage", "spawn", "subagent_type",
-    "maxTurns", "mrrobot", "register_expert", "package_expert",
-    "lint.py", "hard_constraint_check.py", "evidence_anchor_check.py",
-    "consistency_check.py", "strip_meta.py",
+    "TeamCreate",
+    "SendMessage",
+    "spawn",
+    "subagent_type",
+    "maxTurns",
+    "mrrobot",
+    "register_expert",
+    "package_expert",
+    "lint.py",
+    "hard_constraint_check.py",
+    "evidence_anchor_check.py",
+    "consistency_check.py",
+    "strip_meta.py",
     # 角色旧标识
-    "outline-structure-expert", "language-polishing-editor",
-    "compliance-validator", "document-type-advisor",
+    "outline-structure-expert",
+    "language-polishing-editor",
+    "compliance-validator",
+    "document-type-advisor",
     "gov-document-team-team-lead",
     # 档位旧命名 → 新命名
-    "L0-咨询", "L0-咨询（轻量）", "L0-成稿", "L0-成稿（标准）", "L1", "L2",
+    "L0-咨询",
+    "L0-咨询（轻量）",
+    "L0-成稿",
+    "L0-成稿（标准）",
+    "L1",
+    "L2",
 }
 
 #: 新包里以不同写法承载的等价术语——命中即视为**保留**。

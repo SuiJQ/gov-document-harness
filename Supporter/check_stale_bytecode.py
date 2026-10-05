@@ -80,7 +80,7 @@ def 主() -> int:
     )
     args = 解析.parse_args()
 
-    根 = (Path(__file__).parent.parent / "政通Harness" / "src")
+    根 = Path(__file__).parent.parent / "政通Harness" / "src"
     陈旧 = 找出陈旧缓存(根)
     if args.清理:
         for p in 陈旧:

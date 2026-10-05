@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from ...domain.errors import ErrorCode, Result
 from ...domain.role import RoleId
+from ...domain.tool import ToolDomain
 from .audit import 审计器
 from .handlers import 处理器表, 工具依赖, 记事件回调, 转达回调, 问用户回调
 from .registry import TOOL_SPECS, 取工具
@@ -109,7 +110,14 @@ class 工具运行器:
 
         return tuple(s.name for s in 该角色可调(role))
 
-    def 调用(self, 工具名: str, *, 角色: RoleId, 参数: dict[str, object]) -> Result[str]:
+    def 调用(
+        self,
+        工具名: str,
+        *,
+        角色: RoleId,
+        参数: dict[str, object],
+        启用域: frozenset[ToolDomain] | None = None,
+    ) -> Result[str]:
         spec = 取工具(工具名)
         if spec is None:
             return self._审计并返回(
@@ -127,6 +135,32 @@ class 工具运行器:
                 工具名=工具名,
                 角色=角色,
                 裁决=f"{角色.value} 无权调用「{工具名}」（仅限 {sorted(r.value for r in spec.allowed_roles)}）",
+                参数=参数,
+                错误=ErrorCode.TOOL_NOT_ALLOWED,
+            )
+
+        # 第二重：**档位工具域**（D-389）。
+        #
+        # 档位过滤此前只作用于「发给 API 的工具声明」——
+        # 那只是「不告诉模型有这个工具」。实测：咨询档声明里没有
+        # `validate.run`，但主理人硬调它**照样执行成功**。
+        #
+        # 而模型发来不在清单里的工具是**常态而非异常**（幻觉、上下文污染、
+        # 沿用上一轮的调用）。声明过滤管不住这条，只能在执行侧拦。
+        #
+        # `启用域=None` 表示「不按档位检查」：默认 None 让既有直接调用
+        # （测试、审计器自检）行为不变，与 `参数` 一样是可选实参。
+        #
+        # **排在角色白名单之后**：档位错比角色错更「基础」，
+        # 但一个既不在本档也不该由该角色调的工具，
+        # 报「本档不适用」比报「无权」更贴近用户看到的现象。
+        if 启用域 is not None and spec.域 not in 启用域:
+            return self._审计并返回(
+                工具名=工具名,
+                角色=角色,
+                裁决=(
+                    f"本档位未启用「{spec.域.value}」类工具，不得调用「{工具名}」（{角色.value}）"
+                ),
                 参数=参数,
                 错误=ErrorCode.TOOL_NOT_ALLOWED,
             )

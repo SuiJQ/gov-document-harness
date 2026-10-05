@@ -41,7 +41,9 @@ class _模型:
             self.收到的请求.append(请求体)
 
         系统 = " ".join(
-            str(m.get("content", "")) for m in 请求体.get("messages", []) if m.get("role") == "system"
+            str(m.get("content", ""))
+            for m in 请求体.get("messages", [])
+            if m.get("role") == "system"
         )
         最后一条 = ""
         for m in reversed(请求体.get("messages", [])):
@@ -114,10 +116,7 @@ class _模型:
         if "审稿" in 全 or "审核意见" in 全 or "退回" in 全:
             return "审稿意见：结构完整，建议微调过渡句。"
         if "大纲" in 全 or "提纲" in 全:
-            return (
-                "一、总体要求\n二、主要措施\n三、组织保障\n\n"
-                "以上大纲供主理人审定。"
-            )
+            return "一、总体要求\n二、主要措施\n三、组织保障\n\n以上大纲供主理人审定。"
         if "方向" in 全 or "确认单" in 全:
             return "写作方向确认单：主题、范围、格式已列明，请主理人确认。"
         if "成果" in 全 or "汇总" in 全 or "归档" in 全:

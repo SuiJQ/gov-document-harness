@@ -59,10 +59,7 @@ import re
         "编号只为了可被引用，**不表示它们是决策**。\n"
         "标「未解决」的条目是真欠账，见 `TODO.md`。\n\n"
     ),
-    "TODO": (
-        "# TODO · 尚未实现的事项\n\n"
-        "每条都记着**它卡在哪、什么时候记的**。做完即删。\n\n"
-    ),
+    "TODO": ("# TODO · 尚未实现的事项\n\n每条都记着**它卡在哪、什么时候记的**。做完即删。\n\n"),
 }
 
 去处文件 = {
@@ -97,7 +94,9 @@ def main() -> int:
         目标 = 去向.get(号, "")
         if 目标 == "可删":
             快照数 += 1
-            留.append(f"### {号} {标题}\n→ **已归档**：{标题[:40]}（此类条目不承载规矩，仅是当时的数据或已失效的决定）\n\n")
+            留.append(
+                f"### {号} {标题}\n→ **已归档**：{标题[:40]}（此类条目不承载规矩，仅是当时的数据或已失效的决定）\n\n"
+            )
             continue
         if 目标 in 去处文件:
             搬[去处文件[目标]].append(f"### {号} {标题}\n{正文.rstrip()}\n")
@@ -105,7 +104,9 @@ def main() -> int:
         else:
             留.append(f"### {号} {标题}\n" + 正文)
 
-    台账.write_text(台账.read_text(encoding="utf-8").split("### ")[0] + "".join(留), encoding="utf-8")
+    台账.write_text(
+        台账.read_text(encoding="utf-8").split("### ")[0] + "".join(留), encoding="utf-8"
+    )
     for 键, 文件 in 去处文件.items():
         p = 根 / 文件
         已有 = p.read_text(encoding="utf-8") if p.exists() else ""

@@ -78,7 +78,9 @@ def main() -> int:
     print(f"模型  {cfg.model}    上下文 {cfg.context_k}K")
     # **不打印密钥片段**——D-161 明令文档/日志/工具输出不得出现真实凭据片段。
     # 只报「已配置」与长度：足够确认读到了，又不泄内容。
-    print(f"密钥  已配置（{len(sec.get_api_key())} 字符，片段数 {len(sec.redaction_patterns())}）\n")
+    print(
+        f"密钥  已配置（{len(sec.get_api_key())} 字符，片段数 {len(sec.redaction_patterns())}）\n"
+    )
 
     通过 = True
     print("═══ D-048 五项探测 ═══")
@@ -111,7 +113,9 @@ def main() -> int:
     耗时 = time.monotonic() - 起
     if got2.is_error:
         错 = got2.error
-        print(f"  ✗ 支持工具调用 失败（{耗时:.2f}s）{错.detail if 错 is not None else '无错误对象'}")
+        print(
+            f"  ✗ 支持工具调用 失败（{耗时:.2f}s）{错.detail if 错 is not None else '无错误对象'}"
+        )
         通过 = False
     elif got2.unwrap().tool_calls:
         tc = got2.unwrap().tool_calls[0]

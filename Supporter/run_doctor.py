@@ -84,8 +84,10 @@ def main() -> int:
     print(f"════════ 退出码：{程序.returncode} ════════")
     print(f"\n网关共收到 {模型.调用次数} 次请求")
     for i, 体 in enumerate(模型.收到的请求, 1):
-        print(f"  第{i}次：模型={体.get('model')} 消息数={len(体.get('messages', []))} "
-              f"温度={体.get('temperature')} 流式={体.get('stream')}")
+        print(
+            f"  第{i}次：模型={体.get('model')} 消息数={len(体.get('messages', []))} "
+            f"温度={体.get('temperature')} 流式={体.get('stream')}"
+        )
 
     服务.shutdown()
     return 0

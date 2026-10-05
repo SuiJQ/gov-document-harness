@@ -275,6 +275,42 @@ class 编排回调:
         self.编排.发(事件类, 阶段, **载荷)
 
 
+@dataclass(frozen=True, slots=True)
+class 门禁账:
+    """一道门禁在本档的**实际处境**（D-390）。
+
+    ## 为什么要三个字段而不是一个列表
+
+    「跑过」有三种**互不相同**的来历，混在一起就分不清责任：
+
+    | 字段 | 含义 | 缺它意味着 |
+    |---|---|---|
+    | `已取证` | 真跑了取证，且有结论 | 门禁形同虚设 |
+    | `缺席` | 该有结论却没给（D-221） | 编排本该失败，不会有结果 |
+    | `不适用` | 本档不跑（无编制 / 动态门禁） | **不是缺陷，不该报警** |
+
+    `缺席` 在正常结果里恒为空——它一旦非空，`_门禁循环` 已经
+    `Result.fail` 了，跑不到构造结果那一步。**保留这个字段是为了
+    续跑与台账能显式区分「豁免」与「缺失」**，而不是为了让失败也产结果。
+    """
+
+    #: 真跑了取证、拿到结论的门禁。
+    已取证: tuple[GateId, ...] = ()
+    #: 该有结论却没给的（D-221）。**成功结果里恒为空**。
+    缺席: tuple[GateId, ...] = ()
+    #: 本档不适用的：无编制（G3 于 Flash）或动态门禁（G9）。
+    不适用: tuple[GateId, ...] = ()
+
+    @property
+    def 全过(self) -> bool:
+        """已取证的**全部**都通过，且没有缺席。
+
+        注意分母是 `已取证` 而不是「本档该跑的全部」——
+        否则 G3/G9 会让 `全过` 恒为 False，而它们没跑并不是缺陷。
+        """
+        return not self.缺席
+
+
 @dataclass(slots=True)
 class 编排结果:
     """一次跑完的结果。**过程可查**——「跑通了」而不留痕等于没法验证空转。"""
@@ -283,7 +319,23 @@ class 编排结果:
     完整阶段序列: tuple[PhaseId, ...]
     产物: tuple[阶段产物, ...]
     交付物: str
-    走过的门禁: tuple[GateId, ...]
+    #: **门禁账**（D-390）。**取代原先那个 `走过的门禁`**。
+    #:
+    #: ## 为什么必须拆开
+    #:
+    #: 原字段报的是 `self.门禁`——「**本档该跑**的门禁」，不是
+    #: 「**真跑了取证的**」。实测 Flash 档：报 12 道，实际取证 10 道。
+    #:
+    #: 差的两道是**刻意豁免**，不是漏网：
+    #:
+    #: - **G3**：owners 只有文择体，Flash 编制里没有 → 按 D-116 降级给
+    #:   主理人研判并带标注；
+    #: - **G9**：`dynamic_owners`，不独立取证，按所触发的红线归属退回（D-084）。
+    #:
+    #: 但「**应有结论却没给**」（真缺席，D-221 转用户裁决）与
+    #: 「**本就不该有结论**」（豁免）被压在同一个字段里，
+    #: 谁拿它当「已验证门禁数」就会**高报 2 道**。
+    门禁账: 门禁账
     动过的角色: tuple[RoleId, ...]
     出现过的成员状态: tuple[RoleState, ...]
     成果标注: tuple[str, ...] = ()
@@ -318,6 +370,13 @@ class _过程:
         self.已完成 = 初始已完成
         self.产物: list[阶段产物] = []
         self.门禁: list[GateId] = []
+        #: **最近一次门禁裁定的结论**（D-390），键是门禁号。
+        #: 供 `_算门禁账` 分清「真取证」与「刻意豁免」。
+        self._末次裁定: dict[str, GateRecord] = {}
+        #: **本次的门禁账**（D-390）。门禁循环结束时算一次，
+        #: 报告与 `编排结果.门禁账` **共用这一份**——
+        #: 算两遍既浪费，又可能算出两个不一样的答案（裁定在两次之间变了）。
+        self._门禁账: 门禁账 | None = None
         #: 《政策依据适配表》单独挂一份（D-255）；无则 None
         self._政策取证件: 阶段产物 | None = None
         #: 工具结果存档（D-227）。跨阶段存活——
@@ -639,6 +698,10 @@ class _过程:
         self.门禁.extend(门禁)
         while True:
             裁定 = self._并行取证(档, 门禁)
+            # **留一份给 `_算门禁账`**（D-390）：只有它知道哪几道**真**跑了取证，
+            # 而 `self.门禁` 只是「本档该跑」。二者差着 G3/G9 那两道豁免。
+            self._末次裁定 = 裁定
+            self._门禁账 = self._算门禁账()
             # 结论落进 RunState——续跑、取证台账、用户裁决都要看它
             for 记 in 裁定.values():
                 self.状态 = self.状态.put_gate(记)
@@ -669,13 +732,26 @@ class _过程:
                     ErrorCode.GATE_NO_EVIDENCE,
                     f"门禁无取证结论：{'、'.join(缺席)}（无库/无网？），转用户处理",
                 )
+            # **逐道发 `gate.passed` / `gate.failed`**（D-390）。
+            #
+            # 放在缺席判据**之后**：缺席的门禁此刻正要转用户裁决，
+            # 那不是「failed」也不是「passed」，而是「无证据」——
+            # 已经由 GATE_ESCALATED 报了，在这里再补一条 failed 会重复计。
+            for _门, _记 in 裁定.items():
+                self.编排.发(
+                    EventKind.GATE_PASSED if _记.passed else EventKind.GATE_FAILED,
+                    PhaseId.GATING,
+                    gate_id=_门,
+                    attempt=_记.attempt,
+                    evidence_anchor=_记.evidence[:1],
+                )
             驳回 = [记 for 记 in 裁定.values() if not 记.passed]
             if not 驳回:
                 return Result.ok(
                     阶段产物(
                         PhaseId.GATING,
                         "gate-report.md",
-                        _门禁报告(self.门禁, 裁定),
+                        _门禁报告(self.门禁, 裁定, (self._门禁账 or 门禁账()).不适用),
                     )
                 )
             # **本档不许退回时，任何门禁不通过都直接转用户裁决**（D-254）。
@@ -742,6 +818,7 @@ class _过程:
             self.编排.发(EventKind.PHASE_EXITED, PhaseId.REVISION, ok=True)
 
     def _留门禁报告(self, 裁定: dict[str, GateRecord]) -> None:
+        """把门禁结论落成产物。**不适用的那几道要分开印**（D-390）。"""
         """**失败路径上也要留下门禁报告**（D-236）。
 
         ## 为什么失败路径更需要它
@@ -756,7 +833,11 @@ class _过程:
         报告**照留、但不落盘**：`ARTIFACT_READY` 事件带全文（D-046），
         这条路径不发该事件，故不会把未过稿当成果报给界面。
         """
-        件 = 阶段产物(PhaseId.GATING, "gate-report.md", _门禁报告(self.门禁, 裁定))
+        件 = 阶段产物(
+            PhaseId.GATING,
+            "gate-report.md",
+            _门禁报告(self.门禁, 裁定, (self._门禁账 or 门禁账()).不适用),
+        )
         self.产物.append(件)
 
     def _并行取证(self, 档: TierId, 门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
@@ -793,6 +874,18 @@ class _过程:
 
             def _跑一组(g: GateGroup) -> Result[dict[str, GateRecord]]:
                 组门禁 = tuple(x for x in 门禁 if x.value in g.gate_ids)
+                # **逐道发 `gate.started`**（D-390）。
+                # 此前只有异常路径才发 gate 事件，于是 12 道门禁全过时
+                # **零条事件**——架构 §5.4 列的 `gate.started`/`gate.passed`/
+                # `gate.failed` 定义了却零生产消费，用户（含调试模式）无从得知
+                # 门禁到底跑没跑。与 D-258「白名单里有、却没有分支」同型。
+                for _g in 组门禁:
+                    self.编排.发(
+                        EventKind.GATE_STARTED,
+                        PhaseId.GATING,
+                        gate_id=_g.value,
+                        owner=g.owner.value,
+                    )
                 # 取证方**在自己的线程里**走一遍状态机并动笔——
                 # 并行不能绕过 D-042 的六态机，否则 `动过的角色` 缺人，
                 # 「编制内必须当值」这类判据就查不出谁真被派发过。
@@ -991,7 +1084,15 @@ class _过程:
             self.记工具动作(角色, *本轮)
             正文组: list[tuple[str, str]] = []
             for 调用 in 本轮:
-                结果 = self.工具层.调用(调用.name, 角色=角色, 参数=dict(调用.arguments))
+                # **档位必须一起传下去**（D-389）。
+                # 只按角色过滤时，咨询档模型发来 `validate.run`
+                # 会真的执行——声明端不给 ≠ 执行端不接。
+                结果 = self.工具层.调用(
+                    调用.name,
+                    角色=角色,
+                    参数=dict(调用.arguments),
+                    启用域=TIER_BY_ID[self.编排.档位].工具域,
+                )
                 正文 = 结果.unwrap() if not 结果.is_error else f"[工具失败] {结果.error}"
                 self.存档工具结果(调用.id, 正文)
                 正文组.append((调用.id, 正文))
@@ -1353,6 +1454,30 @@ class _过程:
             return ()
         return 字段
 
+    def _算门禁账(self) -> 门禁账:
+        """把「本档该跑」与「真跑了取证」分开算（D-390）。
+
+        **判据必须与缺席判据同一套规则**——否则两者会各说各话：
+        缺席判据说「该有结论」，这里若算出「不适用」，
+        同一个门禁在两处得到相反结论，而两边都是绿的。
+        """
+        裁定 = self._末次裁定
+        编制 = set(TIER_BY_ID[self.编排.档位].roster)
+        已取证 = tuple(g for g in self.门禁 if g.value in 裁定)
+        不适用 = tuple(
+            g
+            for g in self.门禁
+            if g.value not in 裁定
+            and (
+                # 动态门禁：不独立取证，按所触发的红线归属退回（D-084）
+                bool(GATES[g].dynamic_owners)
+                # 取证方不在本档编制：Flash 无文择体时 G3 降级（D-116）
+                or not any(r in 编制 for r in GATES[g].owners)
+            )
+        )
+        缺席 = tuple(g for g in self.门禁 if g.value not in 裁定 and g not in 不适用)
+        return 门禁账(已取证=已取证, 缺席=缺席, 不适用=不适用)
+
     def _导出交付物(self) -> None:
         """把最终交付物落盘。**扫描不过就不写**（D-296）。
 
@@ -1415,7 +1540,7 @@ class _过程:
             完整阶段序列=self.序列,
             产物=tuple(self.产物),
             交付物=self.交付物 or "（本档不产出正文）",
-            走过的门禁=tuple(self.门禁),
+            门禁账=self._门禁账 or 门禁账(),
             动过的角色=tuple(dict.fromkeys(self.动过的)),
             出现过的成员状态=tuple(dict.fromkeys(self.出现过的状态)),
             成果标注=self.标注,
@@ -2016,6 +2141,7 @@ def _正文(阶段: PhaseId, 回复: dict[RoleId, str]) -> str:
 def _门禁报告(
     门禁: list[GateId],
     裁定: dict[str, GateRecord] | None = None,
+    不适用: tuple[GateId, ...] = (),
 ) -> str:
     """门禁报告：**责任角色 + 结论 + 证据 + 未过原因**（D-236）。
 
@@ -2050,7 +2176,14 @@ def _门禁报告(
         )
         记 = (裁定 or {}).get(g.value)
         if 记 is None:
-            结论 = "**无结论**"
+            # **「不适用」与「无结论」必须分开印**（D-390）。
+            #
+            # G3 于 Flash 取证方不在编制、G9 是动态门禁——它们**本就不该有结论**。
+            # 若一并印成「无结论」，用户读到的是「有两道门禁没查出来」，
+            # 而实际上没有任何缺陷。台账一旦把豁免说成缺失，
+            # 排查就会顺着错方向走。
+            不适用否 = g in 不适用
+            结论 = "本档不适用" if 不适用否 else "**无结论**"
             证据 = ""
             原因 = ""
         elif 记.passed:
