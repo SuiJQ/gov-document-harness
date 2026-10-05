@@ -26,9 +26,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeVar, runtime_checkable
 
+from ..domain.errors import Result
 from ..domain.event import Event
+from ..domain.tier import TierId
 from ..kernel.projection import DebugProjection, Projection, StandardProjection
 
 #: Textual 的 UI 线程回调。由 App 侧注入，桥接层自己不碰 asyncio。
@@ -51,6 +53,34 @@ class 可订阅(Protocol):
     def subscribe(self, sink: Callable[[Event], None]) -> None:
         """注册订阅者。"""
         ...
+
+
+_编排值 = TypeVar("_编排值")
+
+
+@runtime_checkable
+class 可跑编排(Protocol[_编排值]):
+    """桥接层用到的编排器能力，就这两项：**能跑到终**、**事件可回读**。
+
+    ## 为什么定协议而不是直接标 `orchestrate.编排器`
+
+    直标真类型当然也能过类型检查，但会逼判据构造一个完整编排器
+    （它要门禁取证实装、工具层、导出、推理设置、容量、预算……七项依赖），
+    于是又回到「替身判据只验替身」的老路——真接线依然没人测。
+
+    协议是**窄接口**：桥接只搬运事件、不解释编排（见文件头「为什么桥接这么薄」），
+    那它就只该要求真正用到的那两项。缺方法、档位传错类型，类型检查照样报错；
+    而在判据里构造一个满足协议的编排器是一行的事。
+
+    真 `编排器` 结构上满足本协议（`事件: list[Event]` +
+    `跑到终(*, 档位: TierId, 需求: str) -> Result[编排结果]`），
+    故接线不会因为「协议与真件不符」而失真。
+    """
+
+    #: 跑完后回读用。桥接在「没订阅总线」时兜底喂一遍。
+    事件: list[Event]
+
+    def 跑到终(self, *, 档位: TierId, 需求: str) -> Result[_编排值]: ...
 
 
 @dataclass(slots=True)
@@ -143,8 +173,21 @@ class 事件桥接:
         """屏上该显示什么。**与无界面模式走同一个投影**。"""
         return self.投影.lines()
 
-    def 在worker里跑(self, 编排器: object, *, 档位: object, 需求: str) -> None:
+    def 在worker里跑(self, 编排器: 可跑编排[_编排值], *, 档位: TierId, 需求: str) -> None:
         """在 worker 线程里跑完整个编排，逐条把事件喂进来。
+
+        ## 为什么参数标真类型而不是 `object`
+
+        此处原先把 `编排器` 与 `档位` 都标成 `object`，代价是**三处类型
+        逃逸**：`.跑到终()` 要挂 `pyright: ignore`、`.事件` 只能
+        `getattr(编排器, "事件", [])` 兜底、`.投影.errors` 也挂 ignore。
+
+        `getattr` 那一处尤其糟：**TUI→编排这条接线断了不报错**，
+        事件凭空消失、界面全静默；而 `test_layering.py:72` 的白名单里
+        `presentation` 本就**允许** import `orchestration`，
+        所以 `object` **不是分层所迫**，是没人收类型而已。
+
+        标成真类型后，编排器缺方法、档位传错类型都会在类型检查期报错。
 
         用法（TUI 侧）：
 
@@ -154,15 +197,21 @@ class 事件桥接:
         await asyncio.to_thread(桥.在worker里跑, 编排器, 档位=档, 需求=需求)
         ```
         """
-        结果 = 编排器.跑到终(档位=档位, 需求=需求)  # pyright: ignore[reportAttributeAccessIssue]
+        结果 = 编排器.跑到终(档位=档位, 需求=需求)
         if not self._已订阅:
             # **只在没订阅时才兜底喂一遍**：已订阅的话事件早就实时喂过了，
             # 这里再喂一次会让同一份成果在屏上出现两遍。
             # 没总线时（测试、CI、无界面调用）才走这条兜底路。
-            self.喂全部(getattr(编排器, "事件", []))
-        if 结果.is_error:
+            self.喂全部(编排器.事件)
+        错 = 结果.error
+        if 错 is not None:
+            # **判 `None` 而不是 `is_error`**：`is_error` 只是普通 property，
+            # 类型检查器不会据此窄化，`结果.error.detail` 仍报
+            # 「detail 不是 None 的属性」。语义完全等价
+            # （`is_error` 的实现就是 `error is not None`）。
+            #
             # **记下来给退出码用**：此前失败只进 `投影.errors`
             # （给人看），进程退出码恒为 0——脚本和 CI 无法判断成败。
             # 实测：intake 落盘失败、界面崩了两处，退出码仍是 0。
-            self.末次失败 = 结果.error.detail
-            self.投影.errors = (*self.投影.errors, 结果.error.detail)  # pyright: ignore[reportAttributeAccessIssue]
+            self.末次失败 = 错.detail
+            self.投影.errors = (*self.投影.errors, 错.detail)

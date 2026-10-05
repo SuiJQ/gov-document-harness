@@ -236,7 +236,16 @@ class Test退出码反映失败:
         桥 = 事件桥接()
 
         class _失败的编排:
-            def 跑到终(self, *, 档位: object, 需求: str) -> Result[object]:
+            #: 协议 `可跑编排` 要求的两项之一。**原替身没有这个属性**，
+            #: 桥接靠 `getattr(编排器, "事件", [])` 兜底才通过——
+            #: 而兜底正是本轮要清掉的写法。替身不完整被兜底遮住，
+            #: 是同一个病：接线缺了也不报。
+            事件: list[Event]
+
+            def __init__(self) -> None:
+                self.事件 = []
+
+            def 跑到终(self, *, 档位: TierId, 需求: str) -> Result[None]:
                 from zhengtong.domain.errors import ErrorCode
 
                 return Result.fail(ErrorCode.STORAGE_WRITE_FAILED, "落盘失败")

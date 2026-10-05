@@ -23,9 +23,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from zhengtong.domain.errors import Result
 from zhengtong.domain.event import Event, EventKind, Level
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.phase import PhaseId
+from zhengtong.domain.tier import TierId
 from zhengtong.presentation.tui import 事件桥接
 
 
@@ -55,28 +57,28 @@ class _假总线:
 
 
 class _假编排:
-    """`跑到终` 期间可以观察世界的假编排器。"""
+    """`跑到终` 期间可以观察世界的假编排器。
+
+    ## 返回值必须是真的 `Result`
+
+    原先返回的是一个只声明了 `is_error` / `unwrap` 的手搓类，
+    而桥接读的是 `结果.error`——**替身少一个成员，生产代码就得
+    挂 `pyright: ignore` 或退回 `getattr`**。两轮前桥接正是
+    `getattr(编排器, "事件", [])` + `结果.error.detail`（被 ignore 盖住），
+    接线断了也没人发现。
+
+    现在替身返回真 `Result`，缺成员会在判据与类型检查期一起响。
+    """
 
     def __init__(self, *, bus: _假总线 | None = None, 事件: list[Event] | None = None) -> None:
         self.bus = bus
         self.事件 = 事件 if 事件 is not None else []
         self.跑时订阅数: list[int] = []
 
-    def 跑到终(self, *, 档位: object, 需求: str) -> Any:
+    def 跑到终(self, *, 档位: TierId, 需求: str) -> Result[None]:
         # **编排尚未结束时**观察订阅情况——这正是本判据与旧测试的分水岭。
         self.跑时订阅数.append(len(self.bus.sinks) if self.bus else 0)
-        return _ok()
-
-
-def _ok() -> Any:
-    class _R:
-        is_error = False
-
-        @staticmethod
-        def unwrap() -> object:
-            return object()
-
-    return _R()
+        return Result.ok(None)
 
 
 def test_订阅后事件真的进投影() -> None:
@@ -152,7 +154,7 @@ def test_无总线时兜底喂事件不丢内容() -> None:
     """没有总线（测试/CI/无界面）时不能什么都不做。"""
     编 = _假编排(bus=None, 事件=[_事件(EventKind.RUN_STARTED, tier="pro")])
     桥 = 事件桥接()
-    桥.在worker里跑(编, 档位=None, 需求="x")
+    桥.在worker里跑(编, 档位=TierId.PRO, 需求="x")
     assert 桥.行(), "无总线时必须兜底喂事件，否则界面全空"
 
 
@@ -162,7 +164,7 @@ def test_有总线时不再兜底_否则成果显示两遍() -> None:
     编 = _假编排(bus=总线, 事件=[_事件(EventKind.RUN_STARTED, tier="pro")])
     桥 = 事件桥接()
     桥.订阅(总线)
-    桥.在worker里跑(编, 档位=None, 需求="x")
+    桥.在worker里跑(编, 档位=TierId.PRO, 需求="x")
     assert 桥._已订阅, "有总线时必须订阅"
     行 = 桥.行()
     assert len([x for x in 行 if "pro" in x]) <= 1, f"同一事件不得显示两遍：{行}"
@@ -172,4 +174,4 @@ def test_编排器没有bus属性时用getattr兜底不抛() -> None:
     """编排器压根没有 `bus` 属性时不能炸——`getattr` 默认值要生效。"""
     编 = _假编排(bus=None, 事件=[])
     桥 = 事件桥接()
-    桥.在worker里跑(编, 档位=None, 需求="x")  # 不抛即通过
+    桥.在worker里跑(编, 档位=TierId.PRO, 需求="x")  # 不抛即通过

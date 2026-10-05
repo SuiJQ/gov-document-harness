@@ -23,7 +23,45 @@ from ..domain.role import RoleId, display_name
 
 @runtime_checkable
 class Projection(Protocol):
-    """投影。一个事件进来，一个可显示项出去（或不产生任何东西）。"""
+    """投影。一个事件进来，一个可显示项出去（或不产生任何东西）。
+
+    ## 为什么这里必须逐字段声明
+
+    这个协议此前**只有 `accept` / `lines` 两个方法**，结构化字段
+    （`artifacts` / `errors` / `progress` / `questions` / `scanned`
+    与两个 token 字段）一个都没声明，而界面代码要读它们。
+
+    后果分两层，都真实发生过：
+
+    1. **界面被迫兜底**：`adapters/tui.py` 取最终成果时只能写
+       `getattr(投影, "artifacts", ())`——**名字写错也静默取默认值**，
+       而这类兜底正是「界面全空、不报错」的成因。
+    2. **调试模式曾整体崩掉**：`DebugProjection` 早期是独立类，
+       缺了这 7 个字段，`--debug` 一跑就 `AttributeError`。
+       当时的修法是让 `DebugProjection` 继承 `StandardProjection`，
+       字段集**结构上**不再分叉——但**根因没动**：
+       协议仍不约束字段，于是下一个新字段还会重演。
+
+    所以这里**逐字段声明**：协议是界面与投影之间的唯一契约，
+    字段少写一个，「界面读投影」这条路就重新退化回 `getattr`。
+
+    注：`@runtime_checkable` 的 `isinstance` 在本仓无调用点，
+    加数据成员不影响任何既有检查（`issubclass` 对数据成员协议本就不可用）。
+    """
+
+    #: 已识别用户材料的摘要行。
+    scanned: str
+    #: 总体进度一行（D-046）。
+    progress: str
+    #: 阶段成果与最终成果：`(名称, 正文全文)`，**顺序即产生顺序**。
+    artifacts: tuple[tuple[str, str], ...]
+    #: 待用户回答或待补信息。
+    questions: tuple[str, ...]
+    #: 失败详情。界面按「退出码的唯一依据」之外的第二用途读它。
+    errors: tuple[str, ...]
+    #: 真实 token 用量累计（D-277）。只加不减。
+    token_入: int
+    token_出: int
 
     def accept(self, event: Event) -> None: ...
 
