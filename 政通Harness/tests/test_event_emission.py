@@ -39,6 +39,7 @@ from zhengtong.adapters.fakes import FakeLlm, FakeStorage
 from zhengtong.domain.artifact import ArtifactKind
 from zhengtong.domain.errors import ErrorCode
 from zhengtong.domain.event import Event, EventKind
+from zhengtong.domain.role import RoleId
 from zhengtong.domain.run_state import new_run_state
 from zhengtong.domain.task import TaskSpec
 from zhengtong.domain.tier import TierId
@@ -52,6 +53,12 @@ from zhengtong.orchestration.orchestrate import (
     阶段序列,
 )
 from zhengtong.services.export import 导出交付物
+from zhengtong.services.tools.handlers import (
+    flow_ask_user,
+    工具依赖,
+    记事件回调,
+    问用户回调,
+)
 
 
 def _挑(事件们: list[Event], 种类: EventKind) -> list[Event]:
@@ -253,3 +260,177 @@ def test_落盘摘要类型在端口层就定死() -> None:
     协议返回 = cast("str", 协议签.return_annotation)
     实现返回 = cast("str", 实现签.return_annotation)
     assert 协议返回 == 实现返回, f"返回类型不一致：协议 {协议返回} vs 实现 {实现返回}"
+
+
+# ── run.resumed ────────────────────────────────────────────────
+
+
+def _跑到终(编: 编排器) -> None:
+    """跑一次。**成不成都行**——`run.resumed` 在 `drive` 之前发，
+    所以失败那轮照样能验它。强制成功只会让判据依赖模型脚本。"""
+    _ = 编.跑到终(档位=TierId.CONSULT, 需求="写一份通知")
+
+
+def test_有已完成调用时发续跑标记() -> None:
+    """**续跑在 journal 里此前没有任何痕迹**——只有一条 `run.started`。
+
+    于是事后无从区分「一次跑完」与「跑了三次接起来」。而排查
+    「为什么这次这么快」「这次模型只调了两次」时，最该看的恰恰是
+    续跑账（`state.json` 的 `completed_call_ids`）。
+
+    判据用**调用方显式传入**的 `初始已完成`：那是 D-065 的幂等入口，
+    非空即意味着本轮会跳过这些调用——一次续跑的确凿证据。
+    """
+    编 = 编排器(
+        llm=FakeLlm(fail_with=ErrorCode.LLM_REQUEST_FAILED),
+        storage=FakeStorage(),
+        模型名="m",
+        初始已完成=("call-a", "call-b"),
+    )
+    _跑到终(编)
+
+    续跑 = _挑(编.事件, EventKind.RUN_RESUMED)
+    assert 续跑, "带了已完成调用却不发 run.resumed：续跑在 journal 里没有痕迹"
+    assert 续跑[0].data.get("已完成调用数") == 2, f"续跑标记必须带跳过的调用数：{续跑[0].data}"
+
+
+def test_首次运行不发续跑标记() -> None:
+    """**空则不发**——每次都发的话它就成了噪声。
+
+    而噪声的代价很实在：journal 里到处都是 `run.resumed`，
+    真出现一次续跑时反而看不见了。
+    """
+    编 = 编排器(
+        llm=FakeLlm(fail_with=ErrorCode.LLM_REQUEST_FAILED),
+        storage=FakeStorage(),
+        模型名="m",
+    )
+    _跑到终(编)
+    assert not _挑(编.事件, EventKind.RUN_RESUMED), (
+        "首次运行（无已完成调用）也发了 run.resumed：该事件会退化成噪声"
+    )
+
+
+def test_续跑标记跟在开始事件之后() -> None:
+    """**顺序是契约的一部分**：先 `run.started` 再 `run.resumed`。
+
+    反过来看就说不通了——「这轮是接着跑的」是对已开始这件事的补充说明，
+    不是对它的事前声明。
+    """
+    编 = 编排器(
+        llm=FakeLlm(fail_with=ErrorCode.LLM_REQUEST_FAILED),
+        storage=FakeStorage(),
+        模型名="m",
+        初始已完成=("call-a",),
+    )
+    _跑到终(编)
+    序 = [e.kind for e in 编.事件]
+    开始 = 序.index(EventKind.RUN_STARTED)
+    续跑 = 序.index(EventKind.RUN_RESUMED)
+    assert 开始 < 续跑, f"顺序反了：{序}"
+
+
+# ── user.answered ──────────────────────────────────────────────
+
+
+def _依赖(*, 问用户: object, 记事件: object = None) -> 工具依赖:
+    from zhengtong.adapters.fakes import (
+        FakeContentPack,
+        FakeRetriever,
+        FakeUserFiles,
+        FakeValidators,
+    )
+    from zhengtong.domain.ids import RunId
+
+    return 工具依赖(
+        storage=FakeStorage(),
+        user_files=FakeUserFiles(),
+        retriever=FakeRetriever(),
+        content_pack=FakeContentPack(),
+        validators=FakeValidators(),
+        run_id=RunId("r-1"),
+        问用户=cast("问用户回调", 问用户),
+        记事件=cast("记事件回调 | None", 记事件),
+    )
+
+
+def test_答复到手后发user_answered() -> None:
+    """问答闭环的另一半。
+
+    此前只有 `user.question_raised`，**答复侧零留痕**——
+    journal 无法回答「这次提问到底有没有得到答复」。
+    而「没答复」和「卡住了」的现场症状都是**程序停住不动**，排障只能靠猜。
+    """
+    记下的: list[tuple[str, dict[str, object]]] = []
+
+    def 记(kind: EventKind, **载荷: object) -> None:
+        记下的.append((kind.value, 载荷))
+
+    def 答(_字段: tuple[dict[str, object], ...]) -> str:
+        return "答复内容"
+
+    d = _依赖(问用户=答, 记事件=记)
+    got = flow_ask_user(d, RoleId.TEAM_LEAD, {"fields": [{"code": "D1"}]})
+    assert got.is_ok, got.error.detail if got.error else ""
+    assert any(k == "user.answered" for k, _ in 记下的), f"答复到手却没有 user.answered：{记下的}"
+
+
+def test_user_answered只记字段码不记答案全文() -> None:
+    """**答案不进 journal**（D-030：可能含用户不愿外传的实质）。
+
+    载荷只留 `fields`（字段码），不含答复文本。
+    这条判据存在的意义是：将来有人「顺手把答案也带上方便排查」，
+    那等于把用户口述的实质内容写进日志文件。
+    """
+    记下的: list[tuple[str, dict[str, object]]] = []
+
+    密文 = "我们决定下个月把预算砍到三千万"
+
+    def 记(kind: EventKind, **载荷: object) -> None:
+        记下的.append((kind.value, 载荷))
+
+    def 答(_字段: tuple[dict[str, object], ...]) -> str:
+        return 密文
+
+    d = _依赖(问用户=答, 记事件=记)
+    _ = flow_ask_user(d, RoleId.TEAM_LEAD, {"fields": [{"code": "D1"}, {"code": "D2"}]})
+
+    答了 = [载 for k, 载 in 记下的 if k == "user.answered"]
+    assert 答了, "先得有这条事件才能验载荷"
+    assert 密文 not in str(答了), f"答复全文进了事件载荷：{答了}"
+    assert 答了[0].get("fields") == "D1,D2", f"应只记字段码，实得 {答了[0]}"
+
+
+def test_未接线的提问不发user_answered() -> None:
+    """**没提问成功就不能有答复**。
+
+    否则 journal 里出现一条 `user.answered` 而从无 `question_raised`，
+    排障时那是一条假痕迹。
+    """
+    记下的: list[str] = []
+
+    def 记(kind: EventKind, **载荷: object) -> None:
+        del 载荷
+        记下的.append(kind.value)
+
+    d = _依赖(问用户=None, 记事件=记)
+    got = flow_ask_user(d, RoleId.TEAM_LEAD, {"fields": [{"code": "D1"}]})
+    assert got.is_error, "未接线的提问应当失败（D-192）"
+    assert "user.answered" not in 记下的, f"未接线却发了 user.answered：{记下的}"
+
+
+def test_没挂记事件时提问仍能成功() -> None:
+    """**留痕不得影响主流程**。
+
+    `工具依赖.记事件` 是可选的（`None`）。若 `user.answered` 在
+    没挂回调时抛异常，提问功能会被「留痕」这条旁路拖垮——
+    那正是 D-266 那类「插话转达恒为 None」的接线风险。
+    """
+
+    def 答(_字段: tuple[dict[str, object], ...]) -> str:
+        return "答复"
+
+    d = _依赖(问用户=答, 记事件=None)
+    got = flow_ask_user(d, RoleId.TEAM_LEAD, {"fields": [{"code": "D1"}]})
+    assert got.is_ok, f"没挂记事件不该让提问失败：{got.error.detail if got.error else ''}"
+    assert got.unwrap() == "答复"

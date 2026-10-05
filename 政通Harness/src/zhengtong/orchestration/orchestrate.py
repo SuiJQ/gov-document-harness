@@ -1886,15 +1886,17 @@ class 编排器:
         # `app.py` 的 `run_once`，而那是个死函数（只有 tests 调）。
         # 于是「续跑」这个能力挂在一条不存在的链上。
         状态 = self.初始状态 or self._读续跑状态(任务) or new_run_state(self.运行号, 任务)
-        # **强制重建**：同一编排器跑两次时，第二次不能沿用上次的进度。
+        # 强制重建：同一编排器跑两次时，第二次不能沿用上次的进度。
         # 状态可续，过程必须重建——过程里存着逐请求的运行时状态。
+        #: **本轮跳过的已完成调用数**（D-065）。`run.resumed` 的判据。
+        已完成调用 = self.初始已完成 or tuple(状态.completed_call_ids)
         self._过程 = _过程(
             编排=self,
             llm=self.llm,
             storage=self.storage,
             序列=序列,
             状态=状态,
-            初始已完成=self.初始已完成 or tuple(状态.completed_call_ids),
+            初始已完成=已完成调用,
         )
         self.进度终值 = None
         # **记住档位**（D-380）：此前档位只逐层传参、编排器自己不存，
@@ -1910,6 +1912,21 @@ class 编排器:
         借来的总线 = self.bus is None
         总线 = self.bus or _临时总线()
         self.发(EventKind.RUN_STARTED, PhaseId.INTAKE, tier=档位.value)
+        # **`run.resumed`：这轮是接着上次跑的**（D-065）。
+        #
+        # 此前**续跑在 journal 里没有任何痕迹**——只有一条 `run.started`。
+        # 于是事后无从区分「一次跑完」与「跑了三次接起来」，
+        # 而续跑判定的唯一依据（`state.json` 的 `completed_call_ids`）
+        # 正是在排查「为什么这次这么快/这次模型只调了两次」时最该看的东西。
+        #
+        # 判据是**已完成调用非空**：那些调用已被幂等记账跳过，
+        # 正是一次续跑的确凿证据。空则不发，否则每次都发会变成噪声。
+        if 已完成调用:
+            self.发(
+                EventKind.RUN_RESUMED,
+                PhaseId.INTAKE,
+                已完成调用数=len(已完成调用),
+            )
         got = drive(
             run_id=self.运行号,
             bus=总线,

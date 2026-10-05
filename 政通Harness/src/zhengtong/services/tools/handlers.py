@@ -26,6 +26,7 @@ from typing import Final, cast
 
 from ...domain.artifact import ArtifactKind, ArtifactRef
 from ...domain.errors import ErrorCode, Result
+from ...domain.event import EventKind
 from ...domain.ids import ArtifactId, RunId
 from ...domain.role import RoleId
 from ...ports.content_pack import ContentPackPort
@@ -379,7 +380,27 @@ def flow_wake_on(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[
 def flow_ask_user(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[str]:  # noqa: ARG001  # role 是统一签名的一部分，删了会让处理器表类型不一致
     if d.问用户 is None:
         return _未接线("flow.ask_user", "问用户回调")
-    return Result.ok(d.问用户(_取字段(p.get("fields"))))
+    字段 = _取字段(p.get("fields"))
+    答复 = d.问用户(字段)
+    # **`user.answered`：问答闭环的另一半**（架构 §5.4）。
+    #
+    # 此前事件流里只有 `user.question_raised`（工具层发），
+    # **答复侧零留痕**——于是 journal 无法回答
+    # 「这次提问到底有没有得到答复」「流程是不是卡在提问上了」。
+    # 而这两种情况的现场症状都是「程序停住不动」，排障只能靠猜。
+    #
+    # **只记字段码，不记答案全文**（D-030：答案可能含用户不愿外传的实质）。
+    #
+    # 载荷里没有「拒答」：闸门超时/界面崩时 `问用户` **抛异常**，
+    # 那条路径到不了这里。所以这里记的是「答复拿到了」这一事实，
+    # 「没拿到」的那一侧由 journal 里 `question_raised` 后无 `answered`
+    # 本身表达——**闭环缺口就是信号**，不需要另设一个字段。
+    if d.记事件 is not None:
+        d.记事件(
+            EventKind.USER_ANSWERED,
+            fields=",".join(str(f.get("code", "")) for f in 字段),
+        )
+    return Result.ok(答复)
 
 
 def _取字段(原: object) -> tuple[dict[str, object], ...]:
