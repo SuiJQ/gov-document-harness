@@ -36,6 +36,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -43,7 +44,7 @@ from pathlib import Path
 
 from ..domain.artifact import ArtifactKind
 from ..domain.errors import ErrorCode, Result
-from ..ports.export import 待落盘
+from ..ports.export import 待落盘, 落盘摘要
 
 #: 占位符：`【待填 · D3】` / `【待核实 · D7】`。
 #:
@@ -155,7 +156,7 @@ class 导出交付物:
         """
         return self.根 / self.运行号 / "output"
 
-    def __call__(self, *, 文件: Sequence[待落盘]) -> Result[tuple[str, ...]]:
+    def __call__(self, *, 文件: Sequence[待落盘]) -> Result[tuple[落盘摘要, ...]]:
         """扫 → 判 → 落盘。**任一步不过就不写任何文件。**
 
         ## 顺序是硬要求
@@ -185,10 +186,31 @@ class 导出交付物:
         try:
             self.输出目录.mkdir(parents=True, exist_ok=True)
             for f in 可导:
-                (self.输出目录 / f.文件名).write_text(f.内容, encoding=self.编码)
+                # **`write_bytes` 而不是 `write_text`**（`artifact.published` 的 hash）。
+                #
+                # `write_text` 走文本模式，`newline=None` 时**会做换行转换**：
+                # 同一份内容在 Linux 写出 `\n`、在 Windows 写出 `\r\n`。
+                # 于是 `artifact.published.hash` 在 Windows 上复算不出来——
+                # 而「能用 `sha256(路径.read_bytes())` 复算」正是该 hash 的用途。
+                #
+                # 写成字节后，字节只由 `编码` 决定，跨平台可复算。
+                字节 = f.内容.encode(self.编码)
+                _ = (self.输出目录 / f.文件名).write_bytes(字节)
         except OSError as exc:
             return Result.fail(ErrorCode.STORAGE_WRITE_FAILED, f"导出失败：{exc}")
-        return Result.ok(tuple(f.文件名 for f in 可导))
+        #: 显式标注：生成器表达式推出的元素类型是 Unknown，
+        #: 传给 `Result.ok` 就成了 `Result[Unknown]`——**类型信息在这一步丢光**。
+        摘要: tuple[落盘摘要, ...] = tuple(
+            落盘摘要(
+                文件名=f.文件名,
+                种类=f.种类,
+                hash=hashlib.sha256(f.内容.encode(self.编码)).hexdigest(),
+            )
+            for f in 可导
+        )
+        # **显式带上泛型实参**：裸 `Result.ok(摘要)` 推成 `Result[Unknown]`
+        # ——因为 `ok` 的 `T` 是**类级** TypeVar，pyright 无法自己参数化它。
+        return Result[tuple[落盘摘要, ...]].ok(摘要)
 
     @staticmethod
     def 取拦截事件(结论: 扫描结论) -> dict[str, object] | None:

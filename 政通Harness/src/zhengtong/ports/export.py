@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from ..domain.artifact import ArtifactKind
@@ -45,11 +46,43 @@ class 待落盘(Protocol):
     def 种类(self) -> ArtifactKind: ...
 
 
+@dataclass(frozen=True, slots=True)
+class 落盘摘要:
+    """一份已落盘交付物的摘要：`artifact.published` 事件的载荷（D-072）。
+
+    ## 为什么不能只返回文件名
+
+    架构 §5.4 规定 `artifact.published` 携 `name` / `kind` / **`hash`**，
+    且明说调试模式拿它与 `phase.artifact_ready` 对照，
+    「检查两者内容一致（防『界面显示的和落盘的不是一份』这类最难查的错）」。
+
+    只返回文件名，这个对照**做不了**——而那正是本类型存在的理由。
+
+    ## hash 必须由写入侧算
+
+    编排层拿着的是 `内容: str`，而落盘走的是 `编码`（用户可配 `gb18030`）。
+    同一串字符按 UTF-8 与 GB18030 写出的**字节完全不同**，
+    hash 也完全不同。所以 hash 只能由**真正写文件的那一层**算，
+    编排在旁边重算等于假设「编码没变」——而那个假设正是要防的。
+
+    `hash` 是**写入字节**的 sha256（十六进制），不是内容字符串的 sha256。
+    """
+
+    文件名: str
+    种类: ArtifactKind
+    #: 落盘字节的 sha256。可用 `hashlib.sha256(路径.read_bytes()).hexdigest()` 复算。
+    hash: str
+
+
 class ExportPort(Protocol):
     """导出端口。**只有「落盘或拒绝」一件事。**"""
 
-    def __call__(self, *, 文件: Sequence[待落盘]) -> Result[tuple[str, ...]]:
-        """扫 → 判 → 落盘。**任一步不过就不写任何文件。**"""
+    def __call__(self, *, 文件: Sequence[待落盘]) -> Result[tuple[落盘摘要, ...]]:
+        """扫 → 判 → 落盘。**任一步不过就不写任何文件。**
+
+        返回值是**落盘摘要**而非文件名：调用方要发
+        `artifact.published`，需要 `kind` 与 `hash`。
+        """
         ...
 
 
@@ -63,7 +96,7 @@ class 未接线导出:
     上层以为导出完成了，用户在目录里找不到文件却什么都没报错。
     """
 
-    def __call__(self, *, 文件: Sequence[待落盘]) -> Result[tuple[str, ...]]:
+    def __call__(self, *, 文件: Sequence[待落盘]) -> Result[tuple[落盘摘要, ...]]:
         #  用不到，但**签名必须与 ExportPort 一致**——
         # 落不到地的占位也得是个合法的实现，否则接不上（D-192）。
         del 文件

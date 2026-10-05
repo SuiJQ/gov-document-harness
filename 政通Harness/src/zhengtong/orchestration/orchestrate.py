@@ -73,7 +73,7 @@ from ..kernel.bus import EventBus
 from ..kernel.driver import Step, drive
 from ..kernel.scheduler import GateGroup, run_groups
 from ..ports.content_pack import ContentPackPort
-from ..ports.export import ExportPort, 未接线导出
+from ..ports.export import ExportPort, 未接线导出, 落盘摘要
 from ..ports.llm import (
     FinishReason,
     LlmPort,
@@ -390,6 +390,8 @@ class _过程:
         self.导出 = 编排.导出
         #: 导出落盘的文件名。成功时并进 `编排结果.导出文件名`。
         self.导出文件名: tuple[str, ...] = ()
+        #: 落盘摘要（`name`/`kind`/`hash`）。`artifact.published` 的载荷来源。
+        self.落盘摘要: tuple[落盘摘要, ...] = ()
         self.出现过的状态: list[RoleState] = []
         self.动过的: list[RoleId] = []
         #: **本段**派发过的角色。`动过的` 跨段累积，记账只能用这个。
@@ -1517,8 +1519,27 @@ class _过程:
             # 用户至少要知道「哪些还没填」。
             self.编排.发(EventKind.EXPORT_BLOCKED, PhaseId.FINAL, 详情=错.detail)
             return
-        self.导出文件名 = got.unwrap()
+        self.落盘摘要 = got.unwrap()
+        self.导出文件名 = tuple(摘.文件名 for 摘 in self.落盘摘要)
         self.编排.发(EventKind.EXPORT_DONE, PhaseId.FINAL, 文件名=self.导出文件名)
+        # **`artifact.published`：落盘留痕**（架构 §5.4）。
+        #
+        # 此前**落盘这件事在 journal 里没有任何痕迹**——只有 `export.done`
+        # 携一份文件名列表。于是架构点名要防的那类错
+        # （「界面显示的和落盘的不是一份，这类最难查」）
+        # **事后无从对照**：journal 里既没有内容，也没有 hash。
+        #
+        # 载荷里的 `hash` 由**写入侧**算（导出器知道真实编码，
+        # 编排层重算会在 GB18030 下算错），可用
+        # `sha256(路径.read_bytes()).hexdigest()` 复算。
+        for 摘 in self.落盘摘要:
+            self.编排.发(
+                EventKind.ARTIFACT_PUBLISHED,
+                PhaseId.FINAL,
+                name=摘.文件名,
+                artifact_kind=摘.种类.value,
+                hash=摘.hash,
+            )
 
     def 收结果(self) -> 编排结果:
         档 = self.状态.task.tier
@@ -1900,10 +1921,31 @@ class 编排器:
         if got.is_error:
             错 = got.error
             assert 错 is not None
+            # **先留内部细节，再升级给用户**（架构 §5.4）：
+            # `error.raised` 携完整 `detail` 且是 INTERNAL，
+            # `run.failed` 只让用户看到错误码。
+            #
+            # 此前**只有 `run.failed` 一个出口，而它带的是 `错.code.value`**
+            # ——真正的 `错.detail` 随 `Result.fail` 返回后就没人知道了。
+            # 结果 journal 里排障只剩一个 `E_...` 码，看不出「到底哪错了」。
+            self.发(
+                EventKind.ERROR_RAISED,
+                PhaseId.DONE,
+                detail=错.detail,
+                code=错.code.value,
+            )
             self.发(EventKind.RUN_FAILED, PhaseId.DONE, detail=错.code.value)
             return Result.fail(错.code, 错.detail)
         总成 = got.unwrap()
         if not 总成.ok:
+            # 同上：这一处 `run.failed` 带的是真 detail（两处口径本来就不一致），
+            # 但内部留痕不能依赖「恰好这一处带了」——统一都发。
+            self.发(
+                EventKind.ERROR_RAISED,
+                PhaseId.DONE,
+                detail=总成.detail,
+                code=ErrorCode.KERNEL_STALLED.value,
+            )
             self.发(EventKind.RUN_FAILED, PhaseId.DONE, detail=总成.detail)
             return Result.fail(ErrorCode.KERNEL_STALLED, 总成.detail)
         self.进度终值 = 总成.steps
