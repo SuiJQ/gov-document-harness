@@ -266,12 +266,6 @@ class 编排回调:
     def __init__(self, 编排: 编排器) -> None:
         self.编排 = 编排
 
-    def 汇报(self, 内容: str, 依据: dict[str, object]) -> str:  # noqa: ARG002  # 统一签名的一部分
-        """成员向主理人汇报。返回主理人答复，并**两侧都记进历史**。"""
-        答复 = f"（主理人已收到：{内容[:40]}）"
-        self.编排.记汇报(内容, 答复)
-        return 答复
-
     def 记事件(self, kind: str, **载荷: object) -> None:
         """工具层把工具调用/拒绝报上来，转成事件发出去（D-266）。
 
@@ -305,6 +299,76 @@ class 编排回调:
         过程 = self.编排._过程
         阶段 = 过程.状态.phase if 过程 is not None else PhaseId.INTAKE
         self.编排.发(事件类, 阶段, **载荷)
+
+    # ── 七个编排回调的真实实现（D-406）──
+    #
+    # 此前本类只有 `汇报` 与 `记事件` 两个方法，而 `工具依赖` 上有 16 个字段。
+    # 其余七个回调在**完整装配后仍恒为 None**——模型调对应工具直接失败：
+    # `msg.report_to_lead` / `flow.sleep` / `flow.wake_on` / `flow.rollback`
+    # / `flow.status` / `tool.result` / `msg.request_from_lead`。
+    #
+    # 与 D-286（问用户未接线）同型，当时只修了问用户那一个。
+    # 「有字段、有判空、有失败返回」看起来完全正常，
+    # 只有**造真实对象读实际值**才看得见。
+
+    def 汇报(self, 内容: str, 依据: dict[str, object]) -> str:  # noqa: ARG002
+        """成员向主理人汇报。返回主理人答复，并**两侧都记进历史**。"""
+        答复 = f"（主理人已收到：{内容[:40]}）"
+        self.编排.记汇报(内容, 答复)
+        self._发角色事件("role.report", {"汇报": 内容[:120]})
+        return 答复
+
+    def 请示(self, 事项: str, 紧急: bool) -> str:
+        """成员请求主理人裁决。
+
+        ## 为什么转成「成员状态 = 等待条件」而不是直接答复
+
+        主理人此刻可能正忙别的。硬造一句「已批准」等于**编排器替主理人
+        做决定**——那正是「严禁编造」要禁的。诚实的返回是
+        「已记下，等主理人那一轮读到它」，并把成员状态改为等待条件，
+        于是 `该发请求`（D-042「挂起态绝不发请求」）会跳过它，
+        不会空转烧算力。
+        """
+        self.编排._挂起成员(事项, 紧急)
+        return f"已记下请示「{事项[:40]}」，将在主理人下一次推进时处理。"
+
+    def 挂起(self, 原因: str) -> None:
+        """成员主动挂起。**挂起态绝不发模型请求**（D-042 第 1 条）。"""
+        self.编排._挂起当前成员(原因)
+
+    def 唤醒(self, 事件名: str, 角色: str) -> None:
+        """设定唤醒条件：命中该事件名时把成员放回运行中。"""
+        self.编排._设唤醒条件(事件名, 角色)
+
+    def 回滚(self, 原因: str, 强制: bool) -> None:  # noqa: ARG002
+        """退回重做（D-050：上限 2 次）。
+
+        **必须走门禁账的退回计数**，不能另起一套——
+        上限是门禁的硬约束，绕过它就等于没有上限。
+        """
+        self.编排._请求退回(原因)
+
+    def 状态(self) -> dict[str, str]:
+        """查询成员状态（D-046：数据不进标准界面，只给主理人看）。"""
+        return self.编排._成员状态表()
+
+    def _发角色事件(self, kind: str, 载荷: dict[str, object]) -> None:
+        """发 `role.*` 事件。**失败不抛**——
+        回调的主职是记事实，事件只是留痕。
+        """
+        from ..domain.event import EventKind
+
+        try:
+            事件类 = EventKind(kind)
+        except ValueError:  # pragma: no cover - 常量拼错才会走到
+            return
+        self.编排.发(事件类, self._当前阶段(), **载荷)
+
+    def _当前阶段(self) -> PhaseId:
+        """工具层回调用的阶段。与 `记事件` 同一口径：
+        取最新阶段而不是猜 GATING——工具调用可能发生在任何阶段。"""
+        过程 = self.编排._过程
+        return 过程.状态.phase if 过程 is not None else PhaseId.INTAKE
 
 
 @dataclass(frozen=True, slots=True)
@@ -1056,7 +1120,14 @@ class _过程:
                 # 此前 `LlmResponse.tool_calls` 从不被读：请求的 `tools`
                 # 真的发给模型了（D-233），模型也会真的调用，
                 # 但响应一到就被当普通文本丢掉——**16 个工具全是死的**。
-                工具轮 = self._跑工具(角色, 阶段, 响应)
+                # **先标「此刻正在派发谁」**（D-406）：工具轮里模型可能调
+                # `flow.sleep` / `msg.report_to_lead`，那些回调要知道是谁在调。
+                # 用 try/finally 复原——异常路径下也要清，否则会残留上一位。
+                self.编排._派发中角色 = 角色
+                try:
+                    工具轮 = self._跑工具(角色, 阶段, 响应)
+                finally:
+                    self.编排._派发中角色 = None
                 if 工具轮.is_error:
                     错 = 工具轮.error
                     assert 错 is not None
@@ -1067,6 +1138,7 @@ class _过程:
                 self.回复[角色] = 响应.text
                 self._记入历史(角色, 阶段, 响应.text)
                 self.已完成 = (*self.已完成, cid)
+            self.编排._派发中角色 = None
             self.动过的.append(角色)
             self.本段动过.append(角色)
             self.出现过的状态.append(RoleState.DONE)
@@ -1768,6 +1840,18 @@ class 编排器:
         #: `跑到终` 建的推进过程。**显式初始化为 None**——
         #: 让类型检查器知道它一定有值，而不是靠 `__init__` 里没赋值。
         self._过程: _过程 | None = None
+        #: 唤醒条件登记（成员 → 事件名）。
+        #:
+        #: **原先连字段都没有**（D-406）：`flow.wake_on` 需要存条件，
+        #: 而工具依赖上那个回调恒为 None，接线时无处可存——
+        #: 于是「有字段、有判空、有失败返回」看着齐全，实则整条链不存在。
+        self._唤醒条件: dict[RoleId, str] = {}
+        #: **正在被派发、且正在跑工具轮的那个成员**（D-406）。
+        #:
+        #: 不能拿 `本段动过[-1]` 顶替——那份列表在**工具轮之后**才 append，
+        #: 而 `flow.sleep` 恰恰在工具轮里被调，于是那一刻列表还是空的，
+        #: 回调会静默什么都不做（实测事件数为 0）。
+        self._派发中角色: RoleId | None = None
         #: **取消标志**。与 `_指令队列` 同一个道理：UI 线程只置位，
         #: worker 线程只读——不跨线程改同一个状态（D-012 插话已定此模式）。
         #:
@@ -1884,12 +1968,128 @@ class 编排器:
         """转给当前推进过程记账（见 `_过程.记汇报`）。"""
         self._建过程().记汇报(内容, 答复)
 
+    # ── 工具回调需要的编排侧能力（D-406）──
+    #
+    # 全部只做「记事实 + 发事件」，**不替模型做决定**。
+    # 「严禁编造」是最高数据纪律：编排器不能凭成员一句话就批准什么。
+
+    def _当前阶段(self) -> PhaseId:
+        """工具层回调用的阶段。与 `记事件` 同一口径：
+        取最新阶段而不是猜 GATING——工具调用可能发生在任何阶段。"""
+        过程 = self._过程
+        return 过程.状态.phase if 过程 is not None else PhaseId.INTAKE
+
+    def _当前成员(self) -> RoleId | None:
+        """当前正在推进的成员。
+
+        **编排器不记「当前角色」**——它只跑阶段，一阶段里可能先后
+        经手多个成员。故取「本段动过的最后一个」：那最接近
+        「刚刚在干活的是谁」。取不到就 None——
+        工具可能在成员上下文之外被调（门禁取证段）。
+        """
+        return self._派发中角色
+
+    def _成员状态表(self) -> dict[str, str]:
+        """成员状态快照（D-046：数据不进标准界面，只供主理人查询）。"""
+        if self._过程 is None:
+            return {}
+        return {r.value: st.value for r, st in self._过程.状态.role_states.items()}
+
+    def _挂起当前成员(self, 原因: str) -> None:
+        """把当前成员置为挂起。
+
+        **挂起态绝不发起模型请求**（D-042 第 1 条）——
+        由 `该发请求` 保证，本方法只改状态。
+        """
+        角色 = self._当前成员()
+        if 角色 is None:
+            return
+        self._置成员状态(角色, RoleState.SUSPENDED, f"成员主动挂起：{原因[:60]}")
+        # **挂起单独发 `role.sleep`**（D-406）：`role.state_changed` 说的是
+        # 「状态变了」，`role.sleep` 说的是「为什么变、因谁而起」——
+        # 归档里问「这个成员为什么停下来」时，后者才答得上。
+        self._发角色事件("role.sleep", {"角色": 角色.value, "原因": 原因[:80]})
+
+    def _挂起成员(self, 事项: str, 紧急: bool) -> None:
+        """请示：置为等待条件，等主理人那一轮读到它。
+
+        **不硬造「已批准」**——那是编排器替主理人做决定。
+        """
+        角色 = self._当前成员()
+        if 角色 is None:
+            return
+        标 = "紧急请示" if 紧急 else "请示"
+        self._置成员状态(角色, RoleState.AWAITING_CONDITION, f"{标}：{事项[:60]}")
+
+    def _设唤醒条件(self, 事件名: str, 角色名: str) -> None:
+        """登记唤醒条件。命中时把成员放回运行中。"""
+        try:
+            目标 = RoleId(角色名)
+        except ValueError:
+            return
+        self._唤醒条件[目标] = 事件名
+        self._置成员状态(目标, RoleState.AWAITING_CONDITION, f"等待事件：{事件名}")
+        self._发角色事件("role.wake", {"角色": 目标.value, "等待事件": 事件名})
+        self._唤醒条件 = self._唤醒条件
+
+    def _请求退回(self, 原因: str) -> None:
+        """成员请求退回重做。
+
+        **只发事件、不自己改门禁账**——上限 2 次（D-050）是门禁循环的
+        硬约束，在这里另起一套就等于没有上限。
+        """
+        角色 = self._当前成员()
+        if self._过程 is None:
+            return
+        self.发(
+            EventKind.ROLE_REPORT,
+            self._当前阶段(),
+            角色=角色.value if 角色 is not None else "",
+            detail=f"成员请求退回：{原因[:80]}",
+        )
+        # **额外发状态变化**（D-406）：退回之后成员要回到可重做状态，
+        # 否则状态表停在「等待条件」，而它其实可以继续干了。
+        if 角色 is not None:
+            self._置成员状态(角色, RoleState.RUNNING, f"退回重做：{原因[:50]}")
+
+    def _置成员状态(self, 角色: RoleId, 状态: RoleState, 说明: str) -> None:
+        """改成员状态 + 发事件。**两件事都要做**——
+        只改状态则界面不知情（D-296 的教训），
+        只发事件则续跑时状态对不上（同样后果）。
+        """
+        from ..domain.event import EventKind
+
+        if self._过程 is not None:
+            self._过程.状态 = self._过程.状态.set_role_state(角色, 状态)
+        try:
+            事件类 = EventKind.ROLE_STATE_CHANGED
+        except ValueError:  # pragma: no cover
+            return
+        self.发(事件类, self._当前阶段(), 角色=角色.value, 状态=状态.value, 说明=说明[:80])
+
+    def _发角色事件(self, kind: str, 载荷: dict[str, object]) -> None:
+        """发一条 `role.*` 事件（D-406）。
+
+        与 `编排回调._发角色事件` 分开是因为**持有者不同**：
+        那个方法挂在编排回调上（发事件需先有编排器，故它是后补的），
+        这个挂在编排器上，供编排器自己的状态变更用。
+        失败策略相同——未登记的 kind 静默跳过，不因留痕失败中断流程。
+        """
+        from ..domain.event import EventKind
+
+        try:
+            事件类 = EventKind(kind)
+        except ValueError:  # pragma: no cover - 常量拼错才会走到
+            return
+        self.发(事件类, self._当前阶段(), **载荷)
+
     def _建过程(self) -> _过程:
         """建立（或复用）推进过程。**幂等**——
         `取一步` 与 `跑到终` 都要它，故不能建两次。
         """
         if self._过程 is not None:
             return self._过程
+
         任务 = TaskSpec(tier=TierId.PRO, requirement="")
         self._过程 = _过程(
             编排=self,
@@ -1899,7 +2099,24 @@ class 编排器:
             状态=new_run_state(self.运行号, 任务),
             初始已完成=self.初始已完成,
         )
+        # **工具调用存档此时才有对象**（D-406）——
+        # 它是 `_过程` 的字段，故必须等过程建好才能递给工具层。
+        # 此前 `工具依赖.调用存档` 恒为 None，`tool.result` 于是永远失败。
+        self._记工具存档()
         return self._过程
+
+    def _记工具存档(self) -> None:
+        """把本过程的工具存档对象接到工具层。**幂等**——
+        `_建过程` 已保证只建一次，但这个方法可能被别处再调，故自己判重。
+        """
+        if self._过程 is None:
+            return
+        存档 = self._过程.工具存档
+        if 存档 is None:
+            存档 = 调用存档类()
+            self._过程.工具存档 = 存档
+        if self.工具层 is not None:
+            self.工具层.接调用存档(存档)
 
     def 跑到终(self, *, 档位: TierId, 需求: str) -> Result[编排结果]:
         """用 `drive` 跑到底。**这是唯一入口**——

@@ -71,6 +71,13 @@ class ErrorCode(StrEnum):
     PATH_ESCAPE = "E060"  # 越出允许的根（D-076）
     TOOL_NOT_ALLOWED = "E065"  # 角色不在该工具白名单内（D-042 双重白名单）
     TOOL_UNKNOWN = "E066"  # 调用了不存在的工具名（D-042 已砍除的 fs.* 也走这里）
+    TOOL_NOT_WIRED = "E067"  # 回调未接线（D-406）。**与 E065 分开不是洁癖**
+
+    # `_未接线` 原先返回 `TOOL_NOT_ALLOWED`（E065「角色不在白名单内」）。
+    # 实测：`msg.report_to_lead` 的白名单**确实包含**调用者，
+    # 仍报 E065——排障时会一路查到角色配置，而白名单没问题。
+    # 「拼错名字 / 越权 / 缺回调」三件事必须一眼可分，
+    # 否则每次都要读完调用链才知道真因。
     FILE_UNREADABLE = "E061"
     FILE_TOO_LARGE = "E062"
     DOCX_MALFORMED = "E063"  # 非合法 zip（D-078）

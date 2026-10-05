@@ -32,11 +32,14 @@ from ...ports.storage import StoragePort
 from ...ports.user_files import UserFilesPort
 from ...ports.validators import ValidatorPort
 from .audit import 审计器
+from .calllog import 调用存档 as 调用存档类
 from .handlers import (
     唤醒回调,
     回滚回调,
     工具依赖,
+    挂起回调,
     汇报回调,
+    状态回调,
     记事件回调,
     请示回调,
     问用户回调,
@@ -69,8 +72,17 @@ def 建工具运行器(
     问用户: 问用户回调 | None = None,
     汇报: 汇报回调 | None = None,
     请示: 请示回调 | None = None,
+    #: **此前工厂连这个参数都没有**（D-406）：`工具依赖.挂起` 有字段，
+    #: `flow.sleep` 处理器有判空与失败返回，**唯独工厂无法注入它**。
+    #: 于是无论装配根多努力，`flow.sleep` 必然落到「未接线」——
+    #: 看起来接线齐全，实则整条链不存在。
+    挂起: 挂起回调 | None = None,
     唤醒: 唤醒回调 | None = None,
     回滚: 回滚回调 | None = None,
+    状态: 状态回调 | None = None,
+    #: **工具调用存档**（D-406）：`tool.result` 据此查回上一轮的工具输出。
+    #: 此前 `工具依赖.调用存档` 恒为 None，故 `tool.result` 永远失败。
+    调用存档: 调用存档类 | None = None,
 ) -> 工具运行器:
     """造一个工具运行器。
 
@@ -96,8 +108,11 @@ def 建工具运行器(
             问用户=问用户,
             汇报=汇报,
             请示=请示,
+            挂起=挂起,
             唤醒=唤醒,
             回滚=回滚,
+            状态=状态,
+            调用存档=调用存档,
         ),
         审计=审计器(时钟=审计时钟 or time.monotonic, 落盘=审计落盘),
     )

@@ -104,10 +104,17 @@ def _未接线(工具名: str, 缺哪个: str) -> Result[str]:
 
     静默成功是 D-165 的形态：零件都测过、测试全绿，
     但真跑起来这一条其实什么也没做。
+
+    ## 为什么用 `TOOL_NOT_WIRED` 而不是 `TOOL_NOT_ALLOWED`（D-406）
+
+    原先返回 E065「角色不在该工具白名单内」。实测三者：
+    `STRUCTURE` 调用 `msg.report_to_lead` 时白名单**通过**，
+    却仍报 E065——排障会一路查到角色配置去，而白名单没问题。
+
+    「拼错名字 / 越权 / 缺回调」必须一眼可分。撞码的代价是
+    每次都得读完调用链才知道真因，而这恰好是最难查的那类。
     """
-    return Result.fail(
-        ErrorCode.TOOL_NOT_ALLOWED, f"{工具名} 尚未接线（缺 {缺哪个}，第 13 步注入）"
-    )
+    return Result.fail(ErrorCode.TOOL_NOT_WIRED, f"{工具名} 尚未接线（缺 {缺哪个}，第 13 步注入）")
 
 
 # ── 公共区 ──
