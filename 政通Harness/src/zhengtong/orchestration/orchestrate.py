@@ -63,6 +63,7 @@ from ..domain.gate import (
 )
 from ..domain.ids import ArtifactId, RunId
 from ..domain.phase import PhaseId, PhaseState
+from ..domain.reasoning import 推理开关
 from ..domain.role import RoleId, RoleState, display_name, 取温度
 from ..domain.run_state import GateRecord, RunState, new_run_state
 from ..domain.task import TaskSpec
@@ -93,6 +94,14 @@ from ..services.tools.calllog import 调用存档 as 调用存档类
 from ..services.tools.runner import 工具运行器
 from .gates_forging import 门禁取证实装, 门禁取证请求
 from .machine import 该发请求
+
+#: 「没有推理结论」的**单例**默认值（D-384）。
+#:
+#: 不能写 `推理关闭: 推理开关 = 推理开关()`——那是在默认参数里调用函数
+#: （Ruff B008）。而 `推理开关` 是 frozen + slots 的 dataclass，
+#: 构造结果不可能被就地改坏，故**共享一个单例是安全的**，
+#: 也比 `default_factory` 少一次构造。
+_无推理结论: 推理开关 = 推理开关()
 
 #: 产物路径前缀。**必须以 `data/` 开头**——
 #: `paths.AI_WRITABLE` 只认 `data/`（AI 只能写 `data/`），
@@ -147,6 +156,19 @@ def _本档可调工具(角色: RoleId, 档: TierId) -> tuple[ToolSchema, ...]:
     from zhengtong.services.tools.registry import 该角色可调
 
     全部 = 该角色可调(角色)
+    # **先按档位的工具域过滤**（D-384）。
+    # 早先这里只有一层：按角色取白名单，再按 `requires_user_questions`
+    # 剔掉 `flow.ask_user`。于是咨询档（不写稿、门禁不适用）照样发给主理人
+    # `draft.submit` 与 `validate.run`——模型看得到、调得动，却永远用不上。
+    #
+    # 「用不上」不是零成本：模型会尝试调用它，工具层会拒绝，
+    # 用户在调试模式里看到的是「模型说能调用却调不动」。
+    启用域 = TIER_BY_ID[档].工具域
+    全部 = tuple(t for t in 全部 if t.域 in 启用域)
+    # `requires_user_questions` 仍是**提问这件事的权威声明**（D-029）：
+    # 咨询档 `requires_user_questions=False` 即便将来往 `工具域` 里
+    # 误加了「方向提问」，这一行仍会把它剔掉。两处互为兜底，
+    # 且 `tests/test_tier_tool_domains.py` 断言二者一致。
     if not TIER_BY_ID[档].requires_user_questions:
         全部 = tuple(t for t in 全部 if t.name != "flow.ask_user")
     return tuple(
@@ -1271,7 +1293,7 @@ class _过程:
             # 那两档按定义就不该付推理的钱。
             额外字段=self._推理字段(),
         )
-        前缀 = self.编排.推理关闭[1]
+        前缀 = self.编排.推理关闭.提示前缀
         if 前缀 and 角色 is RoleId.TEAM_LEAD and 消息:
             # **前缀只加在用户诉求上**（第 4 种写法是提示词前缀）。
             # 加在每条系统消息上会污染公文正文，
@@ -1324,7 +1346,7 @@ class _过程:
         **按探测结论决定**：写法为 0（关不掉或没探测过）返回空。
         此时行为与从前**逐字节相同**，故这个功能最坏等于没做。
         """
-        字段 = self.编排.推理关闭[0]
+        字段 = self.编排.推理关闭.关闭字段
         if not 字段:
             return ()
         if TIER_BY_ID[self.编排.档位].reasoning_policy is ReasoningPolicy.ON:
@@ -1492,10 +1514,11 @@ class 编排器:
         #: **关掉推理的办法**（D-380）：`(请求体字段, 提示词前缀)`。
         #:
         #: 由装配根从 `system/reasoning.json` 读出、并在适配层翻译成值传下来。
-        #: 编排层**不认识「写法序号」这个概念**——D-070 要求只有装配根 import 适配器。
+        #: 探测结论 + 已翻译的关闭方案。**编排层不认识「写法序号」**——
+        #: D-070 要求只有装配根 import 适配器，故字段在这里已翻成请求体字段。
         #:
-        #: 默认 `((), "")` = 不做任何控制，此时请求体与从前逐字节相同。
-        推理关闭: tuple[tuple[tuple[str, object], ...], str] = ((), ""),
+        #: 默认 `推理开关()`（`无结论`）= 不做任何控制，此时请求体与从前逐字节相同。
+        推理关闭: 推理开关 = _无推理结论,
         摘要器: Callable[[tuple[Message, ...]], Message] | None = None,
         工具层: 工具运行器 | None = None,
         导出: ExportPort | None = None,
@@ -1653,9 +1676,13 @@ class 编排器:
             EventKind.MODEL_RESPONSE,
             阶段,
             model=请求.model,
-            prompt_tokens=用量.prompt_tokens,
-            completion_tokens=用量.completion_tokens,
-            reasoning_tokens=用量.reasoning_tokens,
+            # **用量可能缺失**（D-384）：有的后端不回报 usage。
+            # 此前 `usage` 标注成非 Optional，这里就直接取属性——
+            # 一旦真遇到不回报用量的后端就 `AttributeError` 崩在编排层。
+            # 缺就报 0：**显示与台账的计 0 远好过整轮运行崩掉**（D-277 口径）。
+            prompt_tokens=0 if 用量 is None else 用量.prompt_tokens,
+            completion_tokens=0 if 用量 is None else 用量.completion_tokens,
+            reasoning_tokens=0 if 用量 is None else 用量.reasoning_tokens,
             finish_reason=响应.finish_reason.value,
         )
 

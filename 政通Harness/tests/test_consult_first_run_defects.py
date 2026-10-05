@@ -272,11 +272,32 @@ class Test档位提问豁免真被消费:
         名 = {t.name for t in _本档可调工具(RoleId.TEAM_LEAD, 档)}
         assert "flow.ask_user" in 名, f"{档} 该问却没发提问工具"
 
-    def test_豁免只影响提问工具(self) -> None:
-        """别把豁免做成「什么工具都不给」。"""
+    def test_豁免不是把工具全砍光(self) -> None:
+        """别把「咨询档能力更少」做成「什么工具都不给」。"""
         咨询 = {t.name for t in _本档可调工具(RoleId.TEAM_LEAD, TierId.CONSULT)}
-        pro = {t.name for t in _本档可调工具(RoleId.TEAM_LEAD, TierId.PRO)}
-        assert len(pro - 咨询) == 1, f"差异不止提问工具一个：{pro - 咨询}"
+        闪 = {t.name for t in _本档可调工具(RoleId.TEAM_LEAD, TierId.FLASH)}
+        assert 咨询 < 闪, "咨询档工具应是成文档的真子集"
+        assert len(咨询) >= 10, f"咨询档工具过少：{咨询}"
+        assert "kb.search" in 咨询 and "shared.write" in 咨询, "检索与公共区必须留"
+
+    def test_咨询档不发成文与门禁工具(self) -> None:
+        """**D-384**：咨询档不写稿、门禁不适用。
+
+        早先档位只过滤了「提问工具」一个，于是 `draft.submit`
+        与 `validate.run` 照样发给主理人——模型看得到、调得动，
+        却永远用不上。被调用时工具层会拒绝，用户在调试模式里
+        看到的是「模型说能调用却调不动」。
+        """
+        咨询 = {t.name for t in _本档可调工具(RoleId.TEAM_LEAD, TierId.CONSULT)}
+        assert "draft.submit" not in 咨询, "咨询档不产出成文，不该发提交正文的工具"
+        assert "validate.run" not in 咨询, "咨询档门禁不适用，不该发校验器工具"
+        assert "flow.ask_user" not in 咨询, "咨询档免提问"
+
+    def test_成文档两个成文工具都在(self) -> None:
+        """反过来也锁死：Flash/Pro 是成文档，成文与门禁工具不能缺。"""
+        for 档 in (TierId.FLASH, TierId.PRO):
+            工具 = {t.name for t in _本档可调工具(RoleId.TEAM_LEAD, 档)}
+            assert {"draft.submit", "validate.run", "flow.ask_user"} <= 工具, f"{档} 缺成文工具"
 
 
 class Test咨询档阶段线符合架构:

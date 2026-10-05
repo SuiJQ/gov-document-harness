@@ -230,17 +230,35 @@ def test_用量的推理token单独统计() -> None:
         }
     )
     got = _适配器(_假传输([(200, 响应)])).complete(_请求())
-    assert got.unwrap().usage.reasoning_tokens == 40
-    assert got.unwrap().usage.completion_tokens == 50
+    用量 = got.unwrap().usage
+    assert 用量 is not None, "响应带了 usage，不该是 None"
+    assert 用量.reasoning_tokens == 40
+    assert 用量.completion_tokens == 50
 
 
-def test_缺usage字段不崩() -> None:
-    """服务端不保证给 usage。缺了就当 0，不抛异常。"""
+def test_缺usage字段不崩且如实为无() -> None:
+    """服务端不保证给 usage。**不抛异常，也不得伪装成「用了 0」**（D-384）。
+
+    填 0 与「没有值」在展示层等价（台账记 0），在**判定**上却相反：
+    填 0 会让推理探测得出「本模型不生成推理内容，无需关闭」，
+    于是对确实在推理、只是不报用量的后端说「不用关」，
+    咨询/Flash 照常付推理的钱。故端口允许 `None`，由展示层折成 0。
+    """
     响应 = _正常响应()
     del 响应["usage"]
     got = _适配器(_假传输([(200, 响应)])).complete(_请求())
     assert got.is_ok
-    assert got.unwrap().usage.total == 0
+    assert got.unwrap().usage is None, "缺失的 usage 不得伪装成 TokenUsage(0,0,0)"
+
+
+def test_usage存在但缺计数字段当零() -> None:
+    """**有** usage 字典、只是少几个数 → 那些数当 0，整体不算 None。"""
+    got = _适配器(
+        _假传输([(200, {"usage": {}, "choices": [{"message": {"content": "x"}}]})])
+    ).complete(_请求())
+    用量 = got.unwrap().usage
+    assert 用量 is not None, "usage 字典在，只是字段少——那是 0，不是「没有」"
+    assert 用量.total == 0
 
 
 def test_缺choices不崩() -> None:

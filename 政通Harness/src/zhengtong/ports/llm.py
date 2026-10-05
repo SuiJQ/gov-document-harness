@@ -15,6 +15,7 @@ from typing import ClassVar, Protocol, runtime_checkable
 
 from ..domain.errors import Result
 from ..domain.event import Span
+from ..domain.reasoning import 推理开关
 
 
 class FinishReason(StrEnum):
@@ -168,7 +169,15 @@ class LlmResponse:
 
     text: str
     finish_reason: FinishReason
-    usage: TokenUsage
+    #: **可以是 `None`**（D-384）。
+    #:
+    #: 早先标注为 `TokenUsage`（非可选），而 `reasoning_probe._推理token`
+    #: 与 `orchestrate._记用法` 都在判 `usage is None`——**标注与运行时行为
+    #: 相反**。后果是每个构造「后端不回报用量」的响应都得骗类型
+    #: （`cast(TokenUsage, None)` 或 `# type: ignore`），而 D-018 禁后者。
+    #:
+    #: 让如实状态能如实存在，比保住一个「非空」的漂亮标注重要。
+    usage: TokenUsage | None
     tool_calls: tuple[ToolCall, ...] = ()
     call_id: str = ""
     raw_error_code: str = ""  # 服务端结构化错误码，供 error_map 映射中文
@@ -215,10 +224,7 @@ class 探测结论:
     #: 因前项失败而没跑的项名。
     未测: tuple[str, ...] = ()
 
-    #: **实测出「该后端用第几种写法关推理」**（D-380）。
-    #:
-    #: 取值是 `adapters/reasoning_probe.写法表` 的**序号**（1–4）；
-    #: **0 表示关不掉或未测**。
+    #: **实测出的推理开关结论**（D-380/D-384）。
     #:
     #: ## 为什么必须带着它穿过探测层
     #:
@@ -226,11 +232,19 @@ class 探测结论:
     #: "推理可关闭（第 2 种写法生效）"` —— **一句话，序号留在了适配器里**。
     #: 于是运行时永远不知道该用哪种写法，
     #: `写法表` 里的四道关闭写法**从未用于关闭任何一次请求**：
-    #: 测了、报告了、用户看得懂，然后丢掉。
+    #: 测了、报告了、用户看得懂，然后丢掉（D-260/D-263 同型）。
     #:
-    #: 与 D-260/D-263（字段填好被丢掉）同型，
-    #: 区别只在于丢的时候还顺手把它变成了一句人话，更难看出丢了。
-    推理写法: int = 0
+    #: ## 为什么存整个结论而不仅一个序号
+    #:
+    #: 早先存 `推理写法: int`，而 `0` 同时表示「关不掉」
+    #: 「模型本来就不推理」「后端不报推理用量」三件事——
+    #: 运行时读回 0 就分不清该对用户说哪句话，只能一律说「关不掉」。
+    #: 故存 `推理开关`（含 `状态`），让五种情形各有各的话。
+    #:
+    #: 字段名不叫 `推理开关` 是为了**不遮蔽类型名**：
+    #: 类体内的 `default_factory` 在字段绑定前求值，
+    #: 同名字段会把 `推理开关` 从「类型」变成「自己」，默认工厂就废了。
+    推理结论: 推理开关 = field(default_factory=推理开关)
 
     #: 项序常量。**不要另写一份**——探测层、展示层与判据都按它遍历。
     项序: ClassVar[tuple[str, ...]] = ("网络连通", "鉴权", "模型调用", "工具调用", "推理开关")

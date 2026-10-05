@@ -15,8 +15,9 @@ from collections.abc import Callable
 
 import pytest
 
-from zhengtong.adapters.reasoning_probe import 写法表, 探测推理, 推理探测结论
+from zhengtong.adapters.reasoning_probe import 写法表, 探测推理
 from zhengtong.domain.errors import Result
+from zhengtong.domain.reasoning import 推理开关, 推理状态
 from zhengtong.ports.llm import (
     FinishReason,
     LlmRequest,
@@ -26,12 +27,14 @@ from zhengtong.ports.llm import (
 )
 
 
-def _响应(*, 推理: int) -> LlmResponse:
+def _响应(*, 推理: int, 无用量: bool = False) -> LlmResponse:
     return LlmResponse(
         text="pong",
         tool_calls=(),
         finish_reason=FinishReason.STOP,
-        usage=TokenUsage(prompt_tokens=0, completion_tokens=0, reasoning_tokens=推理),
+        usage=None
+        if 无用量
+        else TokenUsage(prompt_tokens=0, completion_tokens=0, reasoning_tokens=推理),
     )
 
 
@@ -43,9 +46,10 @@ class _后端:
     这正是 D-048 实测的真实后端行为。
     """
 
-    def __init__(self, *, 认得: set[str], 基础推理: int = 100) -> None:
+    def __init__(self, *, 认得: set[str], 基础推理: int = 100, 无用量: bool = False) -> None:
         self.认得 = 认得
         self.基础推理 = 基础推理
+        self.无用量 = 无用量
         self.见过: list[dict[str, object]] = []
 
     def 发(self, 请求: LlmRequest) -> Result[LlmResponse]:
@@ -57,10 +61,10 @@ class _后端:
         # 否则第一次调用就把推理打成 0，探测会短路成「无需关闭」。
         # 第 4 种（提示词前缀）也不靠额外字段，它在请求**正文**里。
         关掉了 = bool(请求.额外字段) and any(键 in self.认得 for 键 in 体 if 键 != "model")
-        return Result.ok(_响应(推理=0 if 关掉了 else self.基础推理))
+        return Result.ok(_响应(推理=0 if 关掉了 else self.基础推理, 无用量=self.无用量))
 
 
-def _跑(后端: _后端) -> Result[推理探测结论]:
+def _跑(后端: _后端) -> Result[推理开关]:
     return 探测推理("m", 后端.发)
 
 
@@ -102,6 +106,7 @@ class Test无效写法不误判:
         结论 = _跑(后端)
         assert not 结论.unwrap().能关闭, f"无效写法全返回 200 却判成能关：{结论.unwrap()}"
         assert 结论.unwrap().可用写法 == 0
+        assert 结论.unwrap().状态 is 推理状态.关闭不了, f"状态判错：{结论.unwrap().状态}"
 
     def test_全败时如实告知而非静默(self) -> None:
         后端 = _后端(认得=set())
@@ -130,6 +135,8 @@ class Test基准与短路:
         结论 = _跑(后端)
         assert not 结论.unwrap().能关闭
         assert len(后端.见过) == 1, f"基准就不推理，却还发了 {len(后端.见过)} 次请求——浪费往返"
+        assert 结论.unwrap().状态 is 推理状态.无需关闭, f"状态判错：{结论.unwrap().状态}"
+        assert "无需关闭" in 结论.unwrap().说明(), f"文案没说是无需关：{结论.unwrap().说明()}"
 
     def test_探测失败如实返回错误(self) -> None:
         """基准请求就失败 → 探测无从谈起，必须返回错误而非「关不掉」。"""
@@ -143,6 +150,64 @@ class Test基准与短路:
         assert 结论.is_error, "基准失败却报告探测结论"
         assert 结论.error is not None
         assert "鉴权失败" in 结论.error.detail
+
+
+class Test四种情形互不相同:
+    """**本组是 D-384 缺陷的直接防回归判据。**
+
+    修复前 `可用写法=0` 同时表示「关不掉」与「模型不推理」，
+    于是探测对两种后端给出**逐字相同**的话：
+    对一个本来就不推理的模型说「此服务关不掉推理，将按开启运行」，
+    用户再被 `cli` 的处置建议补一刀「成文更慢、额度消耗更高」。
+
+    只断言「能不能关闭」抓不住它——两种情形都是 `False`。
+    必须断言**状态本身互不相同**。
+    """
+
+    def test_四情形得到四种状态(self) -> None:
+        情形 = {
+            推理状态.能关闭: _后端(认得={"thinking"}, 基础推理=100),
+            推理状态.关闭不了: _后端(认得=set(), 基础推理=100),
+            推理状态.无需关闭: _后端(认得=set(), 基础推理=0),
+            推理状态.无法判定: _后端(认得={"thinking"}, 无用量=True),
+        }
+        实得 = {_跑(后端).unwrap().状态 for 后端 in 情形.values()}
+        assert 实得 == set(情形), f"状态没区分开：得到 {sorted(s.value for s in 实得)}"
+
+    def test_四情形说明互不相同(self) -> None:
+        """文案也必须各不相同——相同的文案等于用户读到的信息相同。"""
+        情形 = [
+            _后端(认得={"thinking"}, 基础推理=100),
+            _后端(认得=set(), 基础推理=100),
+            _后端(认得=set(), 基础推理=0),
+            _后端(认得={"thinking"}, 无用量=True),
+        ]
+        说明 = [_跑(后端).unwrap().说明() for 后端 in 情形]
+        assert len(set(说明)) == 4, f"有情形撞了文案：{说明}"
+
+    def test_不报推理用量判为无法判定而非关不掉(self) -> None:
+        """**`-1` 契约的兑现处**（D-384）。
+
+        `_推理token` 的 docstring 写死了「只有字段确实存在才参与判定」，
+        但调用方早先用 `基准推理 <= 0` 一网打尽，把 `-1` 当成了「不推理」。
+        这里锁死它必须落到 `无法判定`。
+        """
+        结论 = _跑(_后端(认得={"thinking"}, 无用量=True)).unwrap()
+        assert 结论.状态 is 推理状态.无法判定, f"判错成 {结论.状态}"
+        assert "无法判定" in 结论.说明(), 结论.说明()
+        assert not 结论.能关闭
+
+    def test_无法判定时不得附字段(self) -> None:
+        """判不出来就**不能当成能关**——宁可按开启运行，不可假装关掉了。"""
+        结论 = _跑(_后端(认得={"thinking"}, 无用量=True)).unwrap()
+        assert 结论.可用写法 == 0, f"判不出来却给了写法：{结论.可用写法}"
+
+    def test_无需关闭时不得附字段(self) -> None:
+        """对一个本就不推理的模型发 `enable_thinking: false` 是无意义请求，
+        部分后端对不认识的字段直接 400。"""
+        结论 = _跑(_后端(认得=set(), 基础推理=0)).unwrap()
+        assert 结论.可用写法 == 0
+        assert not 结论.能关闭
 
 
 class Test额外字段不影响正常请求:

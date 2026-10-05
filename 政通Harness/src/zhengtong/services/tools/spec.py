@@ -27,6 +27,7 @@ from enum import StrEnum
 from typing import Final
 
 from ...domain.role import RoleId
+from ...domain.tool import ToolDomain
 
 
 class Effect(StrEnum):
@@ -54,6 +55,17 @@ _全体: Final[frozenset[RoleId]] = frozenset(
 #: 仅主理人范正章（D-041：成员唯一的对外通道是向主理人汇报）。
 _仅主理人: Final[frozenset[RoleId]] = frozenset({RoleId.TEAM_LEAD})
 
+#: **仅四位成员**——不含主理人（D-384）。
+#:
+#: `msg.report_to_lead` / `msg.request_from_lead` 的白名单早先用的是
+#: `_全体`，于是**主理人自己被授予「向主理人汇报」与「向主理人请示」**。
+#: 这两个工具的定义是「成员」与主理人之间的通道：主理人调它就是自己向
+#: 自己说话，语义上不存在对应端点。
+#:
+#: 咨询档尤其糟——该档**只有主理人一人**，于是这两个工具**没有一个
+#: 合法调用者**，却照样出现在主理人发给 API 的工具清单里。
+_成员: Final[frozenset[RoleId]] = frozenset(_全体 - _仅主理人)
+
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
@@ -70,6 +82,12 @@ class ToolSpec:
     allowed_roles: frozenset[RoleId] = _全体
     effect: Effect = Effect.READ
     requires_publish: bool = False  # 产物必须经公共区（D-042）
+    #: 用途域。**档位按它过滤**（D-384）。
+    #:
+    #: 默认给 `运行控制`——不是「最通用」，而是**最不容易被误当成
+    #: 对外可见的能力**：给错域的后果是工具在某档凭空消失或越权暴露，
+    #: 而控制类工具缺席顶多是流程退化。反了就会把对外能力漏给不该有的档。
+    域: ToolDomain = ToolDomain.运行控制
 
     @property
     def 可被全员调用(self) -> bool:

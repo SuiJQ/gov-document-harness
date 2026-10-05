@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Final
 
 from ...domain.role import RoleId
-from .spec import Effect, ToolSpec
+from .spec import Effect, ToolDomain, ToolSpec, _成员
 
 # ── 公共区 ──
 
@@ -44,6 +44,7 @@ SHARED_WRITE = ToolSpec(
     },
     effect=Effect.PUBLISH,
     requires_publish=True,
+    域=ToolDomain.公共交换,
 )
 
 SHARED_READ = ToolSpec(
@@ -54,6 +55,7 @@ SHARED_READ = ToolSpec(
         "properties": {"name": {"type": "string", "description": "产物名称"}},
         "required": ["name"],
     },
+    域=ToolDomain.公共交换,
 )
 
 SHARED_LIST = ToolSpec(
@@ -64,6 +66,7 @@ SHARED_LIST = ToolSpec(
         "properties": {"kind": {"type": "string", "description": "产物种类"}},
         "required": ["kind"],
     },
+    域=ToolDomain.公共交换,
 )
 
 # ── 知识库 ──
@@ -79,6 +82,7 @@ KB_SEARCH = ToolSpec(
         },
         "required": ["query", "scope"],
     },
+    域=ToolDomain.知识检索,
 )
 
 KB_READ_PACK = ToolSpec(
@@ -89,6 +93,7 @@ KB_READ_PACK = ToolSpec(
         "properties": {"item": {"type": "string", "description": "内容包条目标识"}},
         "required": ["item"],
     },
+    域=ToolDomain.知识检索,
 )
 
 KB_READ_USER_FILE = ToolSpec(
@@ -99,6 +104,7 @@ KB_READ_USER_FILE = ToolSpec(
         "properties": {"filename": {"type": "string", "description": "用户材料文件名"}},
         "required": ["filename"],
     },
+    域=ToolDomain.知识检索,
 )
 
 # ── 汇报 ──
@@ -115,6 +121,8 @@ MSG_REPORT_TO_LEAD = ToolSpec(
         "required": ["summary"],
     },
     effect=Effect.SIGNAL,
+    allowed_roles=_成员,
+    域=ToolDomain.协作通信,
 )
 
 MSG_REQUEST_FROM_LEAD = ToolSpec(
@@ -129,6 +137,8 @@ MSG_REQUEST_FROM_LEAD = ToolSpec(
         "required": ["question"],
     },
     effect=Effect.SIGNAL,
+    allowed_roles=_成员,
+    域=ToolDomain.协作通信,
 )
 
 # ── 草稿 ──
@@ -146,6 +156,7 @@ DRAFT_SUBMIT = ToolSpec(
     },
     effect=Effect.PUBLISH,
     requires_publish=True,
+    域=ToolDomain.产出交付,
 )
 
 # ── 校验 ──
@@ -162,6 +173,7 @@ VALIDATE_RUN = ToolSpec(
         "required": ["checker"],
     },
     effect=Effect.PURE,
+    域=ToolDomain.门禁校验,
 )
 
 # ── 流程（仅主理人部分）──
@@ -172,6 +184,7 @@ FLOW_STATUS = ToolSpec(
     parameters={"type": "object", "properties": {}},
     allowed_roles=frozenset({RoleId.TEAM_LEAD}),
     effect=Effect.READ,
+    域=ToolDomain.运行控制,
 )
 
 FLOW_SLEEP = ToolSpec(
@@ -183,6 +196,7 @@ FLOW_SLEEP = ToolSpec(
         "required": ["reason"],
     },
     effect=Effect.SUSPEND,
+    域=ToolDomain.运行控制,
 )
 
 FLOW_WAKE_ON = ToolSpec(
@@ -197,6 +211,7 @@ FLOW_WAKE_ON = ToolSpec(
         "required": ["event"],
     },
     effect=Effect.SUSPEND,
+    域=ToolDomain.运行控制,
 )
 
 FLOW_ASK_USER = ToolSpec(
@@ -215,6 +230,7 @@ FLOW_ASK_USER = ToolSpec(
     },
     allowed_roles=frozenset({RoleId.TEAM_LEAD}),
     effect=Effect.ASK_USER,
+    域=ToolDomain.方向提问,
 )
 
 FLOW_ROLLBACK = ToolSpec(
@@ -230,6 +246,7 @@ FLOW_ROLLBACK = ToolSpec(
     },
     allowed_roles=frozenset({RoleId.TEAM_LEAD}),
     effect=Effect.REWORK,
+    域=ToolDomain.运行控制,
 )
 
 FLOW_INJECT_DIRECTIVE = ToolSpec(
@@ -242,6 +259,7 @@ FLOW_INJECT_DIRECTIVE = ToolSpec(
     },
     allowed_roles=frozenset({RoleId.TEAM_LEAD}),
     effect=Effect.SIGNAL,
+    域=ToolDomain.运行控制,
 )
 
 #: **工具全集**。顺序固定，便于测试逐个比对，也便于打印给人看。
@@ -260,6 +278,7 @@ TOOL_RESULT = ToolSpec(
     },
     allowed_roles=frozenset(RoleId),
     effect=Effect.READ,
+    域=ToolDomain.运行控制,
 )
 
 TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (

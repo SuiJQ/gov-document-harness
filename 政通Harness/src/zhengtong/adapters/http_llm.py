@@ -100,13 +100,27 @@ class Transport(Protocol):
 _结束原因 = 归一化结束原因
 
 
-def _用量(数据: object) -> TokenUsage:
-    """解析 `usage`。**缺字段一律当 0**，不抛异常——
-    服务端不保证给，用量只用于展示与台账（D-077），不值得为它崩掉整次调用。
+def _用量(数据: object) -> TokenUsage | None:
+    """解析 `usage`。**缺字段当 0，整个 `usage` 缺失则返回 `None`**，不抛异常。
+
+    ## 为什么「整个 usage 缺失」不能当 0（D-384）
+
+    早先这里一律返回 `TokenUsage()`（全 0）。看着无害，后果却是：
+    后端**不回报推理用量**时，`reasoning_probe._推理token` 读到 0，
+    于是探测得出「基准没有推理 → **无需关闭**」。
+
+    而真相是「**判不出来**」。于是 `--doctor` 会对一个确实在推理、
+    只是不报用量的后端说「此模型不生成推理内容，无需关闭推理」，
+    咨询/Flash 两档**照常付推理的钱**——正是本次要修的那个缺陷，
+    只不过从探测层转移到了适配层。
+
+    「填 0」与「没有值」在展示层意义相同（D-277：台账记 0），
+    但在**判定**上含义相反，故端口允许 `None`，由
+    `orchestrate._记用量` 在展示时折成 0。
     """
     字典 = _取字典(数据)
     if 字典 is None:
-        return TokenUsage()
+        return None
     细节 = _取字典(字典.get("completion_tokens_details"))
     推理 = 0
     if 细节 is not None:

@@ -38,9 +38,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 
 from ..domain.errors import ErrorCode, Result
+from ..domain.reasoning import 推理开关, 推理状态
 from ..ports.llm import LlmRequest, LlmResponse, Message
 
 #: 探测用的提示词。**带 `/no_think` 前缀**是第 4 种写法之一，
@@ -52,29 +52,6 @@ _探测词 = "/no_think ping"
 #: 额度太小会在思考阶段就被截断，正文为空，
 #: 那样测出来的是「额度不够」而不是「关不掉推理」。
 _探测额度 = 512
-
-
-@dataclass(frozen=True, slots=True)
-class 推理探测结论:
-    """探测结论。**三态**——`可用写法` 为空表示「四种全败」。"""
-
-    #: 能关掉推理的写法序号（1–4）；0 表示**关不掉**。
-    可用写法: int = 0
-    #: 实际用的是第几种（与 `可用写法` 相同；全败时为 0）。
-    #: 留两个字段是刻意的：`可用写法` 给用户看，
-    #: `实测写法` 给 D-051 重试时用——将来若允许用户覆盖，
-    #: 两者会分叉。
-    实测写法: int = 0
-
-    @property
-    def 能关闭(self) -> bool:
-        return self.可用写法 != 0
-
-    def 说明(self) -> str:
-        if self.能关闭:
-            return f"推理可关闭（第 {self.可用写法} 种写法生效）"
-        return "此服务关不掉推理，将按开启运行"
-
 
 #: 四种写法。**顺序即尝试顺序**——前面的是主流写法，
 #: 少发一次请求就少一次往返。
@@ -104,11 +81,20 @@ def _请求(模型: str, 额外: Sequence[tuple[str, object]]) -> LlmRequest:
 
 
 def _推理token(响应: LlmResponse) -> int:
-    """取 `reasoning_tokens`。**没有就是 0**。
+    """取 `reasoning_tokens`。**字段缺失返回 `-1`，不是 0**。
 
     响应里没这个字段本身就是「这个后端不报推理用量」，
     按 0 处理会让判定误以为「关掉了」——
-    故这里与调用方约定：**只有字段确实存在才参与判定**。
+    故这里与调用方约定：**只有字段确实存在才参与判定**（即 `-1` 不参与）。
+
+    ## 为什么这个约定必须在**调用处**也被遵守
+
+    本函数早先的 docstring 第一句写的是「没有就是 0」，
+    与实际返回值 `-1` 自相矛盾；而调用方又用 `基准推理 <= 0` 一刀切，
+    于是 `-1` 被当成「不推理」——**docstring 警告的陷阱，实现自己踩了**。
+
+    现在 `-1` 有自己的终态（`推理状态.无法判定`），
+    不再依赖调用方记得特判即可正确。
     """
     if 响应.usage is None:
         return -1
@@ -121,28 +107,40 @@ def _推理token(响应: LlmResponse) -> int:
 发请求 = Callable[[LlmRequest], "Result[LlmResponse]"]
 
 
-def 探测推理(模型: str, 发: 发请求) -> Result[推理探测结论]:
-    """按序试探四种写法，返回第一种能关掉推理的。
+def 探测推理(模型: str, 发: 发请求) -> Result[推理开关]:
+    """按序试探四种写法，返回**五态**结论（不是「能不能关」两个值）。
 
     `发` 是一个「发请求」的函数：接收 `LlmRequest` 返回
     `Result[LlmResponse]`。用函数而非 Protocol 是为了让
     调用方（`HttpLlm`）不必为探测另开一个类。
+
+    ## 判定顺序不可调换
+
+    先看基准，再谈关闭——因为「不需要关」必须先于「能不能关」判定：
+    一个本来就不推理的模型，四种写法测下来必然「关不掉」，
+    若先跑写法表，它会被误判成「强制开启、关不掉」。
+    这正是修复前的缺陷。
     """
     基准 = _实测(模型, 发, ())
     if 基准.is_error:
         错 = 基准.error
         assert 错 is not None
         # **类型必须一致**：返回 `Result[LlmResponse]` 而这里要
-        # `Result[推理探测结论]`，故显式重建错误而不是直接转发
+        # `Result[推理开关]`，故显式重建错误而不是直接转发
         return Result.fail(错.code, 错.detail)
     基准值 = 基准.value
     assert 基准值 is not None
     基准推理 = _推理token(基准值)
 
-    # 基准就没有推理 → 本模型根本不思考，无所谓开关。
-    # 这不算「四种全败」，是「无需关闭」。
-    if 基准推理 <= 0:
-        return Result.ok(推理探测结论(可用写法=0, 实测写法=0))
+    # **先特判 -1**（后端不报推理用量）——`-1 <= 0` 成立，
+    # 若不先拦，它会被下一条当成「基准没有推理」。
+    # 这正是 `_推理token` docstring 警告过的契约，两次踩了同一个坑。
+    if 基准推理 < 0:
+        return Result.ok(推理开关(状态=推理状态.无法判定))
+    # 基准就没有推理 → 本模型根本不思考，**不需要关**。
+    # 这不是「四种全败」，也不是「关不掉」。
+    if 基准推理 == 0:
+        return Result.ok(推理开关(状态=推理状态.无需关闭))
 
     for 序, 写法 in enumerate(写法表, start=1):
         额外 = 写法[1]
@@ -155,10 +153,12 @@ def 探测推理(模型: str, 发: 发请求) -> Result[推理探测结论]:
             continue  # 该写法被拒（有的后端会 400），试下一种
         值 = _推理token(got.unwrap())
         # **判定看 reasoning_tokens 是否降为 0**，不看 HTTP 状态码——
-        # 四种无效写法全部返回 200（D-048 实测）
+        # 四种无效写法全部返回 200（D-048 实测）。
+        # 该次返回 -1 时**不算关掉**：判不出来就不能当成关掉了，
+        # 宁可继续试下一种。
         if 值 == 0:
-            return Result.ok(推理探测结论(可用写法=序, 实测写法=序))
-    return Result.ok(推理探测结论(可用写法=0, 实测写法=0))
+            return Result.ok(推理开关(状态=推理状态.能关闭, 可用写法=序))
+    return Result.ok(推理开关(状态=推理状态.关闭不了))
 
 
 def _实测(模型: str, 发: 发请求, 额外: Sequence[tuple[str, object]]) -> Result[LlmResponse]:
@@ -174,4 +174,4 @@ def _实测(模型: str, 发: 发请求, 额外: Sequence[tuple[str, object]]) -
     return Result.ok(值)
 
 
-__all__ = ["写法表", "发请求", "探测推理", "推理探测结论"]
+__all__ = ["写法表", "发请求", "探测推理"]

@@ -22,7 +22,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .adapters.config import Config
@@ -53,7 +53,9 @@ from .domain.errors import ErrorCode, Result
 from .domain.event import Event, EventKind, Level
 from .domain.ids import ArtifactId, RunId
 from .domain.phase import PhaseId
+from .domain.reasoning import 推理开关, 推理状态
 from .domain.role import RoleId
+from .domain.tier import TIER_BY_ID, ReasoningPolicy, TierId
 from .kernel.bus import EventBus
 from .kernel.driver import DriveOutcome, Step, drive
 from .kernel.journal import JsonlJournal
@@ -139,20 +141,55 @@ class App:
     #: 收集全部事件，供测试与调试
     collected: list[Event] = field(default_factory=list)
 
-    def _推理关闭(self) -> tuple[tuple[tuple[str, object], ...], str]:
-        """读回探测结论并翻译成「怎么关」（D-380）。
+    def 推理设置(self) -> 推理开关:
+        """读回探测结论，翻译成运行期唯一认的类型（D-380/D-384）。
 
         **本方法是装配根 import 适配器的地方**，也只有这里可以（D-070）。
-        返回 `((), "")` 表示「不做任何控制」，此时行为与改之前逐字节相同。
+        关闭方案（后端烙印）在这里翻译成请求体字段，
+        编排层自始至终不认识「写法序号」这个概念。
 
-        `system/` 读不到、或模型对不上，都按「没有结论」处理——
-        那不是错误，只是退回老行为。
+        读不到、或模型对不上，一律返回 `无结论`——
+        那不是错误，只是退回「不做推理控制」，请求体与从前逐字节相同。
         """
         from .adapters.reasoning_cache import 关闭方案, 读推理结论
 
         if self.根 is None:
-            return ((), "")
-        return 关闭方案(读推理结论(self.根 / "system", 模型=self.config.model))
+            return 推理开关()
+        结论 = 读推理结论(self.根 / "system", 模型=self.config.model)
+        if not 结论.能关闭:
+            # **非「能关闭」一律不附字段**：对不推理的模型发
+            # `enable_thinking: false` 是无意义请求，部分后端直接 400。
+            return 结论
+        字段, 前缀 = 关闭方案(结论.可用写法)
+        return replace(结论, 关闭字段=字段, 提示前缀=前缀)
+
+    def 推理提示(self, 档: TierId) -> str | None:
+        """该档位下要不要告诉用户一句推理相关的话。**`None` 表示不用打扰**。
+
+        ## 为什么要提示，而不能像以前那样静默
+
+        OFF 档（咨询/Flash）的定义是「不深度思考」，代码注释也写着
+        「那两档按定义就不该付推理的钱」。但只要用户没跑过 `--doctor`、
+        或换了模型没重测，就**拿不到关闭写法** → 不附加任何字段 →
+        后端按默认开着推理 → **照常付推理的钱，且全程无提示**。
+
+        这就是「最坏等于没做」的另一面：它同时意味着
+        **用户以为没花钱，实际花了**。
+
+        故 OFF 档在此**必须**提示一次。ON 档（Pro）不提示：
+        它本来就不附加字段，行为符合预期，没有需要解释的偏差。
+        """
+        if TIER_BY_ID[档].reasoning_policy is not ReasoningPolicy.OFF:
+            return None  # ON 档本来就不附加字段，行为符合预期，无偏差可说
+        结论 = self.推理设置()
+        if 结论.状态 in (推理状态.能关闭, 推理状态.无需关闭):
+            # **能关**：运行时真会关，不附加偏差。
+            # **无需关闭**：该模型本就不生成推理内容，用户不会因此多花钱，
+            #   也没有任何可行动的偏差——提示它是纯噪音。
+            #   早先这里只判「能关闭」，于是每个用不推理模型的咨询档用户
+            #   每次开跑都看到一句「不附加推理控制字段」，而那正是应有行为。
+            return None
+        return f"提示：{结论.说明()}。本次（{档.value}）不附加推理控制字段。"
 
     def 编排器(self) -> 编排器:
         """从装配根取出编排器，**端口全是真件**。
@@ -181,7 +218,7 @@ class App:
             #: 编排层自始至终不认识「写法序号」，守住 D-070。
             #:
             #: 读不到 / 写法为 0 → `((), "")` → 请求体与从前逐字节相同。
-            推理关闭=self._推理关闭(),
+            推理关闭=self.推理设置(),
             llm=self.ports.llm,
             storage=self.ports.storage,
             # **工具层必须一起传**（D-267）。此前 `App.tools` 备好了，

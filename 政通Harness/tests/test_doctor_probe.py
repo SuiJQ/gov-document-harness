@@ -32,12 +32,14 @@ from zhengtong.ports.llm import FinishReason, LlmRequest, LlmResponse, TokenUsag
 from zhengtong.presentation.doctor import 自检结果, 自检项
 
 
-def _响应(正文: str = "pong") -> LlmResponse:
+def _响应(正文: str = "pong", *, 推理: int = 0, 无用量: bool = False) -> LlmResponse:
+    """`无用量=True` 模拟**后端不回报推理用量**（usage 整个缺失），
+    与「usage 在但 reasoning_tokens=0」是两回事——后者是「确实没推理」。"""
     return LlmResponse(
         text=正文,
         finish_reason=FinishReason.STOP,
         tool_calls=(),
-        usage=TokenUsage(),
+        usage=None if 无用量 else TokenUsage(reasoning_tokens=推理),
     )
 
 
@@ -157,11 +159,16 @@ class Test工具探测:
         """**「关不掉」是探测成功了**，不是失败——
         服务端认了参数但推理仍开着，这是有效结论。
 
-        把它算成未通过会让体检整体挂掉，而机器其实是能写公文的。"""
+        把它算成未通过会让体检整体挂掉，而机器其实是能写公文的。
+
+        **基准必须带推理 token**（D-384）：早先这里用 `_响应()`（推理 0），
+        于是基准被判成「无需关闭」而不是「关不掉」——测试名与实际模拟的
+        后端对不上，却一直绿着，因为早先 `可用写法=0` 两种情形共用一句话。
+        """
         结论 = _探(
             假可探测(
                 lambda r, i: (
-                    Result.ok(_响应())
+                    Result.ok(_响应(推理=100))
                     if not r.额外字段
                     else Result.fail(ErrorCode.LLM_REQUEST_FAILED, "此写法不生效")
                 )
@@ -169,6 +176,32 @@ class Test工具探测:
         )
         assert 结论.取("推理开关") is True
         assert "关不掉" in 结论.详情["推理开关"], 结论.详情["推理开关"]
+
+    def test_模型不推理时不说关不掉(self) -> None:
+        """**D-384 的用户可见面**：对一个本来就不推理的模型，
+        说「此服务关不掉推理，将按开启运行」是**假话**——
+        它本来就没在推理，用户据此会以为要花钱。
+
+        早先这两种后端给出**逐字相同**的详情。
+        """
+        结论 = _探(
+            假可探测(
+                lambda r, i: (
+                    Result.ok(_响应(推理=0))
+                    if not r.额外字段
+                    else Result.fail(ErrorCode.LLM_REQUEST_FAILED, "此写法不生效")
+                )
+            )
+        )
+        详情 = 结论.详情["推理开关"]
+        assert "关不掉" not in 详情, f"把不推理的模型说成关不掉：{详情}"
+        assert "无需" in 详情, 详情
+        assert 结论.取("推理开关") is True, "无需关闭也是有效结论"
+
+    def test_不报推理用量时说无法判定(self) -> None:
+        """判不出来不能说成关不掉——两者的处置完全不同。"""
+        结论 = _探(假可探测(lambda r, i: Result.ok(_响应(推理=100, 无用量=True))))
+        assert "无法判定" in 结论.详情["推理开关"], 结论.详情["推理开关"]
 
     def test_推理探测本身崩了才算未通过(self) -> None:
         """连基准请求都失败才是探测失败（不是「关不掉」）。"""

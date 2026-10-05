@@ -48,6 +48,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..domain.errors import ErrorCode, Result
+from ..domain.reasoning import 推理开关
 from ..ports.llm import LlmRequest, LlmResponse, Message, ToolSchema, 探测结论
 from .reasoning_probe import 探测推理
 
@@ -110,14 +111,14 @@ def 探测五项(llm: _可探测) -> Result[探测结论]:
         *,
         通过项: tuple[str, ...] = (),
         未测: tuple[str, ...] = (),
-        推理写法: int = 0,
+        推理结论: 推理开关 | None = None,
     ) -> Result[探测结论]:
         return Result.ok(
             探测结论(
                 通过项=通过项,
                 详情=dict(详情),
                 未测=未测,
-                推理写法=推理写法,
+                推理结论=推理结论 or 推理开关(),
             )
         )
 
@@ -197,7 +198,7 @@ def 探测五项(llm: _可探测) -> Result[探测结论]:
     # 只是要多花推理额度。故它失败时单项记未通过，
     # 而 `远端自检项` 据此只提示不判死。
     推理通过 = True
-    推理写法 = 0
+    推理结论: 推理开关 | None = None
     got3 = 探测推理(llm.model, llm.complete)
     if got3.is_error:
         err3 = got3.error
@@ -206,14 +207,14 @@ def 探测五项(llm: _可探测) -> Result[探测结论]:
         详情["推理开关"] = f"推理探测失败：{err3.detail}"
     else:
         探 = got3.unwrap()
-        详情["推理开关"] = 探.说明()
-        # **把写法序号带出去**（D-380）：此前只留了一句中文，
+        # **把整个结论带出去**（D-380/D-384）：此前只留一句中文，
         # 序号烂在适配器里，运行时无从知道该用哪种写法——
-        # 于是 `写法表` 里那四道关闭写法从未用于关闭任何一次请求。
-        推理写法 = 探.实测写法
+        # `写法表` 里那四道关闭写法从未用于关闭任何一次请求。
+        推理结论 = 探
+        详情["推理开关"] = 探.说明()
 
     return 结论(
-        推理写法=推理写法,
+        推理结论=推理结论 or 推理开关(),
         通过项=(
             "网络连通",
             "鉴权",

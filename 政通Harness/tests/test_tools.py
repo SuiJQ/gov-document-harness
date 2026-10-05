@@ -172,10 +172,22 @@ class Test角色白名单:
             assert r.error is not None
             assert r.error.code == ErrorCode.TOOL_NOT_ALLOWED
 
-    def test_主理人可调全部(self, tmp_path: Path) -> None:
+    def test_主理人可调多数工具(self, tmp_path: Path) -> None:
+        """主理人**不是**全部工具的调用者（D-384）。
+
+        `msg.report_to_lead` / `msg.request_from_lead` 的定义是
+        「**成员**与主理人之间」的通道。主理人调它就是自己向自己说话，
+        语义上不存在对应端点——咨询档只有主理人一人，
+        于是这两个工具在那档**一个合法调用者都没有**，却照样发给了模型。
+        """
         d, _ = _依赖(tmp_path)
         运行 = _运行器(d)
-        assert len(运行.可调清单(RoleId.TEAM_LEAD)) == 17  # 16 + tool.result（D-226）
+        名字 = set(运行.可调清单(RoleId.TEAM_LEAD))
+        assert "msg.report_to_lead" not in 名字, "主理人不该能向自己汇报"
+        assert "msg.request_from_lead" not in 名字, "主理人不该能向自己请示"
+        # 其余（检索、公共区、控制、成文、门禁、提问）一个不少
+        assert "draft.submit" in 名字 and "kb.search" in 名字
+        assert "flow.ask_user" in 名字
 
     def test_成员可调子集不含仅主理人工具(self) -> None:
         for 角色 in ROLES:

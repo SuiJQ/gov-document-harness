@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from zhengtong.adapters.reasoning_cache import 关闭方案, 写推理结论, 读推理结论
+from zhengtong.domain.reasoning import 推理开关, 推理状态
 from zhengtong.domain.tier import ReasoningPolicy, TierId
 from zhengtong.ports.llm import LlmRequest
 
@@ -47,6 +48,11 @@ def test_关闭方案翻译正确() -> None:
     assert 前缀 == "/no_think"
 
 
+def _能关(键: str, 值: object) -> 推理开关:
+    """构造一份「实测出能关」的结论（第 3 种写法）。"""
+    return 推理开关(状态=推理状态.能关闭, 关闭字段=((键, 值),), 可用写法=3)
+
+
 @pytest.mark.parametrize("序号", [0, -1, 5, 99])
 def test_越界序号返回空(序号: int) -> None:
     """越界 → 不做任何控制。**不能抛**——
@@ -55,8 +61,51 @@ def test_越界序号返回空(序号: int) -> None:
 
 
 def test_落盘与读回(tmp_path: Path) -> None:
-    写推理结论(tmp_path, 模型="模型甲", 写法=2)
-    assert 读推理结论(tmp_path, 模型="模型甲") == 2
+    写推理结论(tmp_path, 模型="模型甲", 结论=推理开关(状态=推理状态.能关闭, 可用写法=2))
+    got = 读推理结论(tmp_path, 模型="模型甲")
+    assert got == 推理开关(状态=推理状态.能关闭, 可用写法=2)
+
+
+def test_五种状态都能原样往返(tmp_path: Path) -> None:
+    """**D-384**：早先只落盘一个 `写法` 整数，`0` 同时表示
+    「关不掉」「无需关闭」「无法判定」，运行时读回来分不清该说哪句话。
+
+    这里逐个状态落盘再读回，**状态必须一模一样**——
+    这正是修复前做不到的事。
+    """
+    for 状态 in (
+        推理状态.能关闭,
+        推理状态.关闭不了,
+        推理状态.无需关闭,
+        推理状态.无法判定,
+        推理状态.无结论,
+    ):
+        写推理结论(
+            tmp_path,
+            模型="m",
+            结论=推理开关(状态=状态, 可用写法=2 if 状态 is 推理状态.能关闭 else 0),
+        )
+        assert 读推理结论(tmp_path, 模型="m").状态 is 状态, f"{状态} 往返后变了"
+
+
+def test_状态与序号矛盾时以状态为准(tmp_path: Path) -> None:
+    """落盘文件被手改成「状态说关不掉、序号却给了 2」时，
+    **不能**拼出「第 2 种写法生效」并真的去关。
+
+    宁可不关，也不能按矛盾的证据行动。
+    """
+    (tmp_path / "reasoning.json").write_text(
+        '{"模型": "m", "写法": 2, "状态": "关闭不了"}', encoding="utf-8"
+    )
+    got = 读推理结论(tmp_path, 模型="m")
+    assert got.状态 is 推理状态.关闭不了
+    assert got.可用写法 == 0, f"矛盾时仍取序号={got.可用写法}"
+
+
+def test_老文件无状态字段按序号反推(tmp_path: Path) -> None:
+    """**向前兼容**：旧版本落盘的 `{"模型","写法"}` 仍要能读。"""
+    (tmp_path / "reasoning.json").write_text('{"模型": "m", "写法": 2}', encoding="utf-8")
+    assert 读推理结论(tmp_path, 模型="m").状态 is 推理状态.能关闭
 
 
 def test_模型对不上当没有结论(tmp_path: Path) -> None:
@@ -66,23 +115,23 @@ def test_模型对不上当没有结论(tmp_path: Path) -> None:
     而服务端对不认识的字段通常**静默忽略**：
     用户以为推理关掉了，实际还在推理并计费。
     """
-    写推理结论(tmp_path, 模型="模型甲", 写法=2)
-    assert 读推理结论(tmp_path, 模型="模型乙") == 0
+    写推理结论(tmp_path, 模型="模型甲", 结论=推理开关(状态=推理状态.能关闭, 可用写法=2))
+    assert 读推理结论(tmp_path, 模型="模型乙").状态 is 推理状态.无结论
 
 
-def test_文件缺失读出零(tmp_path: Path) -> None:
-    """没探测过 → 0 → 不附加任何字段，行为与改之前逐字节相同。"""
-    assert 读推理结论(tmp_path, 模型="模型甲") == 0
+def test_文件缺失读出无结论(tmp_path: Path) -> None:
+    """没探测过 → `无结论` → 不附加任何字段，行为与改之前逐字节相同。"""
+    assert 读推理结论(tmp_path, 模型="模型甲").状态 is 推理状态.无结论
 
 
 def test_坏文件不抛(tmp_path: Path) -> None:
     """这是提速用的缓存，不是配置。读不到就退化，**
     不该把一个可选缓存变成启动失败点。"""
     (tmp_path / "reasoning.json").write_text("{ 不是 json", encoding="utf-8")
-    assert 读推理结论(tmp_path, 模型="模型甲") == 0
+    assert 读推理结论(tmp_path, 模型="模型甲").状态 is 推理状态.无结论
 
 
-def _跑一档(档: TierId, 关闭: tuple[tuple[tuple[str, object], ...], str]) -> list[LlmRequest]:
+def _跑一档(档: TierId, 关闭: 推理开关) -> list[LlmRequest]:
     """真跑一档，返回**发出去的所有请求**。"""
     from tests.test_seams_round1 import _全过编排器
 
@@ -95,7 +144,7 @@ def _跑一档(档: TierId, 关闭: tuple[tuple[tuple[str, object], ...], str]) 
 
 def test_咨询档真的带上关闭字段() -> None:
     """**核心判据**：OFF 档 + 已知写法 → 请求里必须真的有那个字段。"""
-    请求 = _跑一档(TierId.CONSULT, ((("reasoning_effort", "none"),), ""))
+    请求 = _跑一档(TierId.CONSULT, _能关("reasoning_effort", "none"))
     assert 请求, "编排器一个请求都没发，判据无效"
     for r in 请求:
         assert ("reasoning_effort", "none") in r.额外字段, (
@@ -104,7 +153,7 @@ def test_咨询档真的带上关闭字段() -> None:
 
 
 def test_flash档真的带上关闭字段() -> None:
-    请求 = _跑一档(TierId.FLASH, ((("reasoning_effort", "none"),), ""))
+    请求 = _跑一档(TierId.FLASH, _能关("reasoning_effort", "none"))
     for r in 请求:
         assert ("reasoning_effort", "none") in r.额外字段
 
@@ -115,7 +164,7 @@ def test_pro档不附加关闭字段() -> None:
     这是最容易搞反的一处——「把探测到的开关用上」听起来总该是好事，
     但用错档位就是**反着来**。
     """
-    请求 = _跑一档(TierId.PRO, ((("reasoning_effort", "none"),), ""))
+    请求 = _跑一档(TierId.PRO, _能关("reasoning_effort", "none"))
     for r in 请求:
         assert r.额外字段 == (), f"Pro 档不该带关闭字段，实得 {r.额外字段}"
 
@@ -127,7 +176,7 @@ def test_没探测过时全部档位都不附加() -> None:
     不会把任何一个能用的端点弄坏。
     """
     for 档 in (TierId.CONSULT, TierId.FLASH, TierId.PRO):
-        for r in _跑一档(档, ((), "")):
+        for r in _跑一档(档, 推理开关()):
             assert r.额外字段 == (), f"{档.value} 在无结论时不该带任何字段"
 
 
@@ -137,7 +186,7 @@ def test_前缀写法只加在诉求上() -> None:
     from tests.test_seams_round1 import _全过编排器
 
     器 = _全过编排器()
-    器.推理关闭 = ((), "/no_think")
+    器.推理关闭 = 推理开关(状态=推理状态.能关闭, 提示前缀="/no_think", 可用写法=4)
     got = 器.跑到终(档位=TierId.CONSULT, 需求="写一份关于防汛工作的通知")
     assert got.is_ok
     带前缀 = [r for r in 器.发出的请求 if any("/no_think" in str(m.content) for m in r.messages)]

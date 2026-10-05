@@ -191,7 +191,9 @@ class Test内容包不牵扯工具:
         from zhengtong.adapters.content_pack import 本地内容包
 
         got = 本地内容包(根=主体 / "content").verify_manifest()
-        assert got.is_ok, f"内容包 sha256 校验没过：{got.error.detail if got.is_error else ''}"
+        # 条件写 `got.error` 而**不是** `got.is_error`：后者不能让类型收窄，
+        # `error` 仍被看成 `AppError | None`（BasedPyright 报 reportOptionalMemberAccess）。
+        assert got.is_ok, f"内容包 sha256 校验没过：{got.error.detail if got.error else ''}"
 
 
 class TestSupporter自身定位正确:

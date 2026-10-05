@@ -391,7 +391,12 @@ def test_每个工具都至少被本文件走到一次(tmp_path: Path) -> None:
         "tool.result": {"call_id": "call-demo"},
     }
     for s in TOOL_SPECS:
-        r = 跑.调用(s.name, 角色=RoleId.TEAM_LEAD, 参数=cast(dict[str, object], 参数表[s.name]))
-        assert r.is_ok, f"{s.name} 成功路径未走通：{r.error}"
+        # **按工具自己的白名单挑一个合法调用者**（D-384）。
+        # 早先一律用 TEAM_LEAD，于是「主理人向主理人汇报」这种调用也被当成
+        # 合法路径走了一遍——判据绿着，而那条路径在语义上根本不存在。
+        角色 = min(s.allowed_roles, key=str) if s.allowed_roles else RoleId.TEAM_LEAD
+        assert s.allowed_roles, f"{s.name} 没有任何合法调用者——白名单成了空集"
+        r = 跑.调用(s.name, 角色=角色, 参数=cast(dict[str, object], 参数表[s.name]))
+        assert r.is_ok, f"{s.name} 成功路径未走通（角色={角色}）：{r.error}"
         走到的.add(s.name)
     assert 走到的 == {s.name for s in TOOL_SPECS}, "有工具的成功路径没被覆盖"

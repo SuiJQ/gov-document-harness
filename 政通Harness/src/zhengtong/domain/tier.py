@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .role import RoleId
+from .tool import ToolDomain
 
 
 class ReasoningPolicy(StrEnum):
@@ -65,6 +66,13 @@ class TierSpec:
     gates_apply: bool  # 门禁是否适用
     allows_rewrite: bool  # 是否允许退回重写
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.OFF
+    #: 本档**启用**的工具用途域（`ToolDomain`）。**不在此集合的工具一律不发**。
+    #:
+    #: 默认 `frozenset()` = **一个工具都不发**。与 `allowed_roles` 的
+    #: 空集同一条纪律：空集绝不解释成「全都给」。
+    #: 给错方向的默认会变成「凭空多出能力」或「工具在某档凭空消失」，
+    #: 而这两种错都**没有任何判据会报**（D-384）。
+    工具域: frozenset[ToolDomain] = frozenset()
 
     @property
     def is_consult(self) -> bool:
@@ -83,6 +91,12 @@ TIERS: tuple[TierSpec, ...] = (
         allows_rewrite=False,
         # 咨询只有主理人一人、且不产出成文，深度思考没有收益
         reasoning_policy=ReasoningPolicy.OFF,
+        # 咨询不写稿、门禁不适用、免提问，故这三个域不给。
+        # **公共交换必须给**：咨询意见一样要落成产物交给用户，
+        # 砍掉它咨询档就没有任何交付通道了。
+        工具域=frozenset(
+            {ToolDomain.知识检索, ToolDomain.公共交换, ToolDomain.协作通信, ToolDomain.运行控制}
+        ),
     ),
     TierSpec(
         id=TierId.FLASH,
@@ -100,6 +114,7 @@ TIERS: tuple[TierSpec, ...] = (
         allows_rewrite=True,
         # 用户定：Flash **不**深度思考
         reasoning_policy=ReasoningPolicy.OFF,
+        工具域=ToolDomain.全部(),
     ),
     TierSpec(
         id=TierId.PRO,
@@ -117,6 +132,7 @@ TIERS: tuple[TierSpec, ...] = (
         allows_rewrite=True,
         # 用户定：Pro **深度**思考
         reasoning_policy=ReasoningPolicy.ON,
+        工具域=ToolDomain.全部(),
     ),
 )
 
