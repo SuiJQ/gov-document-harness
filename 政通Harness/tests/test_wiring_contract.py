@@ -29,15 +29,34 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import pathlib
+from collections.abc import Callable
+from typing import cast
 
-from zhengtong.adapters.fakes import FakeLlm, FakeStorage
+from zhengtong.adapters.config import Config
+from zhengtong.adapters.fakes import FakeLlm, FakeStorage, FakeValidators
+from zhengtong.app import App
+from zhengtong.domain.errors import Result
 from zhengtong.domain.event import Event, EventKind, Level
+from zhengtong.domain.gate import GateId
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.phase import PhaseId
 from zhengtong.domain.tier import TierId
 from zhengtong.kernel.projection import DebugProjection, Projection, StandardProjection
-from zhengtong.orchestration.orchestrate import 编排器
+from zhengtong.orchestration.orchestrate import 编排器, 编排结果
+from zhengtong.ports.validators import ValidationResult
 from zhengtong.presentation.tui import 事件桥接, 可跑编排
+
+
+def _协议方法() -> Callable[..., object]:
+    """协议方法的**具体化引用**。
+
+    裸写 `可跑编排.跑到终` 是未绑定的泛型方法，类型检查器只能给出
+    `Unknown`——**判据自己糊掉，检查就没有意义了**。故先给实参
+    （`编排结果`）再取方法，`Result[编排结果]` 才是已知类型。
+    放进函数是因为模块顶层引用泛型协议方法会被判为 unbound。
+    """
+    return cast("Callable[..., object]", 可跑编排[编排结果].跑到终)
+
 
 _仓库根 = pathlib.Path(__file__).resolve().parents[1]
 
@@ -95,7 +114,8 @@ def _非文档行(路径: pathlib.Path) -> set[int]:
             and isinstance(节.value, ast.Constant)
             and isinstance(节.value.value, str)
         ):
-            文档行.update(range(节.value.lineno, 节.value.end_lineno + 1))
+            起 = 节.value.lineno
+            文档行.update(range(起, (节.value.end_lineno or 起) + 1))
     return set(range(1, 文本.count("\n") + 2)) - 文档行
 
 
@@ -123,10 +143,10 @@ def test_桥接协议的跑到终签名与真件一致() -> None:
     结构化子类型只查「有没有这个方法」，**参数名对不上照样过**——
     而参数名错了，调用处会在运行时炸。
     """
-    真签 = inspect.signature(编排器.跑到终)
-    协议签 = inspect.signature(可跑编排.跑到终)
-    assert set(真签.parameters) == set(协议签.parameters), (
-        f"桥接协议与真编排器的参数名不一致：真件 {list(真签.parameters)} vs 协议 {list(协议签.parameters)}"
+    真参 = _参数名(编排器.跑到终)
+    协议参 = _参数名(_协议方法())
+    assert 真参 == 协议参, (
+        f"桥接协议与真编排器的参数名不一致：真件 {sorted(真参)} vs 协议 {sorted(协议参)}"
     )
 
 
@@ -183,6 +203,7 @@ def test_最终正文取到的是最后一份成果全文() -> None:
 
     D-046 要求标准模式展示最终成果，所以这条路径必须有判据守着。
     """
+
     import asyncio
 
     from zhengtong.adapters.tui import ZhengTongApp
@@ -197,7 +218,7 @@ def test_最终正文取到的是最后一份成果全文() -> None:
     async def 跑() -> str:
         async with 应用.run_test():
             桥.喂(_产物事件("最终成果", 最终))
-            return 应用._最终正文()
+            return 应用._最终正文()  # pyright: ignore[reportPrivateUsage]
 
     取到 = asyncio.run(跑())
     assert 取到 == 最终, f"最终成果取值路径失真：期望 {最终!r}，实得 {取到!r}"
@@ -205,6 +226,7 @@ def test_最终正文取到的是最后一份成果全文() -> None:
 
 def test_没有任何成果时最终正文为空串而不是崩() -> None:
     """没成果时返回 `""`，不得抛异常——空界面是合法状态。"""
+
     import asyncio
 
     from zhengtong.adapters.tui import ZhengTongApp
@@ -214,7 +236,7 @@ def test_没有任何成果时最终正文为空串而不是崩() -> None:
 
     async def 跑() -> str:
         async with 应用.run_test():
-            return 应用._最终正文()
+            return 应用._最终正文()  # pyright: ignore[reportPrivateUsage]
 
     assert asyncio.run(跑()) == "", "无成果时必须返回空串而不是抛异常"
 
@@ -258,6 +280,28 @@ def test_桥接层不许出现类型忽略() -> None:
 # ── 5. 真件与替身的对照 ────────────────────────────────────────
 
 
+def _参数名(函: Callable[..., object]) -> set[str]:
+    """函数的**参数名**集合（不含 return）。
+
+    ## 为什么不用 `inspect.signature(...).parameters[...].annotation`
+
+    第一版就是这么写的，结果 BasedPyright 报 9 条 warning：
+    `.annotation` 的类型是 `Any`。**判据自己用 `Any` 去检查类型**，
+    恰恰是本项目要消灭的那种形态——它看似在验类型，实际什么都验不出。
+
+    故参数名取 `inspect.signature`（可靠），注解取 `typing.get_type_hints`
+    （拿到真类型对象，可与 `TierId` 做 `is` 比较）。
+    """
+    return set(inspect.signature(函).parameters)
+
+
+def _参数注解(函: Callable[..., object], 名: str) -> object:
+    """参数的**注解类型对象**（`from __future__ import annotations` 已解开）。"""
+    from typing import get_type_hints
+
+    return cast("object", get_type_hints(函)[名])
+
+
 def test_档位类型不是object() -> None:
     """档位参数必须是 `TierId`。
 
@@ -265,14 +309,154 @@ def test_档位类型不是object() -> None:
     而那是模型交互循环内部，炸起来是一屏 Traceback 而不是一句提示。
     类型标对之后，传错在检查期就暴露。
     """
-    签 = inspect.signature(事件桥接.在worker里跑)
-    标注 = 签.parameters["档位"].annotation
-    assert 标注 == "TierId", f"档位应标 TierId，实标 {标注!r}"
+    标注 = _参数注解(事件桥接.在worker里跑, "档位")
+    assert 标注 is TierId, f"档位应标 TierId，实标 {标注!r}（若是 str，说明注解没解开或类型标错）"
 
 
 def test_真编排器的档位注解是TierId() -> None:
-    """协议侧与真件侧的档位注解必须都是 `TierId`，不能一侧松一侧紧。"""
-    真 = inspect.signature(编排器.跑到终).parameters["档位"].annotation
-    协议 = inspect.signature(可跑编排.跑到终).parameters["档位"].annotation
-    assert 真 == 协议 == "TierId", f"档位注解不一致：真件 {真!r} vs 协议 {协议!r}"
+    """协议侧与真件侧的档位注解必须都是 `TierId`，不能一侧松一侧紧。
+
+    一侧松一侧紧同样有害：协议写 `TierId` 而真件写 `object` 时，
+    真编排器照样能传进来，协议等于白写。
+    """
+    真 = _参数注解(编排器.跑到终, "档位")
+    协议 = _参数注解(_协议方法(), "档位")
+    assert 真 is 协议 is TierId, f"档位注解不一致：真件 {真!r} vs 协议 {协议!r}"
     assert TierId.PRO  # 确认真类型可导入且有成员
+
+
+# ── 6. 装配根七实参：接错、传空、传死值都要能被抓到 ──────────────
+
+
+def _配置(**覆盖: object) -> Config:
+    """默认空配置上改几项。
+
+    **必须用 `replace` 而不是在 `Config()` 构造时传**——默认值里
+    `context_k=0`、`temperature=0.3`，而 `temperature=0.3` **恰好等于**
+    编排器的默认温度。传默认值的话，「温度没往下传」这件事判据抓不到。
+    """
+    import dataclasses
+
+    return dataclasses.replace(Config(), **覆盖)
+
+
+def _造App(配置: Config | None = None) -> App:
+    """走**真实装配路径**造 App（`build_app`），不手工拼 dataclass。
+
+    手工拼 `App(...)` 会绕过装配逻辑——而 bug 恰恰就在装配里。
+    """
+    from zhengtong.app import build_app
+
+    return build_app(config=配置)
+
+
+def test_工具层与导出必须是App持有的同一个对象() -> None:
+    """**identity 判据**：编排器拿到的必须就是 App 手上那一个。
+
+    这两项此前各自踩过一次同型坑（D-267 工具层没往下传 → 16 个工具全死；
+    D-296 导出没往下传 → 导出前占位符扫描无人执行）。
+    两者都不是「没接」而是「接了别的」——所以只查「非 None」抓不住，
+    必须查是不是同一个对象。
+    """
+    app = _造App()
+    编 = app.编排器()
+    assert 编.工具层 is app.tools, "工具层传的不是 App 持有的那一个（D-267 同型）"
+    assert 编.导出 is app.导出, "导出器传的不是 App 持有的那一个（D-296 同型）"
+
+
+def test_容量token跟着配置走而不是默认值() -> None:
+    """容量必须来自用户配置（D-231）。
+
+    编排器默认 `容量token=128000`。装配根若不往下传，
+    8K / 128K / 200K 三种配置的压缩触发线会完全相同
+    （都按 128000×0.85 触发）：填小了压缩永不触发，填大了提前太多。
+
+    故这里用**非常规值** `context_k=8`。若传的是默认值 128000，
+    实得会是 128000 而不是 8192——**死值当场暴露**。
+    """
+    app = _造App(_配置(context_k=8))
+    编 = app.编排器()
+    assert 编.容量token == 8 * 1024, f"容量未随配置传递：期望 8192，实得 {编.容量token}"
+
+
+def test_温度与模型名跟着配置走() -> None:
+    """温度（D-234）与模型名（D-082）都必须来自配置，且不得被写死。"""
+    app = _造App(_配置(temperature=0.9, model="zzz-非常规模型名"))
+    编 = app.编排器()
+    assert 编.温度 == 0.9, f"温度未随配置传递：实得 {编.温度}"
+    assert 编.模型名 == "zzz-非常规模型名", f"模型名未随配置传递：实得 {编.模型名}"
+
+
+def test_门禁取证必须真的调用校验器() -> None:
+    """**行为判据**：门禁取证不是「传了个对象」，而是「真去查了」。
+
+    这条防的是恒空取证：注入点缺了、或传了个返回 `{}` 的东西，
+    12 道门禁的结论就是空的。而**空结论不会让流程停下**——
+    D-221 缺席判据会把它转成用户决策，于是每次成文都要用户
+    替系统的「没查」买单。故必须断言校验器**被调用过**。
+    """
+
+    from zhengtong.app import build_app
+    from zhengtong.domain.role import RoleId
+    from zhengtong.orchestration.gates_forging import 门禁取证请求
+
+    class _记账校验器:
+        """包住真替身，只多记一件事：**被调用了几次**。
+
+        ## 为什么不自己从头实现接口
+
+        第一版只写了 `validate`，结果 `门禁取证实装` 调的其实是
+        `run_structure`（`gates_forging.py:164`）——**方法名写错，
+        记录数自然是 0**，而判据会把这误报成「没调用校验器」。
+
+        即判据自己也会因为「替身与真接口不符」而给出错误结论。
+        故这里包装 `FakeValidators`：接口与返回类型都由它保证，
+        本类只加计数，不自己发明方法名。
+        """
+
+        def __init__(self, 内: FakeValidators) -> None:
+            self.内: FakeValidators = 内
+            self.次数: int = 0
+
+        def run_hard_constraint(self, payload: dict[str, object]) -> Result[ValidationResult]:
+            self.次数 += 1
+            return self.内.run_hard_constraint(payload)
+
+        def run_structure(self, payload: dict[str, object]) -> Result[ValidationResult]:
+            self.次数 += 1
+            return self.内.run_structure(payload)
+
+    校验器 = _记账校验器(FakeValidators())
+    app = build_app(validators=校验器)
+    编 = app.编排器()
+
+    请求 = 门禁取证请求(
+        门禁=(GateId.G7,),
+        # **取证方必须是 G7 的 owner**（`gate.py:105`：合规员）。
+        # 写错成 TEAM_LEAD 时，`解析结论` 的第二道过滤会把这条整条丢掉——
+        # 结论仍返回、仍合法，只是「谁在查」被静默换掉了。
+        取证方=RoleId.COMPLIANCE,
+        # **回覆格式必须照 `_结论行` 正则**（`gates_forging.py:61`）：
+        # `G7|通过|证据：……`，竖线分隔。
+        # 这里踩过一次坑：凭印象写成「G7：通过。已核对……」，
+        # 正则匹配不上 → 裸结论为空 → 校验器自然一次没被调用，
+        # 判据却误报成「接线断了」。**判据自己也会给出错误结论**，
+        # 所以断言必须基于真实格式，而不是「看起来像结论」的文字。
+        回覆="G7|通过|证据：已核对数据来源三处，均可溯",
+        档位=TierId.PRO,
+    )
+    结论 = 编.门禁取证(请求)
+    assert 校验器.次数 > 0, "门禁取证没有调用校验器：12 道门禁的结论会是空的（D-221 转用户决策）"
+    assert isinstance(结论, dict), f"门禁取证必须返回逐门结论字典，实得 {type(结论).__name__}"
+
+
+def test_推理关闭方案来自探测结论() -> None:
+    """推理关闭方案必须来自 `App.推理设置()`（D-380），而不是写死。
+
+    判据只查「与 `推理设置()` 一致」——测试入口 `build_app` 不传工作区根，
+    `推理设置()` 返回的是「无结论」默认值，所以这条验的是**接线**，
+    真实取值由 doctor 落盘路径另有判据覆盖。
+    """
+    app = _造App()
+    编 = app.编排器()
+    assert 编.推理关闭 == app.推理设置(), "推理关闭方案不是 App.推理设置() 的结果（接线断了）"
