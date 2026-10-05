@@ -254,3 +254,15 @@ python3 ../Supporter/check_escape_hatches.py
 # 同时查「有消费但零发射」：消费代码在等一个永不到来的事件
 # （D-118 删掉的就是这种死分支）。
 python3 ../Supporter/check_event_wiring.py
+
+# 第八轮：未接线运行时实测。
+#
+# **前面七支全部读源码**，而 D-406 那七个缺陷源码上完全正常：
+# 字段有声明、处理器有判空与失败返回、测试全绿。
+# 只有造一个真实 App 读完字段的实际值才看得见——模型调那些工具
+# 直接失败，而程序不报任何错。
+#
+# 用 `.venv/bin/python`（不是裸 python3）：本支**要导入真实模块**，
+# 而 `tomli_w` 只装在 venv 里。裸 python3 会 ModuleNotFoundError——
+# 脚本对此 exit 2 而不是当成通过。
+.venv/bin/python ../Supporter/check_wiring_runtime.py
