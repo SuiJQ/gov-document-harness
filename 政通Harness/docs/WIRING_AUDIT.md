@@ -11,6 +11,8 @@
 | 脚本 | 查什么 | 自述盲区 |
 |---|---|---|
 | `check_wiring.py` | 属性存进 `self.X` 后类内从无读取（D-231 容量 / D-233 tools / D-234 温度同型） | 只认 `Load`；不跟踪返回值；不查参数类型 |
+| `check_escape_hatches.py`（本轮新增） | 「合法但失真」的三种写法：`object` 标注 / `# type: ignore` / `getattr(x, "字段", 默认)`。三者都是合法 Python，类型检查与测试都不报 | `object`/ignore 只查界面层（全仓查误报 43 处）；`getattr` 只查「读投影字段」这一形状 |
+| `check_event_wiring.py`（本轮新增） | 「定义即完成」：`EventKind` 成员零发射 / 零消费 / 架构未列 | 消费判定是行级文本匹配，非语义分析；台账登记项不算通过 |
 | `check_port_fields.py` | 端口字段有没有被用户路径消费 | 看不见 `@property` 返回对象与序列化消费（D-265） |
 | `check_field_consumption.py` | dataclass 字段消费（`check_wiring` 查不到的那类） | 同上 |
 | `check_stale_bytecode.py` | 陈旧字节码 | — |

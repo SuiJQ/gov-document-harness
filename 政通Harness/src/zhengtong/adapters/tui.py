@@ -37,9 +37,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -311,6 +312,57 @@ class PreviewPanel(VerticalScroll):
         self.mount(Static(正文, markup=False))
 
 
+class _能挂sink(Protocol):
+    """本地版的「可订阅」。
+
+    `presentation.tui` 里有同名协议，但 **adapters 不得 import presentation**
+    （向上依赖，分层判据会拦）。故此处按同一形状本地重定义一份——
+    结构化子类型只看方法形状，两份定义互不干扰。
+    """
+
+    def subscribe(self, sink: Callable[[object], None]) -> None: ...
+
+
+class _界面编排器(Protocol):
+    """界面用到的编排器形状——**只有这四个成员**。
+
+    ## 为什么本地定义而不是 `orchestration.编排器`
+
+    `tests/test_layering.py` 的白名单：adapters 只许依赖
+    `{ports, kernel, domain}`，**import orchestration 会被判越层**。
+    文件头「界面只认形状，不认实现」正是为这种情况准备的。
+
+    ## 这么写换来了什么
+
+    撤掉了两处 `# pyright: ignore`：
+    - `插话` 那处的 `收用户指令`：属性标了类型后窄化才生效；
+    - `_跑一轮` 那处更严重——原本 `ignore[reportOptionalCall]`
+      盖住的是「真返回 None 时下一行会 AttributeError 崩掉」。
+
+    定义窄协议不违反分层；而 `object` / `ignore` 会让接线断了也不报错。
+
+    ## `bus` 与 `已取消` 写成**只读属性**，不是可写成员
+
+    可写成员在结构化子类型里是**不变（invariant）**的：
+    实现方的 `bus = None` 会被推断成 `None`，于是**任何替身都不兼容**，
+    除非它去 import 这个私有名打注解——那等于逼测试依赖被测对象的内部。
+    只读属性是**协变**的，`None` 恰好兼容 `_能挂sink | None`。
+
+    而且语义本来就该如此：界面**只读**这两个成员，从不写。
+    「用可变标注描述一个只读契约」本身就是错的。
+    """
+
+    @property
+    def bus(self) -> _能挂sink | None: ...
+
+    @property
+    def 已取消(self) -> bool: ...
+
+    def 请求取消(self) -> None: ...
+
+    def 收用户指令(self, 文本: str) -> None: ...
+
+
 class ZhengTongApp(App[None]):
     """政通交互界面。
 
@@ -388,22 +440,23 @@ class ZhengTongApp(App[None]):
     ) -> None:
         """`桥`（`presentation.tui.事件桥接`）**由装配根注入，不在这里 import**。
 
-        ## 为什么绕这一下
+                ## 为什么绕这一下
 
-        架构有两处规定在本处相撞：
+                架构有两处规定在本处相撞：
 
-        - §6：第三方库**只允许出现在适配层** → textual 的界面代码归 L2
-        - DECISIONS「TUI 桥接不 import textual」→ 桥必须保持纯净
+                - §6：第三方库**只允许出现在适配层** → textual 的界面代码归 L2
+                - DECISIONS「TUI 桥接不 import textual」→ 桥必须保持纯净
 
-        若适配器直接 `from ..presentation.tui import 事件桥接`，
-        就是 **adapters → presentation**，那是**向上依赖**，
-        分层判据立刻拦下（本次实测拦下 3 条）。
+                若适配器直接 `from ..orchestration.orchestrate import 编排器
+        from ..presentation.tui import 事件桥接`，
+                就是 **adapters → presentation**，那是**向上依赖**，
+                分层判据立刻拦下（本次实测拦下 3 条）。
 
-        而反过来让桥去 import textual，会毁掉便携运行时
-        （没装 textual 的机器上连交互界面都起不来）。
+                而反过来让桥去 import textual，会毁掉便携运行时
+                （没装 textual 的机器上连交互界面都起不来）。
 
-        故只剩注入这一条：**适配器只认「有个桥」这个形状**，
-        是谁造的不关心——这本来就是依赖倒置（D-015）。
+                故只剩注入这一条：**适配器只认「有个桥」这个形状**，
+                是谁造的不关心——这本来就是依赖倒置（D-015）。
         """
         super().__init__(**kw)
         self._根 = 根
@@ -425,7 +478,9 @@ class ZhengTongApp(App[None]):
         self._推理提示 = 推理提示
         #: 本次运行的编排器。**插话要发给它**，而它由 worker 建出来，
         #: 所以只能存引用——界面侧不 import 编排层（D-063 的依赖方向）。
-        self._当前编排器 = None
+        #: **标真类型**（原为无注解推断）。不给类型的话，pyright 推不出
+        #: 窄化，下面 `插话` 那处的 `# pyright: ignore` 就撤不掉。
+        self._当前编排器: _界面编排器 | None = None
         self._接上答复方(闸)
 
     @property
@@ -550,7 +605,14 @@ class ZhengTongApp(App[None]):
         界面更新一律走 `call_from_thread`——那是 Textual 唯一认可的
         「从别的线程改界面」的方式。
         """
-        编排器 = self._取编排器()  # pyright: ignore[reportOptionalCall]
+        # **此处也判空，不能靠 `_跑` 里的判空**（那是另一个方法，
+        # pyright 不跨方法窄化）。原代码挂 `pyright: ignore[reportOptionalCall]`
+        # 硬接，于是**真返回 None 时下一行 `编排器.bus` 会 AttributeError 崩掉**
+        # ——ignore 盖住的正是这个崩溃。
+        编排器 = self._取编排器() if self._取编排器 is not None else None
+        if 编排器 is None:
+            self._说(f"{主题.符_失败} 运行未接上：没有可用的编排器。")
+            return
         self._当前编排器 = 编排器
         self._桥.刷屏 = lambda: self.call_from_thread(self._刷新)
         try:
@@ -624,7 +686,7 @@ class ZhengTongApp(App[None]):
         if 编排器 is None:
             self._说("插话无处可送：没有编排器。")
             return
-        编排器.收用户指令(净)  # pyright: ignore[reportAttributeAccessIssue]
+        编排器.收用户指令(净)
         self.query_one(RequestBox).清空并交焦点()
         self._说(f"{主题.符_成功} 插话已送出，在下一个阶段生效")
 
