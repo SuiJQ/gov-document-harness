@@ -943,6 +943,36 @@ class _过程:
         )
         self.产物.append(件)
 
+    def _问模型(self, 问: LlmRequest, 阶段: PhaseId, 角色: RoleId | None) -> Result[LlmResponse]:
+        """调模型，并在**失败时发 `model.error`**（D-408）。
+
+        ## 为什么在编排层发，而不是让适配器发
+
+        `LlmPort` 协议里没有事件口。让适配器发事件就得往协议里塞总线引用，
+        端口就不再「可换」——而端口存在的意义正是实现可换。
+
+        故：**适配器只管返回 `Result`，编排层据此发事件**。
+
+        ## 为什么只发 `model.error`、不发 `model.retry`
+
+        重试发生在 `http_llm.complete` **内部**（D-027），
+        编排层只看到最终成败，看不到「重试了几次」。
+        要如实记录得让适配器把该信息带出来（改 `LlmResponse`），
+        那是另一件事。**此刻不假装能发**——`model.retry` 继续留在台账里。
+        """
+        答 = self.llm.complete(问)
+        if 答.is_error:
+            错 = 答.error
+            assert 错 is not None
+            self.编排.发(
+                EventKind.MODEL_ERROR,
+                阶段,
+                角色=角色.value if 角色 is not None else "",
+                错误码=错.code.value,
+                detail=错.detail[:120],
+            )
+        return 答
+
     def _并行取证(self, 档: TierId, 门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
         """门禁取证：**并行组并发跑，主理人终闸组串行在后**（D-049）。
 
@@ -998,8 +1028,10 @@ class _过程:
                     "gate", str(self.编排.运行号), PhaseId.GATING.value, role=g.owner.value
                 )
                 if cid not in self.已完成:
-                    答 = self.llm.complete(
-                        self._构造请求(g.owner, PhaseId.GATING, tuple(x.value for x in 组门禁))
+                    答 = self._问模型(
+                        self._构造请求(g.owner, PhaseId.GATING, tuple(x.value for x in 组门禁)),
+                        PhaseId.GATING,
+                        g.owner,
                     )
                     if 答.is_error:
                         错 = 答.error
@@ -1054,8 +1086,10 @@ class _过程:
                     "gate-final", str(self.编排.运行号), PhaseId.GATING.value, role=终闸方.value
                 )
                 if 终cid not in self.已完成:
-                    终答 = self.llm.complete(
-                        self._构造请求(终闸方, PhaseId.GATING, tuple(x.value for x in 终闸门禁))
+                    终答 = self._问模型(
+                        self._构造请求(终闸方, PhaseId.GATING, tuple(x.value for x in 终闸门禁)),
+                        PhaseId.GATING,
+                        终闸方,
                     )
                     if 终答.is_error:
                         错 = 终答.error
@@ -1099,7 +1133,7 @@ class _过程:
             cid = make_call_id("prompt", str(self.编排.运行号), 阶段.value, role=角色.value)
             if cid not in self.已完成:
                 问 = self._构造请求(角色, 阶段)
-                答 = self.llm.complete(问)
+                答 = self._问模型(问, 阶段, 角色)
                 if 答.is_error:
                     错 = 答.error
                     assert 错 is not None
@@ -1212,7 +1246,7 @@ class _过程:
                 self.记工具结果(角色, 调用id, 正文)
             # **再问一轮**，让模型看得到自己调过什么、决定要不要继续
             问 = self._构造请求(角色, 阶段)
-            答 = self.llm.complete(问)
+            答 = self._问模型(问, 阶段, 角色)
             if 答.is_error:
                 错 = 答.error
                 assert 错 is not None
@@ -1394,6 +1428,20 @@ class _过程:
         指令 = self._指令消息()
         if 指令:
             序列 = (*序列, *指令)
+        # **装配完成即留痕**（D-408）：发 `context.composed`。
+        #
+        # 紧挨着下面的 `context.compacted`——两者成对。
+        # 原先只有压缩才发事件，于是「压过」有痕、「装过」无痕，
+        # 而后者才是每次请求都发生的**常态**。
+        # 记下 token 与条数，D-231 那种容量问题才有得查。
+        self.编排.发(
+            EventKind.CONTEXT_COMPOSED,
+            阶段,
+            角色=角色.value,
+            消息条数=len(序列),
+            估算token=估算视图(视图),
+            容量token=self.编排.容量token,
+        )
         if 需要压缩(视图, 上下文容量=self.编排.容量token):
             # 压缩接在这里——此前整个压缩模块**生产零引用**（第 14.5 步接线）
             压后 = 压缩(视图, 上下文容量=self.编排.容量token, 摘要器=self.编排.摘要器)

@@ -65,7 +65,7 @@ class EventKind(StrEnum):
 
     # ── 阶段成果 ──
     # 这两类叫 `phase.artifact_*` 而非 `artifact.*`：它们是**阶段成果**
-    # （D-072），不是"产物"——产物落盘走 ARTIFACT_PUBLISHED / ARTIFACT_DRAFTED。
+    # （D-072），不是"产物"——产物落盘走 ARTIFACT_PUBLISHED。
     ARTIFACT_READY = "phase.artifact_ready"
     ARTIFACT_UPDATED = "phase.artifact_updated"
 
@@ -112,7 +112,10 @@ class EventKind(StrEnum):
 
     # ── 产物 ──
     ARTIFACT_PUBLISHED = "artifact.published"
-    ARTIFACT_DRAFTED = "artifact.drafted"
+    # **`artifact.drafted` 已删**（D-408）：原先定义在此、架构 §5.4 也列了，
+    # 但**既无发射点也无消费点**——当前只有主件一个产物，
+    # 根本不存在「中间产物落盘」这个动作。它是超前承诺。
+    # 多附件统一交付落地时再加回来。
 
     # ── 导出 ──
     EXPORT_BLOCKED = "export.blocked"

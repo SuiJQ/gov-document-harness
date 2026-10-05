@@ -213,6 +213,20 @@ def kb_search(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[str
     # 或者读完也判断不出该不该继续检索。
     最高 = max(h.score for h in 结果)
     条目 = "\n".join(f"- [{_相关档(h.score, 最高)}] {h.ref}：{h.snippet}" for h in 结果)
+    # **检索完成留痕**（D-408）：发 `retrieval.done`。
+    #
+    # 检索是模型**主动**发起的行为，次数与查询词全在模型那边；
+    # 不发事件的话，journal 里只有「工具被调用过」的记录，
+    # 无法复原「这一稿里到底查了什么、查了几次」——
+    # 而那正是判断依据是否够用的唯一凭据（D-069）。
+    if d.记事件 is not None:
+        d.记事件(
+            "retrieval.done",
+            查询=查询[:60],
+            范围=范围,
+            命中数=len(结果),
+            最高相关度=round(最高, 4) if 结果 else 0.0,
+        )
     return Result.ok(f"检索「{查询}」命中 {len(结果)} 条（按相关度降序）：\n{条目}")
 
 

@@ -436,14 +436,14 @@ D-064 决定门禁走线程池，于是门禁线程与编排线程会并发调 `
 | 门禁 | `gate.started` / `gate.passed` / `gate.failed` / `gate.rejected` / `gate.rework` / `gate.escalated` | `gate_id` / 判定 / 证据锚点 |
 | 上下文 | `context.composed` / `context.compacted` | 占用率 / 保留了哪几类（D-039） |
 | 提问 | `user.question_raised` / `user.answered` | 字段清单（D1–D9），**只记字段码不记答案全文** |
-| 产物 | `artifact.published` / `artifact.drafted` | `name` / `kind` / `hash` |
+| 产物 | `artifact.published` | `name` / `kind` / `hash` |
 | 导出 | `export.blocked` / `export.done` | 被拦截的占位符清单 / 文件列表（D-038） |
 | 错误 | `error.raised` | `detail`（**INTERNAL**，不直接给用户看） |
 
 **两处命名与合并相关的关键点**：
 
 - **`phase.artifact_ready` 而非 `artifact.ready`**：它是**阶段成果**（D-072），
-  不是"产物"——产物落盘走 `artifact.published` / `artifact.drafted`。
+  不是"产物"——产物落盘走 `artifact.published`。
   名字必须与代码逐字一致，否则按本文档 grep 排障会空手而归。
 - **`role.tool_call` 而非 `tool.called`**：工具调用必属某角色的派发。
   但 **`tool.denied` 独立**——它表达守卫拦截，是安全线索
