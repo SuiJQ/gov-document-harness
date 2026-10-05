@@ -1,0 +1,137 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zhengtong"
+version = "0.1.0"
+description = "政通 —— 党政公文写作专家团系统"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.60",
+    "httpx>=0.27",
+    "tomli-w>=1.0",   # 只写；读用 3.11 内置 tomllib，故不需要 tomli（D-079）
+]
+
+[project.optional-dependencies]
+# 开发工具不进运行时依赖（D-003：断网 Windows 便携 zip，依赖越少越好）
+dev = [
+    "pytest>=8",
+    "ruff>=0.14",
+    "basedpyright>=1.31",   # 替代 mypy：类型覆盖更全；自带 Node runtime，不需系统装 Node
+    # ── 零信任审计三件套（D-103）─────────────────────────
+    # 三者只查**不同维度**，刻意不引入第二个类型检查器：
+    # 同维度重复验证的边际收益接近零，噪音反而会淹没真问题。
+    "pytest-cov>=7",   # 覆盖率：回答"哪些代码从没被执行"——没覆盖即没验证
+    "vulture>=2.16",   # 死代码：Ruff 的 F401 只管未用导入，整个没人调的函数它看不到
+    "hypothesis>=6.168",  # 属性测试：唯一能自动生成"我没想到的输入"的工具，
+                          #   用于路径守卫与配置容错这两处手写用例永远想不全的地方
+]
+
+[project.scripts]
+zhengtong = "zhengtong.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ── Ruff：快，覆盖风格与静态缺陷（F 类）────────────────────
+# 只管 Ruff 擅长的，不与类型检查重叠。
+[tool.ruff]
+# ── 为什么这里**没有** exclude（D-264 已随之作废）────────────
+#
+# 原先排除 `scripts/**`，是因为它们在项目根内而 `ruff check .` 会扫到，
+# 其中 55 条 E402（脚本要先 `sys.path.insert` 才能 import 自己项目的模块）
+# 与 10 条 RUF100 是**必须偏离**的，逐条 noqa 要改 82 处，还会污染信号。
+#
+# 开发工具已整体搬到 `../Supporter/`（不进交付物）。**实测三条**：
+# - `ruff check .` **不越出项目根**，Supporter 天然不在扫描面内；
+# - 完全不加 exclude 时扫不到 Supporter；
+# - 写 `exclude = ["../Supporter/**"]` 也能被解析、不报错，
+#   但那是**空操作**——文件压根没进扫描面，排除一个不在其中的东西。
+#
+# 故：不设 exclude。Supporter 若要自查，走它自己的入口
+# （`Supporter/lint.sh`，Ruff 只开 F 类）。
+#
+# **若将来有人改成从 `Harness/` 层统一跑检查**，
+# 那时 Supporter 才真的会被扫到——届时该在 Supporter 侧
+# 用 `per-file-ignores` 处理 E402，而不是在这里加回 exclude。
+
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes：未用导入、未定义名 —— basedpyright 不查，必须 Ruff 兜住
+    "E",     # pycodestyle 基本
+    "W",     # 行尾空白等
+    "I",     # import 排序
+    "UP",    # pyupgrade：3.11 可用的现代写法
+    "B",     # bugbear：可变默认参数、循环变量绑定等
+    "C4",    # 推导式：少写一层 list()
+    "SIM",   # simplify
+    "RET",   # 返回值
+    "ARG",   # 未使用参数（探针实测 Ruff 能抓到）
+    "PTH",   # pathlib 替代 os.path（路径守卫要 realpath，PTH 促使写法统一）
+    "RUF",   # ruff 自有规则
+]
+ignore = [
+    "E501",     # 行宽交给 formatter，不在 linter 里重复报
+    "SIM108",   # 三元表达式并不总是更清楚
+    "RUF001",   # 中文全角标点属正常，不当作 ambiguous unicode
+    "RUF002",
+    "RUF003",
+]
+
+# ── `scripts/` 整目录排除（D-264）────────────────────────────
+# 这些脚本**必须**偏离纯规范，偏离处都是有理由的：
+#
+# - **E402（import 不在顶部）55 条**：脚本要先
+#   `sys.path.insert(0, "src")` 才能 import 自己项目的模块。
+#   不这么做它们跑不起来。Ruff 不理解这个必要性。
+# - **RUF100（无用 noqa）8 条**：裸 `# noqa: E402` 的历史写法。
+# - 其余为兜底 except、统一签名、别名等局部风格。
+#
+# **为什么排除而不是逐条 noqa**：
+# 1. 逐条 noqa 要改 82 处，且每次新增脚本都要重新判断一遍；
+# 2. 更要紧的是**信号污染**——82 条常驻告警会让人把
+#    「13 fixable」当成待办（我本轮就误报过一次）。
+#    检查的价值在于「红即有事」，红里掺假就等于不红。
+#
+# 这些脚本**仍由 `check.sh` 调用并校验退出码**——排除的是
+# 风格规范，不是「可以不检查」。
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "S101"]   # 测试里允许未用参数与 assert
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ── BasedPyright：慢但完整，负责类型 ─────────────────────
+# D-068 要求全 tuple 真不可变、D-069 要求 provenance 可校验 —— 这些都只能靠类型检查兜。
+[tool.basedpyright]
+# 测试一并纳入类型检查。原配置只查 src，导致 154 个测试里的类型错误
+# 完全没人管——实测一纳入就查出 7 个 error（返回标注写成 object、
+# 故意违反 frozen 的地方没标注意图）。测试是判据，判据自己不受检查不行。
+include = ["src", "tests"]
+# `tests/` 不是包（无 `__init__.py`）——给它加 `__init__.py` 会改变
+# pytest 的收集语义，实测当场打挂 9 条既有测试。
+# 故测试之间互相引用靠 `tests/` 在 `sys.path` 上，这一点在此声明，
+# 让检查器知道 `fixtures_factories` 指的是 tests/ 下那个文件而非缺模块。
+extraPaths = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "recommended"   # 比 pyright 默认严，适合本项目的强契约设计
+pythonPlatform = "All"          # 原写死 "Linux"：Windows 下开发时类型检查会误报
+                              # os.name 等平台分支。目标平台是 Win11 + Linux 双支持（D-003），
+                              # 检查器必须按"平台未知"推断，而不是替我选一个
+reportMissingTypeStubs = "warning"
+# `__str__` 等内置协议覆盖要求 typing.override，那是 3.12 才有的（D-079 定 3.11），
+# 为此加 typing_extensions 不值得——收益只是让检查器闭嘴，不是让代码更对。
+# 真实类型错误仍由其余规则覆盖。
+reportImplicitOverride = false
+
+# 注意：BasedPyright 1.40.1 的 `[[tool.basedpyright.overrides]]` 在本项目
+# **实测不生效**（试过 "tests/x.py"、"tests"、"tests/**/*.py"、
+# "**/tests/*.py" 四种 include 形式，报错数一律不变）。
+# 故门禁测试改用文件内 `# pyright: basic` 指令豁免，见五个文件头部。
