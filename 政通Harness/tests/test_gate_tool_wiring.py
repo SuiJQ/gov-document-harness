@@ -186,10 +186,10 @@ class Test门禁账:
 
 
 class Test门禁事件:
-    def test_逐道发started且与实际取证数一致(self) -> None:
-        """**事件数必须等于真取证的数**，不是「本档该跑」的数。
+    def test_单轮时逐道发started且与实际取证数一致(self) -> None:
+        """**单轮**下事件数 = 真取证的数（10），不是「本档该跑」的数（12）。
 
-        发 12 道而只取证 10 道，事件流就成了新的口径失真。
+        只在单轮成立——退回重跑会逐轮累加，见下面那条判据。
         """
         器 = 编排器(llm=FakeLlm(), storage=FakeStorage(), 门禁取证=_全过())
         器.跑到终(档位=TierId.FLASH, 需求="通知")
@@ -197,6 +197,36 @@ class Test门禁事件:
         passed = [e for e in 器.事件 if e.kind.value == "gate.passed"]
         assert len(started) == 10, f"started 应为实际取证的 10 道，实得 {len(started)}"
         assert len(passed) == 10, f"passed 应为 10 道，实得 {len(passed)}"
+
+    def test_退回重跑时事件逐轮累加_这不是失真(self) -> None:
+        """**事件逐轮、账最终**——两者本就不该相等（D-390 的口径更正）。
+
+        G2 第一次不过、退回重写后第二轮过：`started` 发了两轮共 20 条，
+        而 `门禁账.已取证` 仍是 10 道（结论去重后的集合）。
+
+        这不是口径失真——要求「事件数恒等于已取证数」等于要求退回不重跑。
+        本条锁住这个事实，防止将来有人把 `started=20` 当成 bug 去「修」。
+        """
+        次数: dict[str, int] = {}
+
+        def 取证(请求):
+            out = {}
+            for g in 请求.门禁:
+                n = 次数.get(g.value, 0) + 1
+                次数[g.value] = n
+                过 = (g.value != "G2") or n >= 2
+                out[g.value] = GateRecord(
+                    gate=g.value, passed=过, attempt=n - 1, evidence=("依据",)
+                )
+            return out
+
+        器 = 编排器(llm=FakeLlm(), storage=FakeStorage(), 门禁取证=取证)
+        got = 器.跑到终(档位=TierId.FLASH, 需求="通知")
+        assert got.is_ok, got.error.detail if got.error else ""
+        started = [e for e in 器.事件 if e.kind.value == "gate.started"]
+        assert len(started) == 20, f"退回一轮应发 20 条 started，实得 {len(started)}"
+        assert len(got.unwrap().门禁账.已取证) == 10, "账仍应是 10 道"
+        assert [e for e in 器.事件 if e.kind.value == "gate.rework"], "退回应有 rework 事件"
 
     def test_每条事件带门禁号(self) -> None:
         器 = 编排器(llm=FakeLlm(), storage=FakeStorage(), 门禁取证=_全过())
