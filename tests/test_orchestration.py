@@ -33,6 +33,7 @@ import pytest
 
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
 from zhengtong.adapters.paths import Workspace, ensure_dirs
+from zhengtong.domain.artifact import ArtifactRef
 from zhengtong.domain.errors import ErrorCode, Result
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.phase import PhaseId, PhaseState
@@ -76,7 +77,7 @@ def _跑(
         storage=storage or FakeStorage(),
         模型名="test-model",
         运行号=RunId(运行号),
-        门禁取证=lambda 门禁: {g.value: GateRecord(gate=g.value, passed=True) for g in 门禁},
+        门禁取证=lambda 请求: {g.value: GateRecord(gate=g.value, passed=True) for g in 请求.门禁},
     ).跑到终(档位=档, 需求=需求)
 
 
@@ -520,7 +521,7 @@ class Test产物落进storage:
     第 13 步的 `test_每段都有产物落地` 文档写着能抓
     「产物没写进 storage」，**实际它查的是 `结果.产物` 这个内存列表**。
 
-    证伪：把 `storage.write_atomic` 整个删掉、把 `落盘` 调用改成 `pass`，
+    证伪：把 `storage.put_artifact` 整个删掉、把 `落盘` 调用改成 `pass`，
     **36 条判据全绿**。
 
     **判据的注释在描述它并不具备的能力。**
@@ -530,11 +531,22 @@ class Test产物落进storage:
 
     @pytest.mark.parametrize("档", [TierId.CONSULT, TierId.FLASH, TierId.PRO])
     def test_storage里真有文件(self, 档: TierId) -> None:
+        # **查 artifacts 不查 files**（D-127 补漏）。
+        #
+        # 编排器此前写产物走 `write_atomic`，而真实现那个方法
+        # **有意不建父目录**（`data/<run-id>/` 从无创建），
+        # 咨询档实测第一跑即 `Errno 2` 死在 intake。
+        # 建目录的是 `_写产物`，只有 `put_artifact` / `save_run_state` 用。
+        #
+        # 本判据原来查 `仓.files`（`write_atomic` 的账）——
+        # 而产物那时根本没走这条路，于是**它查的是一个空账**，
+        # 永远只能靠「另一个错误」把运行打断才偶然红。
+        # 换成 `put_artifact` 的账才是真的在查产物。
         仓 = FakeStorage()
         结果 = _跑(档, storage=仓).unwrap()
-        assert 仓.files, "storage 里一个文件都没有——产物根本没落盘"
+        assert 仓.artifacts, "artifacts 里一个文件都没有——产物根本没落盘"
         # 一并查「跑成了」：跑失败时产物可能只落了一部分，
-        # 那时 `仓.files` 非空却毫无意义。
+        # 那时 `仓.artifacts` 非空却毫无意义。
         assert 结果.终态阶段 is PhaseId.DONE
 
     def test_内存列表与storage逐一对应(self) -> None:
@@ -546,7 +558,7 @@ class Test产物落进storage:
         仓 = FakeStorage()
         结果 = _跑(TierId.PRO, storage=仓).unwrap()
         记忆 = {p.名称 for p in 结果.产物}
-        实际 = {路径.rsplit("/", 1)[-1] for 路径 in 仓.files}
+        实际 = {路径.rsplit("/", 1)[-1] for 路径 in 仓.artifacts}
         assert 记忆 == 实际, f"记忆 {记忆} 与实际 {实际} 对不上"
 
     def test_落盘内容与内存一致(self) -> None:
@@ -554,9 +566,9 @@ class Test产物落进storage:
         仓 = FakeStorage()
         结果 = _跑(TierId.PRO, storage=仓).unwrap()
         for 件 in 结果.产物:
-            路径 = next((k for k in 仓.files if k.endswith("/" + 件.名称)), None)
+            路径 = next((k for k in 仓.artifacts if k.endswith("/" + 件.名称)), None)
             assert 路径 is not None, f"{件.名称} 不在 storage 里"
-            assert 仓.files[路径] == 件.内容, f"{件.名称} 内容对不上"
+            assert 仓.artifacts[路径] == 件.内容, f"{件.名称} 内容对不上"
 
     def test_完全不落盘必须抓红(self) -> None:
         """**这条是自查**：本判据集自己经不经得起同样的退化。
@@ -565,12 +577,12 @@ class Test产物落进storage:
         """
 
         class _空转(FakeStorage):
-            def write_atomic(self, rel_path: str, content: str) -> Result[None]:
+            def put_artifact(self, ref: ArtifactRef, content: str) -> Result[None]:
                 return Result.ok_none()  # 收下就丢，不真写
 
         仓 = _空转()
         _跑(TierId.PRO, storage=仓)
-        assert not 仓.files, "假实现没真写，却让上面几条判据全过了"
+        assert not 仓.artifacts, "假实现没真写，却让上面几条判据全过了"
 
 
 # ═══ 判据八：交付物是终稿不是半成品（复查第 ② 条）═══
@@ -717,10 +729,10 @@ class Test状态落盘:
             的第二次现场教学。
             """
 
-            def write_atomic(self, rel_path: str, content: str) -> Result[None]:
-                if rel_path.endswith("drafting.md"):
+            def put_artifact(self, ref: ArtifactRef, content: str) -> Result[None]:
+                if ref.path.endswith("drafting.md"):
                     return Result.fail(ErrorCode.STORAGE_WRITE_FAILED, "存储不可用")
-                return super().write_atomic(rel_path, content)
+                return super().put_artifact(ref, content)
 
         got = _跑(TierId.PRO, storage=_只拒正文())
         assert got.is_error, "存储拒绝了却还返回成功——落盘失败被吞了"
@@ -729,7 +741,7 @@ class Test状态落盘:
         assert "drafting.md" in got.error.detail, f"报的错不是正文落盘这条：{got.error.detail}"
         # **关键：错因必须指名是「产物落盘」**。
         #
-        # 第一版只查 `is_error` 与错误码——而 `_必拒仓` 只拒 `write_atomic`，
+        # 第一版只查 `is_error` 与错误码——而 `_必拒仓` 只拒 `put_artifact`，
         # 后面 `save_run_state` 那条路**也会报错**，
         # 于是哪怕产物落盘那段被整个删掉，`is_error` 依然为真、
         # 错误码恰好也是 `STORAGE_WRITE_FAILED`，判据照样全绿。

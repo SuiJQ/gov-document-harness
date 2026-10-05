@@ -75,10 +75,18 @@ class 事件桥接:
     #: 会抛 `AttributeError`——slots 不给未声明的名字留位置。
     _已订阅: bool = False
 
+    #: 最近一次编排的失败详情；`""` 表示没失败过。
+    #:
+    #: **退出码的唯一依据**。此前失败只写进 `投影.errors`（给人看），
+    #: 进程照样返回 0——「失败被吞」的典型形态：
+    #: 脚本/CI 看见的是成功，人看见的是满屏 Traceback。
+    末次失败: str = ""
+
     def __init__(self, *, 调试: bool = False) -> None:
         self.投影 = DebugProjection() if 调试 else StandardProjection()
         self.刷屏 = None
         self._已订阅 = False
+        self.末次失败 = ""
 
     @property
     def 投影类(self) -> type[Projection]:
@@ -153,4 +161,8 @@ class 事件桥接:
             # 没总线时（测试、CI、无界面调用）才走这条兜底路。
             self.喂全部(getattr(编排器, "事件", []))
         if 结果.is_error:
+            # **记下来给退出码用**：此前失败只进 `投影.errors`
+            # （给人看），进程退出码恒为 0——脚本和 CI 无法判断成败。
+            # 实测：intake 落盘失败、界面崩了两处，退出码仍是 0。
+            self.末次失败 = 结果.error.detail
             self.投影.errors = (*self.投影.errors, 结果.error.detail)  # pyright: ignore[reportAttributeAccessIssue]

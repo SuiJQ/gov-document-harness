@@ -60,7 +60,7 @@ def _装(k: int) -> tuple[编排器, _记容量的Llm]:
         content_pack=FakeContentPack(),  # pyright: ignore[reportArgumentType]
         模型名="m",
         容量token=k * 1024,  # 模拟 App.编排器() 的传参
-        门禁取证=lambda 门禁: {g.value: GateRecord(gate=g.value, passed=True) for g in 门禁},
+        门禁取证=lambda 请求: {g.value: GateRecord(gate=g.value, passed=True) for g in 请求.门禁},
     )
     return 编, llm
 

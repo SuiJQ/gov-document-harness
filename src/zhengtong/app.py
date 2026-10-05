@@ -167,6 +167,7 @@ class App:
         预算取自配置的上下文容量（D-189）：
         **不给无上限**，无上限等于闸门不存在。
         """
+        from .orchestration.gates_forging import 门禁取证实装
         from .orchestration.orchestrate import 编排器 as 编排器类
 
         容量 = max(1, self.config.context_k) * 1024
@@ -198,6 +199,13 @@ class App:
             bus=self.bus,
             content_pack=self.ports.content_pack,
             validators=self.ports.validators,
+            # **门禁取证真实现显式接线**（第 14 步 5b）。
+            #
+            # 此前这个参数**根本不传**，而编排器那侧的默认值是
+            # `lambda _门禁: {}`——12 道门禁的结论恒为空。
+            # 空结论不会让流程停下：D-221 缺席判据会把它转用户决策，
+            # 于是每次成文都要用户替系统的「没查」买单。
+            门禁取证=门禁取证实装(self.ports.validators),
             模型名=self.config.model,
             预算=容量 // 2,  # 一半给本次装配，另一半留给工具返回与追加
             # **压缩用的容量必须来自用户配置**（第 14.5 步 D-231）。

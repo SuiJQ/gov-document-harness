@@ -36,18 +36,18 @@ from zhengtong.adapters.paths import Workspace, ensure_dirs
 from zhengtong.app import 内容包根
 from zhengtong.domain.errors import Result
 from zhengtong.domain.event import EventKind, make_call_id
-from zhengtong.domain.gate import GateId
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.role import RoleId
 from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TierId
+from zhengtong.orchestration.gates_forging import 门禁取证请求
 from zhengtong.orchestration.orchestrate import 编排器
 from zhengtong.ports.llm import LlmRequest, LlmResponse
 
 
-def _全过(门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
+def _全过(请求: 门禁取证请求) -> dict[str, GateRecord]:
     """门禁全过的取证脚本。"""
-    return {g.value: GateRecord(gate=g.value, passed=True) for g in 门禁}
+    return {g.value: GateRecord(gate=g.value, passed=True) for g in 请求.门禁}
 
 
 def _全过编排器() -> 编排器:

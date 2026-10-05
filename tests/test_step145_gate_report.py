@@ -45,6 +45,7 @@ from zhengtong.domain.gate import FORMAL_GATES, GATES, GateId, gate_owners
 from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TierId
 from zhengtong.orchestration import 编排器
+from zhengtong.orchestration.gates_forging import 门禁取证请求
 from zhengtong.orchestration.orchestrate import 阶段产物
 
 
@@ -63,7 +64,8 @@ def _编排(
     次数: dict[str, int] = {}
     锁 = Lock()
 
-    def 门禁取证(门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
+    def 门禁取证(请求: 门禁取证请求) -> dict[str, GateRecord]:
+        门禁 = 请求.门禁
         出: dict[str, GateRecord] = {}
         if 缺席:
             # 一条结论都不给（D-221：没人取证 ≠ 取过了都没问题）

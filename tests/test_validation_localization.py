@@ -112,7 +112,7 @@ class Test两个出口都不许丢字段:
             llm=FakeLlm(),
             storage=FakeStorage(),
             模型名="m",
-            门禁取证=lambda 门禁: {},
+            门禁取证=lambda _请求: {},
             运行号=RunId("r-val"),
             # **接真实校验器**：D-Card 全空，提问前必被拦下
             validators=硬约束校验器(),

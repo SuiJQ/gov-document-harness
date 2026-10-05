@@ -43,7 +43,7 @@ def _编() -> 编排器:
         llm=FakeLlm(),
         storage=FakeStorage(),
         模型名="test-model",
-        门禁取证=lambda 门禁: {g.value: GateRecord(gate=g.value, passed=True) for g in 门禁},
+        门禁取证=lambda 请求: {g.value: GateRecord(gate=g.value, passed=True) for g in 请求.门禁},
     )
 
 

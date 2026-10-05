@@ -235,18 +235,49 @@ class StandardProjection:
 
 
 @dataclass(slots=True)
-class DebugProjection:
+class DebugProjection(StandardProjection):
     """调试模式（D-023 "有啥输出啥"）。
 
     **全量透传**：一条都不过滤。成员状态、工具调用、门禁明细全都要。
     角色名在这里也用中文（D-080），但附上内部标识便于定位文件
     （D-080 明确允许调试模式用内部标识）。
+
+    ## 为什么继承 `StandardProjection` 而不是各写各的
+
+    此前它是独立类，只实现了 `accept` / `lines`，
+    **缺 `artifacts` `errors` `progress` `questions` `scanned`
+    与两个 token 字段共 7 个**。而界面代码
+    （`presentation/tui.py`、`adapters/tui.py`）照着
+    `StandardProjection` 的字段读，于是 `--debug` 一跑就
+    `AttributeError`——**调试模式完全不可用**。
+
+    而 `Projection` 协议只声明了 `accept` / `lines` 两个方法、
+    **不声明任何字段**，两个类也都没写基类，类型系统管不住；
+    判据 `test_projection.py` 又只测 `StandardProjection` 的字段。
+    三重漏口叠在一起，1905 条测试全绿而程序必崩。
+
+    继承之后字段集**结构上不可能分叉**：基类加字段，
+    调试模式自动跟着有。这比补一份字段清单可靠——
+    补清单只是把同一个漏洞推迟到下一次改动。
     """
 
     prefix: str = "[调试]"
     records: tuple[str, ...] = ()
 
     def accept(self, event: Event) -> None:
+        """**先按标准模式更新结构化字段，再记全量行**。
+
+        结构化字段不能省：界面读 `投影.artifacts` 渲染成果卡、
+        读 `投影.errors` 显示失败。调试模式若不填这两项，
+        界面照样崩——那正是本次修的 bug。
+
+        **显式写 `StandardProjection.accept(self, …)`，不用 `super()`**：
+        两侧都是 `@dataclass(slots=True)`，而 slots dataclass 的继承
+        会重建类，零参 `super()` 的 `__class__` 闭包因此指向旧类，
+        报 `TypeError: super(type, obj): obj must be an instance
+        or subtype of type`。显式基类调用不依赖那个闭包。
+        """
+        StandardProjection.accept(self, event)
         line = self._format(event)
         self.records = (*self.records, line)
 

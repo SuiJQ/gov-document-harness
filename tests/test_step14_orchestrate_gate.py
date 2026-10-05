@@ -22,11 +22,11 @@ from threading import Lock
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
 from zhengtong.domain.errors import ErrorCode
 from zhengtong.domain.event import EventKind
-from zhengtong.domain.gate import GateId
 from zhengtong.domain.phase import PhaseId
 from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TierId
 from zhengtong.orchestration import 编排器
+from zhengtong.orchestration.gates_forging import 门禁取证请求
 from zhengtong.ports.content_pack import ContentPackPort
 from zhengtong.ports.llm import LlmPort
 from zhengtong.ports.storage import StoragePort
@@ -59,7 +59,8 @@ def _编排(
     次数: dict[str, int] = {}
     锁 = Lock()
 
-    def 门禁取证(门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
+    def 门禁取证(请求: 门禁取证请求) -> dict[str, GateRecord]:
+        门禁 = 请求.门禁
         if 缺席:
             return {}
         出: dict[str, GateRecord] = {}
@@ -220,7 +221,9 @@ class TestD065幂等与退回:
         续 = 编排器(
             llm=FakeLlm(),
             storage=FakeStorage(),
-            门禁取证=lambda 门禁: {g.value: GateRecord(gate=g.value, passed=True) for g in 门禁},
+            门禁取证=lambda 请求: {
+                g.value: GateRecord(gate=g.value, passed=True) for g in 请求.门禁
+            },
             初始状态=首.终态,
             初始已完成=首._建过程().已完成,
         )

@@ -73,7 +73,7 @@ def _编(llm: FakeLlm) -> 编排器:
         llm=llm,
         storage=FakeStorage(),
         模型名="m",
-        门禁取证=lambda 门禁: {},
+        门禁取证=lambda _请求: {},
         运行号=RunId("r-token"),
     )
 

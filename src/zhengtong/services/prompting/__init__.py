@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from ...domain.dcard import DCard, Provenance
+from ...domain.phase import PhaseId
 from ...domain.role import RoleId
 from ...ports.content_pack import ContentPackPort
 from ...ports.llm import Message
@@ -70,6 +71,14 @@ class 装载条件:
     最少主体数: int = 0
     #: 只在这些角色装载；空表示全体。
     限角色: frozenset[RoleId] = frozenset()
+    #: 只在这些阶段装载；空表示全阶段。
+    #:
+    #: **为什么加这个字段**：门禁取证要一份**输出契约**
+    #: （`gate-verdict-format`），而写作阶段装它就是白装——
+    #: 那几行格式要求到了起草阶段反而干扰正文。
+    #: 不加阶段限定就只能靠「全体都装」硬塞，违反本模块
+    #: 「省下的每一 token 都是真省下来的」。
+    限阶段: frozenset[PhaseId] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +86,15 @@ class 装配请求:
     """装配输入。**全部显式**——不读环境、不读全局状态。"""
 
     角色: RoleId
+    #: 当前阶段。**只影响 `装载条件.限阶段` 的筛选**，不参与其他判断。
+    #: 为 `None` 时按「不限阶段」处理——装配器不读全局状态（`装配请求` 文档）。
+    阶段: PhaseId | None = None
+    #: 本轮指派给该角色的门禁（`G1` 这类编号）。
+    #:
+    #: **不给它，输出契约就落不到实处**：契约明写「只对你被指派的
+    #: 门禁作答，派给你 G1/G2 就只答这两道」，而模型看得到契约却
+    #: 看不到指派——它只能猜，猜错就整组失证（D-221 判缺席）。
+    指派门禁: tuple[str, ...] = ()
     卡: DCard | None = None
     主体数: int = 0
     产物: tuple[str, ...] = ()
@@ -169,6 +187,10 @@ def 装配提示词(
     if 契约:
         块.append(("产物契约", 契约))
 
+    指派 = _渲染指派门禁(请求.指派门禁)
+    if 指派:
+        块.append(("本轮门禁指派", 指派))
+
     工具块 = _渲染工具清单(请求)
     if 工具块:
         块.append(("工具清单", 工具块))
@@ -202,6 +224,13 @@ def _取参考(ref: str, 内容包: ContentPackPort) -> str | None:
 def _该装(条: 装载条件, 请求: 装配请求) -> bool:
     """条件不满足就不装。**省下的每一 token 都是真省下来的**。"""
     if 条.限角色 and 请求.角色 not in 条.限角色:
+        return False
+    # **阶段不符就不装**（`限阶段` 的执行处）。
+    #
+    # 阶段未传（`None`）时**不放行限阶段条目**——
+    # 反过来判会让「忘了传阶段」悄悄变成「全都装上」，
+    # 而 D-189 的预算闸门正是靠「该装的不装」才压得住。
+    if 条.限阶段 and 请求.阶段 not in 条.限阶段:
         return False
     return 请求.主体数 >= 条.最少主体数
 
@@ -241,6 +270,26 @@ def _渲染产物契约(产物: tuple[str, ...]) -> str:
         f"上游产物（共 {len(产物)} 份，**此处只有引用，正文不在上下文里**）：\n"
         f"{清单}\n"
         "需要正文时用 shared.read 按名称读取，不要凭文件名猜测内容。"
+    )
+
+
+def _渲染指派门禁(指派: tuple[str, ...]) -> str:
+    """本轮指派给该角色的门禁。
+
+    **放在产物契约之后、正文之前**：它是「你要做什么」的答案，
+    必须在角色读完规则、正要动手之前出现在上下文里。
+
+    明写「只答这几道、别的门禁没有你的签字权」——
+    不是客套，是 D-084 的取证方映射：让一个角色替别人的门禁签字，
+    等于取消「谁该查哪道」这层责任划分。
+    """
+    if not 指派:
+        return ""
+    清单 = "、".join(指派)
+    return (
+        f"本轮**只由你取证**的门禁（共 {len(指派)} 道）：{清单}\n"
+        "逐道按输出契约给结论；这几道之外的门禁**不由你签字**，"
+        "即便你发现问题也不要在结论行里写它们。"
     )
 
 
@@ -337,5 +386,16 @@ def 默认装载条件() -> tuple[装载条件, ...]:
             ref="punctuation",
             描述="标点与序号规范",
             限角色=frozenset({RoleId.LANGUAGE, RoleId.COMPLIANCE}),
+        ),
+        # **仅 GATING 阶段装载**：门禁取证的输出契约。
+        #
+        # 抽取成独立文件而不是塞进角色提示词：取证输出格式与
+        # 「怎么写公文」是两件事，前者每次生成都要严格遵守、
+        # 后者越长越好。合成一份就得到「按阶段挑着读」的效果——
+        # 而角色提示词永不截断（`_按预算截`），挑不出来。
+        装载条件(
+            ref="gate-verdict-format",
+            描述="门禁取证输出契约（逐道一行，门禁号 | 结论 | 证据）",
+            限阶段=frozenset({PhaseId.GATING}),
         ),
     )

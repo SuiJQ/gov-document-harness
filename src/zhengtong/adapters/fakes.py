@@ -183,11 +183,44 @@ class FakeLlm:
             )
         return Result.ok(
             LlmResponse(
-                text=self.default_text,
+                # **门禁取证阶段要守输出契约**（D-112 的反向约束）。
+                #
+                # 此前不管什么阶段都回同一句「【桩】模型回复」，
+                # 而门禁取证的产物是 `门禁号 | 结论 | 证据` 行——
+                # 桩不回这个格式，`解析结论` 必然一条都读不出，
+                # 于是 12 道门禁全缺席、D-221 转用户决策。
+                #
+                # 后果不只是「这几条测试红」：它们红在
+                # `test_resume_accounting`（续跑判据）上，
+                # 让人以为断点续跑坏了，实际是桩没按契约回话。
+                #
+                # 桩必须**比契约更严**：只答被指派的门禁，
+                # 且证据写到可定位的长度，免得测试在「证据不足」
+                # 这条降级路径上假通过。
+                text=self._门禁桩(request) or self.default_text,
                 finish_reason=FinishReason.STOP,
                 usage=TokenUsage(prompt_tokens=10, completion_tokens=10),
                 call_id=_semantic_call_id(request),
             )
+        )
+
+    def _门禁桩(self, request: LlmRequest) -> str | None:
+        """GATING 阶段的行式结论桩；非该阶段返回 `None` 走常规桩。
+
+        **靠「本轮门禁指派」块识别阶段**——不靠阶段名：
+        阶段名是内部标识，可能改名；而这块块只有指派非空时才渲染，
+        它的存在本身就是「这是一次门禁取证」的可靠信号。
+        """
+        正文 = "\n".join(m.content for m in request.messages if isinstance(m.content, str))
+        段 = "本轮**只由你取证**的门禁" if "本轮**只由你取证**的门禁" in 正文 else None
+        if 段 is None:
+            return None
+        行 = 正文.split(段, 1)[1]
+        清单 = 行.split("：", 1)[1].split("\n", 1)[0]
+        return "\n".join(
+            f"{编号} | 通过 | 证据：【桩】第 {i} 段已复核（本条为桩证据）"
+            for i, 编号 in enumerate(清单.split("、"), start=1)
+            if 编号.startswith("G")
         )
 
     def probe(self) -> Result[探测结论]:
@@ -257,6 +290,21 @@ class FakeStorage:
             return Result.fail(err.code, err.detail)
         if rel_path in self.files:
             return Result.ok(self.files[rel_path])
+        # **两个账本都要查**（D-112 补漏）。
+        #
+        # `put_artifact` 写进 `artifacts`（键是 `<run-id>/<名称>`），
+        # `write_atomic` 写进 `files`（键是 `data/...` 全路径）。
+        # 原实现只查 `files`，于是**产物读回来一律「文件不存在」**——
+        # 而真实实现落的是真文件，读得到。
+        #
+        # 后果很具体：断点续跑靠 `read_text` 取回上次的产物，
+        # 假实现读不到 ⇒ 续跑判据在假实现上永远测不出对错
+        # （D-112 那句「假实现一旦更宽松，就不再是可信参照物」）。
+        前缀 = f"{paths.DATA}/"
+        if rel_path.startswith(前缀):
+            键 = rel_path[len(前缀) :]
+            if 键 in self.artifacts:
+                return Result.ok(self.artifacts[键])
         return Result.fail(ErrorCode.FILE_UNREADABLE, f"文件不存在：{rel_path}")
 
     def exists(self, rel_path: str) -> bool:
@@ -322,7 +370,44 @@ class FakeStorage:
         return Result.fail(ErrorCode.FILE_UNREADABLE, f"无此 run 的状态：{run_id}")
 
     def put_artifact(self, ref: ArtifactRef, content: str) -> Result[None]:
-        self.artifacts[str(ref)] = content
+        """产物落盘。**键是 `ref.path`，与真实现一致**（D-112）。
+
+        ## 为什么键要跟真实现一样
+
+        真实现 `put_artifact` 落到 `data/<ref.path>`，
+        查权限时用的就是这个相对路径。
+
+        原实现存的是 `str(ref)`——把整个 dataclass 的 repr 当键。
+        后果不只是「键难看」：**产物目录建没建、路径守不守，
+        在假实现上完全测不出来**。而这正是本次真实缺陷的藏身处
+        （`data/<run-id>/` 从无创建，`intake.md` 必报 `Errno 2`）——
+        假实现照绿，真实现一跑就死（D-112 说的「假实现一旦更宽松，
+        就不再是可信参照物」）。
+
+        故这里也查 `AI_WRITABLE`、也以 `ref.path` 为键。
+
+        ## 权限要查**补上 `data/` 之后**的路径
+
+        真实现 `put_artifact` 落 `data/<ref.path>`，再对**落点**查权限。
+        `ref.path` 本身是 `r-0001/final.md`——顶层是 `r-0001`，
+        直接拿它去查会得到「不可访问该目录：r-0001」，
+        与真实现的答案不一致（D-112：假实现要在同一输入上给同一答案）。
+        """
+        落点 = f"{paths.DATA}/{ref.path}"
+        got = _查权限(落点, paths.AI_WRITABLE)
+        if got.is_error:
+            return got
+        # **还要逐分量查文件名**（`..` / `.` / Windows 保留名）。
+        #
+        # 只查顶层拦不住 `data/../逃逸.txt`——它的顶层就是 `data`，
+        # 合法通过。真实实现走 `guard.ensure_within`，逐段判文件名，
+        # 实测返回 `PATH_ESCAPE`（「文件名不能是 . 或 ..」）。
+        for 分量 in 落点.replace("\\", "/").split("/"):
+            if 分量 in (".", ".."):
+                return Result.fail(
+                    ErrorCode.PATH_ESCAPE, f"路径分量不可用：文件名不能是 . 或 ..（{分量}）"
+                )
+        self.artifacts[ref.path] = content
         return Result.ok_none()
 
     def draft_paper_ok(self, role: str, current_count: int) -> bool:  # noqa: ARG002

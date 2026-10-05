@@ -83,6 +83,15 @@ from pathlib import Path
     "FakeRetriever": ("built_with",),
     # 私有状态经只读性质暴露（`_已降级` 由 `已降级` 属性读出）
     "倒排索引": ("_已降级",),
+    # `末次失败`：**逐条人工核实**，跨两层转发：
+    #   `presentation/tui.py:167` 写入（`在worker里跑` 收到 `Result` 时）
+    #   ← `adapters/tui.py:411`  `运行失败` property 转发
+    #   ← `tui_app.py:91`         `return 1 if 界面.运行失败 else 0`
+    #
+    # 存在理由：缺陷 4「崩溃但退出码 0」。此前失败只进 `投影.errors`
+    #（给人看），进程照样返回 0。界面另存一份会与桥接分叉
+    #（同一类老毛病），故转发而不复制。
+    "事件桥接": ("末次失败",),
 }
 
 

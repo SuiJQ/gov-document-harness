@@ -352,6 +352,29 @@ class ZhengTongApp(App[None]):
         但帮助栏会多出一条没有意义的键位。
         """
 
+    def action_退出(self) -> None:
+        """**退出程序。这是 `ctrl+o` 唯一的落点。**
+
+        ## 这个方法此前不存在
+
+        `Binding("ctrl+o", "退出")` 从建起就在，但 `action_退出`
+        **全仓从来没写过**——于是这个绑定指向一个不存在的动作，
+        按下去什么也不发生。
+
+        后果不是「少一个功能」，是**程序跑完之后没法退出**：
+        实测连发 40 次 `ctrl+o` 进程纹丝不动，只能被 `SIGTERM` 杀。
+        而连带后果更大——缺陷 4 修的退出码「永远到不了进程」，
+        因为取退出码得先让界面退出。
+
+        ## 退出码不在这里算
+
+        `启动` 在 `run()` 返回后按 `运行失败` 算 0/1。
+        这里再传一遍 `result=` 会让退出码有**两个来源**——
+        两处一旦分叉，又是一次「声明与实现脱节」。
+        故 `action_退出` 只管退出这一件事。
+        """
+        self.exit()
+
     def __init__(
         self,
         *,
@@ -397,11 +420,31 @@ class ZhengTongApp(App[None]):
         self._当前编排器 = None
         self._接上答复方(闸)
 
+    @property
+    def 运行失败(self) -> str:
+        """最近一次编排的失败原因；空串＝没失败。
+
+        **公开它是为了退出码**：`tui_app.启动` 据此返回非零。
+        此前恒返回 0，于是「intake 落盘失败、界面再崩两处」
+        也报成功——用户和脚本都以为跑通了。
+
+        转发给桥接而不是自己存：桥接才是收到 `Result` 的那一方，
+        界面另存一份就会与桥接分叉（同一类老毛病）。
+        """
+        return self._桥.末次失败
+
     def compose(self) -> ComposeResult:
         yield Static(主题.文案_标题, id="app-title")
         with Vertical(id="request-area"):
             yield RequestBox()
-            yield Static("[ 开始 ]　Ctrl+Enter　　Ctrl+Q 退出", id="start-button")
+            # **键位照 `主题.键位表` 写，不许凭记忆**（缺陷 6）。
+            #
+            # 此处原写「Ctrl+Q 退出」，而 `ctrl+q` 绑的是 `noop`
+            # （故意解绑 Textual 默认退出键，见 BINDINGS 的注释）——
+            # 用户照着提示按，按的是一个什么都不干的键。
+            # 真退出键是 `ctrl+o`，且**这一行本身就是判据**：
+            # 真退出键改了而这里没改，同一个毛病会再犯一次。
+            yield Static("[ 开始 ]　Ctrl+Enter　　Ctrl+O 退出", id="start-button")
         yield StatusLine(id="status")
         yield ArtifactPanel(id="artifacts")
         yield PreviewPanel(id="preview")

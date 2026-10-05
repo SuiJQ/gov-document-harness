@@ -48,7 +48,7 @@ from queue import Empty, SimpleQueue
 from threading import Lock
 from typing import Final
 
-from ..domain.artifact import ArtifactKind
+from ..domain.artifact import ArtifactKind, ArtifactRef
 from ..domain.errors import ErrorCode, Result
 from ..domain.event import Event, EventKind, Level, make_call_id
 from ..domain.gate import (
@@ -61,7 +61,7 @@ from ..domain.gate import (
     退回上限,
     门禁判定,
 )
-from ..domain.ids import RunId
+from ..domain.ids import ArtifactId, RunId
 from ..domain.phase import PhaseId, PhaseState
 from ..domain.role import RoleId, RoleState, display_name, 取温度
 from ..domain.run_state import GateRecord, RunState, new_run_state
@@ -91,11 +91,17 @@ from ..services.export import 导出文件
 from ..services.prompting import 装配提示词, 装配请求, 预算闸门
 from ..services.tools.calllog import 调用存档 as 调用存档类
 from ..services.tools.runner import 工具运行器
+from .gates_forging import 门禁取证实装, 门禁取证请求
 from .machine import 该发请求
 
 #: 产物路径前缀。**必须以 `data/` 开头**——
 #: `paths.AI_WRITABLE` 只认 `data/`（AI 只能写 `data/`），
 #: 写成运行号开头会被路径守卫拒绝（第 13 步第九次 D-165 的教训）。
+#:
+#: 续跑要按同一路径读回上次的产物（`推进一步` 里的 `read_text`），
+#: 故写与读必须共用这一个前缀——**各写各的必然分叉**。
+_产物根: Final = "data"
+
 #: **工具调用轮数上限**（D-267）。
 #:
 #: 模型可能一轮里连调多个工具，也可能据前一个结果再调后一个，
@@ -108,14 +114,47 @@ _工具轮上限 = 4
 #: **不加 YAML 元数据头**。
 _主件文件名 = "01-主件.txt"
 
-_产物根: Final = "data"
-
 #: 默认预算（D-189）。真跑时应来自配置里的上下文容量；
 #: 这里给保守值，**不给「无上限」**——无上限等于闸门不存在。
 _默认预算: Final = 20_000
 
 
-def _工具声明(角色: RoleId) -> tuple[ToolSchema, ...]:
+def _本档可调工具(角色: RoleId, 档: TierId) -> tuple[ToolSchema, ...]:
+    """该角色在**该档位**下真正可调的工具。
+
+    ## 提示词与 API 必须同源（D-233 补漏）
+
+    此前这里有两个互不相干的来源：
+
+    - `_工具声明` 从白名单取 → 实际发给 API（17 个）
+    - `_工具清单` 是**一个 return 字面量** → 写进系统提示词（6 个）
+
+    两边对不上，后果正是旧注释警告的那条：
+    「模型说能调用却调不动」。实测更糟——字面量里的 `kb.read`
+    **根本不存在**（真名 `kb.read_pack` / `kb.read_user_file`）。
+    模型照着提示词调必然失败；而提示词又说只有 6 个工具，
+    `flow.ask_user`、`draft.submit` 这些它也不敢用。
+
+    现在只有一个来源：提示词与 API 都从这里取，**分叉不再可能**。
+
+    ## 档位也要看
+
+    `requires_user_questions=False`（咨询档）此前**零消费**——
+    声明了免提问，却照旧把 `flow.ask_user` 发给模型，
+    「免方向锁」只存在于 `team-lead.md` 里的一句自然语言，
+    靠模型自觉。现在该档位直接不发这个工具。
+    """
+    from zhengtong.services.tools.registry import 该角色可调
+
+    全部 = 该角色可调(角色)
+    if not TIER_BY_ID[档].requires_user_questions:
+        全部 = tuple(t for t in 全部 if t.name != "flow.ask_user")
+    return tuple(
+        ToolSchema(name=t.name, description=t.description, parameters=t.parameters) for t in 全部
+    )
+
+
+def _工具声明(角色: RoleId, 档: TierId) -> tuple[ToolSchema, ...]:
     """该角色**实际可调**的工具子集 → API 层声明（D-233）。
 
     ## 为什么必须是子集而不是全集
@@ -126,18 +165,16 @@ def _工具声明(角色: RoleId) -> tuple[ToolSchema, ...]:
     模型会看到并尝试调用白名单外的工具，然后被工具层拒绝——
     用户看到的现象是「模型说能调用却调不动」。
 
+    **那条注释曾一语成谶**：分叉不在这里，而在提示词那一侧
+    （那里是个硬编码字面量）。两侧现共用 `_本档可调工具`。
+
     ## 为什么放在编排层而不是服务层
 
     `ToolSpec`（工具层自己的规格）与 `ToolSchema`（端口的线格式）
     字段同名但分属两层。跨层转换是这个位置独有的职责：
     工具层不该知道端口，编排层是唯一同时看得见两者的层。
     """
-    from zhengtong.services.tools.registry import 该角色可调
-
-    return tuple(
-        ToolSchema(name=t.name, description=t.description, parameters=t.parameters)
-        for t in 该角色可调(角色)
-    )
+    return _本档可调工具(角色, 档)
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +311,8 @@ class _过程:
         self.导出文件名: tuple[str, ...] = ()
         self.出现过的状态: list[RoleState] = []
         self.动过的: list[RoleId] = []
+        #: **本段**派发过的角色。`动过的` 跨段累积，记账只能用这个。
+        self.本段动过: list[RoleId] = []
         self.回复: dict[RoleId, str] = {}
         self.交付物 = ""
         self.标注: tuple[str, ...] = ()
@@ -296,6 +335,9 @@ class _过程:
     # ── drive 回调：一次一阶段 ──
 
     def 推进一步(self, 进度: int) -> Result[Step[int]]:
+        # **每段开始前清空本段角色表**：否则上一段派发过的角色
+        # 会混进这一段的记账里，凭空多出一批不存在的 call_id。
+        self.本段动过.clear()
         if 进度 >= len(self.序列):
             return Result.ok(Step(phase=PhaseId.DONE, state=进度, done=True))
         # **取消检查点**（与插话同位置：阶段边界）。
@@ -343,12 +385,8 @@ class _过程:
             return Result.fail(段错.code, 段错.detail)
 
         件 = 跑段.unwrap()
-        存 = self.storage.write_atomic(self._路径(件.名称), 件.内容)
-        if 存.is_error:
-            self.编排.发(EventKind.PHASE_EXITED, 阶段, ok=False)
-            写错 = 存.error
-            assert 写错 is not None
-            return Result.fail(写错.code, f"{件.名称} 落盘失败：{写错.detail}")
+        # **不在这里落盘**：续跑时本段 `self.回复` 是空的（请求被幂等跳过），
+        # 先落一个空产物会把上次的成果抹掉。落盘挪到复用判定之后。
 
         self.产物.append(件)
         # **只有 ARTIFACT_READY 携全文**（D-072/D-046）
@@ -362,6 +400,65 @@ class _过程:
         if 阶段 is PhaseId.FINAL:
             self.交付物 = 件.内容
 
+        # **产物与「已完成调用」都要记进状态（D-065 补漏）**。
+        #
+        # 此前 `put_artifact` 与 `mark_completed` 在生产代码零调用——
+        # 只有 `tests/test_serialization.py` 用过。于是实跑之后
+        # `state.json` 里 `artifacts={}`、`completed_call_ids=[]`：
+        # **产物落盘了却没记账**，而续跑判定全靠这个账
+        # （`run_state.py` 的 `is_call_completed`）。
+        #
+        # 与「产物落盘」共用同一次 `save_run_state`，不多写一遍盘。
+        # **续跑时该段直接复用已落盘的产物，别再拼一个空的**。
+        #
+        # `_跑一段` 在 `cid in self.已完成` 时会跳过请求（这是对的——
+        # 幂等要求不重复做已做的事）。但产物是 `推进一步` 用
+        # `_正文(阶段, self.回复)` 拼的，跳过的段 `self.回复` 是空的，
+        # 于是会落一个只剩标题的空产物。**那比重发更糟**：
+        # 表面「没重发」，实际把上次的成果抹了。
+        #
+        # 故先看这段是不是上次的成果；是就读回来直接用。
+        #
+        # **顺序反了就会把成果抹掉**：读回来必须在落盘**之前**。
+        # 我第一版放在 `put_artifact` 之后，于是读到的已经是被
+        # 覆盖过的空内容——实测首跑 47 字、续跑 6 字。
+        #
+        # 而请求次数判据照样绿：它只数「第二遍发不发请求」，
+        # 不看产物内容。**这类判据查不出「不重发但抹成果」**。
+        名 = f"{阶段.value}.md"
+        复用 = self.storage.read_text(
+            f"{_产物根}/{self.编排.运行号}/{名}",
+        )
+        if 复用.is_ok and 复用.unwrap().strip():
+            # 续跑：直接用上次的成果，并**保持原样落回**，不重新拼。
+            件 = 阶段产物(阶段, 名, 复用.unwrap())
+            存 = self.storage.put_artifact(self._产物引用(件), 件.内容)
+        else:
+            存 = self.storage.put_artifact(self._产物引用(件), 件.内容)
+        if 存.is_error:
+            写错 = 存.error
+            assert 写错 is not None
+            return Result.fail(写错.code, f"{名} 落盘失败：{写错.detail}")
+        self.状态 = self.状态.put_artifact(self._产物引用(件))
+        # **身份必须与 `is_call_completed` 查的完全一致**。
+        #
+        # 我第一版记的是 `phase:{阶段}:{产物名}`，而 `_跑一段` 判幂等
+        # 查的是 `make_call_id("prompt", 运行号, 阶段, role=角色)`。
+        # **两套身份对不上**——于是账记了、判定永不命中，
+        # 续跑照旧重发全部请求。记账与判账必须是同一个 id。
+        #
+        # 故这里记每个本段被派发角色的 prompt 调用 id，
+        # 与 `_跑一段` 里 `cid` 的算法逐字一致。
+        #
+        # **只记本段派发的角色**——`self.动过的` 是跨段累积的，
+        # 照它记会把 intake 的角色也算成 final 的 cid，
+        # 于是账里多出一堆 `final` 的 id，而真正的 `final` id 一个不缺，
+        # 续跑照样重发。（Flash 档实测：4 段产物、9 条 cid，
+        # 却漏掉 final——就是这个原因。）
+        for 角色 in dict.fromkeys(self.本段动过):
+            self.状态 = self.状态.mark_completed(
+                make_call_id("prompt", str(self.编排.运行号), 阶段.value, role=角色.value),
+            )
         存态 = self.storage.save_run_state(self.状态.with_phase(阶段, PhaseState.APPROVED))
         if 存态.is_error:
             self.编排.发(EventKind.PHASE_EXITED, 阶段, ok=False)
@@ -683,7 +780,9 @@ class _过程:
                     "gate", str(self.编排.运行号), PhaseId.GATING.value, role=g.owner.value
                 )
                 if cid not in self.已完成:
-                    答 = self.llm.complete(self._构造请求(g.owner, PhaseId.GATING))
+                    答 = self.llm.complete(
+                        self._构造请求(g.owner, PhaseId.GATING, tuple(x.value for x in 组门禁))
+                    )
                     if 答.is_error:
                         错 = 答.error
                         assert 错 is not None
@@ -691,12 +790,29 @@ class _过程:
                     self.回复[g.owner] = 答.unwrap().text
                     self._记入历史(g.owner, PhaseId.GATING, 答.unwrap().text)
                     self.已完成 = (*self.已完成, cid)
+                    # **门禁取证也要记账**（D-065 补漏）。
+                    #
+                    # 上面只把 cid 加进**内存**的 `self.已完成`，
+                    # 而续跑读的是 `state.json`。内存那份随进程消失，
+                    # 于是「门禁取证已完成」这件事永远落不了盘，
+                    # 续跑会重发每一组的取证请求。
+                    self.状态 = self.状态.mark_completed(cid)
                 self.动过的.append(g.owner)
+                self.本段动过.append(g.owner)
                 self.出现过的状态.append(RoleState.DONE)
                 self.状态 = self.状态.set_role_state(g.owner, RoleState.DONE)
                 # 每组**各自**取一次取证结论：并行的意义就在这儿——
                 # 一组一请求，而不是 12 道门禁挤在一次调用里。
-                return Result.ok(self.编排.门禁取证(组门禁))
+                return Result.ok(
+                    self.编排.门禁取证(
+                        门禁取证请求(
+                            门禁=组门禁,
+                            取证方=g.owner,
+                            回覆=self.回复.get(g.owner, ""),
+                            档位=档,
+                        )
+                    )
+                )
 
             结果 = run_groups(任务, _跑一组)
             for 项 in 结果:
@@ -705,7 +821,46 @@ class _过程:
         if 终闸:
             终闸门禁 = tuple(g for g in 门禁 if any(r in GATES[g].owners for r in 终闸))
             if 终闸门禁:
-                裁定.update(self.编排.门禁取证(终闸门禁))
+                # **终闸组原先根本没人取证**：
+                # 此处直接调 `门禁取证(终闸门禁)`，**没有派发模型**——
+                # 而取证结论的唯一来源是角色回覆。于是主理人这条
+                # G12 的证据恒为空，缺席判据（D-221）会把它转用户决策。
+                # 并行组那条路径有 `llm.complete`，终闸这条没有，
+                # 两边不对称是漏派而非有意为之（D-218 的另一半）。
+                #
+                # 故复用同一段派发逻辑，串行跑一次。
+                终闸方 = 终闸[0]
+                self.状态 = self.状态.set_role_state(终闸方, RoleState.RUNNING)
+                self.出现过的状态.append(RoleState.RUNNING)
+                终cid = make_call_id(
+                    "gate-final", str(self.编排.运行号), PhaseId.GATING.value, role=终闸方.value
+                )
+                if 终cid not in self.已完成:
+                    终答 = self.llm.complete(
+                        self._构造请求(终闸方, PhaseId.GATING, tuple(x.value for x in 终闸门禁))
+                    )
+                    if 终答.is_error:
+                        错 = 终答.error
+                        assert 错 is not None
+                        return {}
+                    self.回复[终闸方] = 终答.unwrap().text
+                    self._记入历史(终闸方, PhaseId.GATING, 终答.unwrap().text)
+                    self.已完成 = (*self.已完成, 终cid)
+                    self.状态 = self.状态.mark_completed(终cid)
+                self.动过的.append(终闸方)
+                self.本段动过.append(终闸方)
+                self.出现过的状态.append(RoleState.DONE)
+                self.状态 = self.状态.set_role_state(终闸方, RoleState.DONE)
+                裁定.update(
+                    self.编排.门禁取证(
+                        门禁取证请求(
+                            门禁=终闸门禁,
+                            取证方=终闸方,
+                            回覆=self.回复.get(终闸方, ""),
+                            档位=档,
+                        )
+                    )
+                )
         return 裁定
 
     def _派发(self, 档: TierId, 阶段: PhaseId) -> Result[None]:
@@ -759,6 +914,7 @@ class _过程:
                 self._记入历史(角色, 阶段, 响应.text)
                 self.已完成 = (*self.已完成, cid)
             self.动过的.append(角色)
+            self.本段动过.append(角色)
             self.出现过的状态.append(RoleState.DONE)
             self.状态 = self.状态.set_role_state(角色, RoleState.DONE)
         return Result.ok_none()
@@ -984,7 +1140,7 @@ class _过程:
             工具清单=(
                 Message(
                     role="system",
-                    content=f"【本次可调用工具】{_工具清单(角色, 阶段)}",
+                    content=f"【本次可调用工具】{_工具清单(角色, 阶段, self.状态.task.tier)}",
                 ),
             ),
             对话=历史,
@@ -1049,7 +1205,7 @@ class _过程:
         """
         return tuple(Message(role="user", content=f"[用户插话] {条}") for 条 in self._生效指令)
 
-    def _构造请求(self, 角色: RoleId, 阶段: PhaseId) -> LlmRequest:
+    def _构造请求(self, 角色: RoleId, 阶段: PhaseId, 指派门禁: tuple[str, ...] = ()) -> LlmRequest:
         """**走第 11 步的装配器**——不再手搓 Message。
 
         没有内容包时**不发一句空话冒充角色提示词**：
@@ -1060,7 +1216,12 @@ class _过程:
         需求 = self.状态.task.requirement
         if self.编排.内容包 is not None:
             装配 = 装配提示词(
-                请求=装配请求(角色=角色, 产物=(f"{阶段.value}.md",)),
+                请求=装配请求(
+                    角色=角色,
+                    阶段=阶段,
+                    产物=(f"{阶段.value}.md",),
+                    指派门禁=指派门禁,
+                ),
                 内容包=self.编排.内容包,
                 闸门=预算闸门(上限=self.编排.预算),
             )
@@ -1089,7 +1250,7 @@ class _过程:
             # 请求的 `tools` 字段**全仓生产零填充**——
             # 于是模型看清单却调不到任何工具，`tool_calls` 恒为空。
             # 提示词层与请求层各自测试都绿，**因为没人在两层之间对账**。
-            tools=_工具声明(角色),
+            tools=_工具声明(角色, self.状态.task.tier),
             # 温度走配置基准（D-234）。此前 `LlmRequest.temperature`
             # 用的是字段默认值 0.3，`Config.temperature` 从未影响任何请求。
             # **温度按角色取**（D-243）：此前所有角色的请求都用
@@ -1125,8 +1286,33 @@ class _过程:
             self.编排.发出的请求.append(请求)
         return 请求
 
-    def _路径(self, 名称: str) -> str:
-        return f"{_产物根}/{self.编排.运行号}/{名称}"
+    def _产物引用(self, 件: 阶段产物) -> ArtifactRef:
+        """产物引用。**走 `put_artifact` 而不是 `write_atomic`**（审计 D-127 补漏）。
+
+        ## 为什么换
+
+        `write_atomic` **有意不建父目录**（注释：隐式建目录会让一次
+        打错的路径凭空生成一串空目录）。建目录的职责落在 `_写产物` 上，
+        而 `_写产物` 只被 `save_run_state` / `put_artifact` 用——
+        编排器自己写产物走的是**公开那条**，于是 `data/<run-id>/`
+        从无创建，第一件产物必报 `Errno 2`。
+
+        实测：`intake.md 落盘失败：No such file or directory`，
+        退出码却是 0。**咨询档从未跑完过一次。**
+
+        端口上本来就有一个专为产物设计、且建目录的 `put_artifact`，
+        **此前零调用**——又一个立了没人用的接口。
+
+        ## 路径
+
+        `put_artifact` 内部会补 `data/` 前缀，故 `path` 只给
+        `<run-id>/<名称>`，不再重复写 `data/`。
+        """
+        return ArtifactRef(
+            id=ArtifactId(f"{self.编排.运行号}:{件.名称}"),
+            kind=ArtifactKind.NOTE,
+            path=f"{self.编排.运行号}/{件.名称}",
+        )
 
     def _推理字段(self) -> tuple[tuple[str, object], ...]:
         """该角色这次请求要不要附加「关推理」的字段。
@@ -1192,7 +1378,7 @@ class _过程:
         # 《政策依据适配表》落盘并入库（G7 门禁与起草阶段按名取，D-255）
         if self._政策取证件 is not None:
             件 = self._政策取证件
-            存 = self.storage.write_atomic(self._路径(件.名称), 件.内容)
+            存 = self.storage.put_artifact(self._产物引用(件), 件.内容)
             if not 存.is_error:
                 self.产物.append(件)
         self.标注 = g3降级标注(档)
@@ -1234,6 +1420,33 @@ class 编排器:
     而事件流正是本轮要接的缝之一。
     """
 
+    def _读续跑状态(self, 任务: TaskSpec) -> RunState | None:
+        """读回上次的状态；读不到返回 `None`（那就不是续跑，是首跑）。
+
+        ## 为什么这里必须读盘，而不能靠调用方传
+
+        幂等的定义是「**同一次运行被中断后再来，不重复做已做的事**」。
+        判据只能靠「上次做过哪些调用」——那是上一次落盘的账。
+
+        此前这条账落在 `state.json` 的 `completed_call_ids` 里，
+        **但生产代码从不读它**（见 `跑到终` 处的注释）。
+
+        ## 为什么读不到不算错
+
+        首次运行、或上次崩在落盘之前，都可能没有状态文件。
+        那就退回 `new_run_state` 从零开始。**读盘失败不应当成运行失败。**
+
+        ## 任务单以本次为准
+
+        档位可能改了（用户续跑时重选）。阶段线由档位决定，
+        若沿用上次的 `phase`，会出现「档位是咨询、进度停在成文的
+        `drafting`」这种自相矛盾的状态。
+        """
+        got = self.storage.load_run_state(self.运行号)
+        if got.is_error:
+            return None
+        return replace(got.unwrap(), task=new_run_state(self.运行号, 任务).task)
+
     def 收用户指令(self, 文本: str) -> None:
         """**UI 线程调用**：收下用户插话，排进队列。
 
@@ -1273,7 +1486,7 @@ class 编排器:
         初始状态: RunState | None = None,
         运行号: RunId | None = None,
         初始已完成: tuple[str, ...] = (),
-        门禁取证: Callable[[tuple[GateId, ...]], dict[str, GateRecord]] | None = None,
+        门禁取证: Callable[[门禁取证请求], dict[str, GateRecord]] | None = None,
         容量token: int = 128_000,
         温度: float = 0.3,
         #: **关掉推理的办法**（D-380）：`(请求体字段, 提示词前缀)`。
@@ -1317,7 +1530,7 @@ class 编排器:
         #: 未注入时返回**空结论**而非「全部通过」——按 `FORMAL_GATES`
         #: 全集核对时空结论即缺席，会判无证据（E041/D-221）。
         #: 「没人取证」与「取过了都没问题」必须是两回事。
-        self.门禁取证 = 门禁取证 or (lambda _门禁: {})  # noqa: ARG005
+        self.门禁取证 = 门禁取证 if 门禁取证 is not None else 门禁取证实装(validators)
         #: 门禁并行取证（D-049）时保护共享可变的锁。
         self.请求锁 = Lock()
         #: 上下文容量（token）。用于 85% 压缩兜底阈值。
@@ -1490,15 +1703,25 @@ class 编排器:
             return Result.fail(校验错.code, 校验错.detail)
 
         序列 = 阶段序列(档位)
-        状态 = self.初始状态 or new_run_state(self.运行号, 任务)
+        # **续跑必须读回上次的状态（D-065 补漏）**。
+        #
+        # 此前是 `self.初始状态 or new_run_state(...)`：调用方不传就
+        # 从零重建。而 `app.py` **从不传**（它只调 `编排器(...)`），
+        # 于是每次跑都从头开始——续跑会**重发全部请求**。
+        #
+        # `load_run_state` 在编排层此前零调用；它唯一出现的地方是
+        # `app.py` 的 `run_once`，而那是个死函数（只有 tests 调）。
+        # 于是「续跑」这个能力挂在一条不存在的链上。
+        状态 = self.初始状态 or self._读续跑状态(任务) or new_run_state(self.运行号, 任务)
         # **强制重建**：同一编排器跑两次时，第二次不能沿用上次的进度。
+        # 状态可续，过程必须重建——过程里存着逐请求的运行时状态。
         self._过程 = _过程(
             编排=self,
             llm=self.llm,
             storage=self.storage,
             序列=序列,
             状态=状态,
-            初始已完成=self.初始已完成,
+            初始已完成=self.初始已完成 or tuple(状态.completed_call_ids),
         )
         self.进度终值 = None
         # **记住档位**（D-380）：此前档位只逐层传参、编排器自己不存，
@@ -1552,12 +1775,36 @@ class 编排器:
 
 咨询序列: Final[tuple[PhaseId, ...]] = (
     PhaseId.INTAKE,
-    PhaseId.DIRECTION,
-    PhaseId.OUTLINE,
-    PhaseId.DRAFTING,
     PhaseId.FINAL,
     PhaseId.DONE,
 )
+"""咨询档阶段线（D-035 / 架构 §8.3、§8.4）。
+
+## 为什么只有三段
+
+架构 §8.4 明写 `TierSpec(roles=["范正章"], phases=[ADVICE])`，
+§8.3 补一句「**咨询档不走这条线**：仅范正章一人，
+不触发方向确认、不做政策检索、不走门禁，
+产出为『有依据、有出处、给明确建议』的专家答复」。
+
+此前这里是**成文序列删掉 GATING**——于是咨询档照样走
+DIRECTION（方向确认）、OUTLINE（文章大纲）、DRAFTING（正文起草）。
+
+三个阶段对应架构的 ADVICE：
+INTAKE 采集诉求并由范正章给出专家答复，FINAL 交付，DONE 终态。
+
+## 为什么不给 PhaseId 增 ADVICE
+
+`PhaseId` 不动。增枚举会波及续跑、投影与事件序列
+（`domain/phase.py` 已明记这条纪律），而收益只是换个名字——
+行为上与 INTAKE 一致。名字不符是文档债，行为错才是真缺陷。
+
+## 不是「硬约束校验挡的」
+
+咨询档首跑失败与 DIRECTION 无关：**空 D-Card 跑硬约束是通过的**
+（实测）。真因是 `save_run_state` 写 `state.json` 同样落在
+不建目录的路径上，属产物落盘那个缺陷。
+"""
 成文序列: Final[tuple[PhaseId, ...]] = (
     PhaseId.INTAKE,
     PhaseId.DIRECTION,
@@ -1675,9 +1922,19 @@ def _本轮任务(需求: str, 角色: RoleId, 阶段: PhaseId) -> Message:
     )
 
 
-def _工具清单(角色: RoleId, 阶段: PhaseId) -> str:  # noqa: ARG001  # 统一签名；清单暂按角色白名单恒定
-    """本次实际可调用的工具（供模型知道边界）。"""
-    return "shared.read / shared.write / shared.list / kb.search / kb.read / msg.report_to_lead"
+def _工具清单(角色: RoleId, 阶段: PhaseId, 档: TierId) -> str:  # noqa: ARG001  # 阶段暂不参与切片
+    """本次实际可调用的工具（供模型知道边界）。
+
+    ## 与 API 声明同源
+
+    此前这里是**一个 return 字面量**：6 个工具，其中 `kb.read`
+    根本不存在，而 API 实发 17 个。提示词与实际能力对不上，
+    模型不是不敢用工具就是去调不存在的工具。
+
+    现在与 `_工具声明` 共用 `_本档可调工具`——同一份来源，
+    两侧不可能再分叉。
+    """
+    return " / ".join(t.name for t in _本档可调工具(角色, 档))
 
 
 def _该段角色(档: TierId, 阶段: PhaseId) -> tuple[RoleId, ...]:

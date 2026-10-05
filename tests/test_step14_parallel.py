@@ -31,10 +31,10 @@ import threading
 import time
 
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
-from zhengtong.domain.gate import GateId
 from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TierId
 from zhengtong.orchestration import 编排器
+from zhengtong.orchestration.gates_forging import 门禁取证请求
 
 #: 每个角色被问时睡这么久（模拟真实模型延迟）
 _每问延迟 = 0.2
@@ -51,7 +51,8 @@ class Test门禁真并行:
         锁 = threading.Lock()
         标记: list[str] = []
 
-        def 慢取证(门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
+        def 慢取证(请求: 门禁取证请求) -> dict[str, GateRecord]:
+            门禁 = 请求.门禁
             with 锁:
                 在场["n"] += 1
                 在场["峰"] = max(在场["峰"], 在场["n"])
@@ -75,7 +76,8 @@ class Test门禁真并行:
         """
         次数 = {"n": 0}
 
-        def 计数取证(门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
+        def 计数取证(请求: 门禁取证请求) -> dict[str, GateRecord]:
+            门禁 = 请求.门禁
             次数["n"] += 1
             return {g.value: GateRecord(gate=g.value, passed=True) for g in 门禁}
 

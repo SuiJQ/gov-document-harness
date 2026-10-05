@@ -32,6 +32,7 @@
   },
   "references": {
     "gate-manual": "门禁详判手册（主理人首次过 Gate 前读 1 次）",
+    "gate-verdict-format": "门禁取证输出契约（过门禁阶段装载，其余阶段不读）",
     "error-memory": "红线抑制清单 E1-E14（判定存疑或用户质询时读 1 次）",
     "compliance-rules": "合规规则库（政策必引 + 三段论 + 定级纪律）",
     "doc-type-patterns": "非常用文种 8 种范式 + 模态映射表（遇该文种时读）",
@@ -69,6 +70,7 @@
     "references/stats-baseline.md": "sha256:edbceae98f22203c7ab0bae6778a19ca5e54688c4b64ff7d6f5ede6069b9f488",
     "references/title-techniques.md": "sha256:bb414aa79d22f2b4df64d867d68bd2f97fa6fde696f4ed208cf76ca2b63c5272",
     "references/cognition-baseline.md": "sha256:0e0dba0e3797b12177b662a86f13d2db3e68a3058a17fafdcdfce6a8e85431ef",
-    "references/doc-templates.md": "sha256:59c19cd4cfa32edeb5262fca9824df4c4e7d842013a32b1bf023f144db522099"
+    "references/doc-templates.md": "sha256:59c19cd4cfa32edeb5262fca9824df4c4e7d842013a32b1bf023f144db522099",
+    "references/gate-verdict-format.md": "sha256:508819704a5f4b4041e147cf699abf82b88afceb2ba2c6350ffb628a0afeb871"
   }
 }

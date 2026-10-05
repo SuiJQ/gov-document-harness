@@ -76,7 +76,7 @@ class Test动作入序列结果不入:
             llm=FakeLlm(),
             storage=FakeStorage(),
             模型名="m",
-            门禁取证=lambda 门禁: {},
+            门禁取证=lambda _请求: {},
         )
         过程 = 编._建过程()
         前 = len(过程.历史.get(RoleId.LANGUAGE, []))
@@ -97,7 +97,7 @@ class Test动作入序列结果不入:
             llm=FakeLlm(),
             storage=FakeStorage(),
             模型名="m",
-            门禁取证=lambda 门禁: {},
+            门禁取证=lambda _请求: {},
         )
         过程 = 编._建过程()
         from zhengtong.domain.role import RoleId
