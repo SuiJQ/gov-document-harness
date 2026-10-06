@@ -99,6 +99,10 @@ class RunState:
     def with_error(self, code: ErrorCode, detail: str = "") -> RunState:
         return replace(self, last_error=f"[{code}] {detail}".rstrip())
 
+    def with_dcard(self, dcard: DCard) -> RunState:
+        """更新 D-Card，返回新状态。"""
+        return replace(self, dcard=dcard)
+
     def active_roles(self) -> tuple[RoleId, ...]:
         """本档编制内的角色（D-029）。"""
         return self.task.tier_spec.roster

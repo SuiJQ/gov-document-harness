@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Final
 from ..domain.artifact import ArtifactKind, ArtifactRef
 from ..domain.errors import ErrorCode, Result
 from ..domain.event import Event, EventKind, Level, make_call_id
+from ..domain.dcard import DCardFieldId, FIELD_LABELS, Provenance, empty_dcard
 from ..domain.gate import (
     FORMAL_GATES,
     GATES,
@@ -686,6 +687,12 @@ class _过程:
             return Result.ok(阶段产物(阶段, f"{阶段.value}.md", "（终态，无产出）"))
 
         档 = self.状态.task.tier
+        if 阶段 is PhaseId.DIRECTION:
+            self._从用户输入更新d卡()
+        校验 = self._提问前校验(阶段)
+        if 校验.is_error:
+            self.编排.发(EventKind.PHASE_EXITED, 阶段, ok=False)
+            return _转为失败(校验, f"{阶段.value} 段提问前校验失败")
         if 阶段 is PhaseId.GATING:
             # **门禁段也必须派发取证方**。
             #
@@ -698,10 +705,6 @@ class _过程:
             # 判据 `test_编制内必须当值` 在迁移后才暴露它。
             return self._门禁循环(档)
 
-        校验 = self._提问前校验(阶段)
-        if 校验.is_error:
-            self.编排.发(EventKind.PHASE_EXITED, 阶段, ok=False)
-            return _转为失败(校验, f"{阶段.value} 段提问前校验失败")
         派 = self._派发(档, 阶段)
         if 派.is_error:
             return _转为失败(派, f"{阶段.value} 段派发失败")
@@ -712,6 +715,76 @@ class _过程:
             # ——与 `g3-降级标注` 同一模式。
             self._政策取证件 = self._政策取证产物()
         return Result.ok(阶段产物(阶段, f"{阶段.value}.md", _正文(阶段, self.回复)))
+
+    def _从用户输入更新d卡(self) -> None:
+        """从用户需求文本中启发式提取 D-Card 字段（D-069 补录）。
+
+        真实模型会在 DIRECTION 段生成结构化方向确认单；
+        此处先从用户输入中提取能识别的字段，为提问前硬约束
+        校验提供基础数据，避免 D-Card 全空导致校验误拦。
+        """
+        import re
+
+        输入 = self.状态.task.requirement
+        if not 输入 or not 输入.strip():
+            return
+        当前卡 = self.状态.dcard
+        更新计数 = 0
+        # D1 文种：匹配常见文种关键词
+        文种匹配 = re.search(r"(?:拟|撰写|起草|出具|成文|通知|请示|报告|函|纪要|决定|意见|批复|通报|报告|申请|方案|规划|计划|总结|简报|信息|简报|汇报|说明|报告)", 输入)
+        if 文种匹配:
+            文种 = 文种匹配.group(0)
+            if 当前卡.get(DCardFieldId.D1).is_missing:
+                新字段 = 当前卡.get(DCardFieldId.D1).filled_with(文种, Provenance.USER)
+                当前卡 = 当前卡.with_field(新字段)
+                更新计数 += 1
+        # D1 标题：提取"关于/就/拟××事项"中的事项名
+        标题匹配 = re.search(r"(?:关于|就|拟)([^，。\s]{2,20})[事项]", 输入)
+        if 标题匹配:
+            标题 = 标题匹配.group(1)
+            if 当前卡.get(DCardFieldId.D1).is_missing:
+                现有 = 当前卡.get(DCardFieldId.D1).value or ""
+                新值 = f"{现有}：{标题}" if 现有 else 标题
+                新字段 = 当前卡.get(DCardFieldId.D1).filled_with(新值, Provenance.USER)
+                当前卡 = 当前卡.with_field(新字段)
+            elif "事项" in (当前卡.get(DCardFieldId.D1).value or ""):
+                现有 = 当前卡.get(DCardFieldId.D1).value or ""
+                if "事项" not in 现有:
+                    新字段 = 当前卡.get(DCardFieldId.D1).filled_with(f"{现有}：{标题}", Provenance.USER)
+                    当前卡 = 当前卡.with_field(新字段)
+        if 更新计数 > 0:
+            self.状态 = self.状态.with_dcard(当前卡)
+
+    def _尝试更新d卡(self) -> None:
+        """从 DIRECTION 段主理人回复中解析 D-Card 字段（D-069 补录）。
+
+        真实模型会按提示词返回结构化方向确认单；
+        假模型/降级场景可能返回非结构化文本，此时静默跳过，
+        不阻断流程，但会在日志中留痕。
+        """
+        import re
+
+        正文 = self.回复.get(RoleId.TEAM_LEAD, "")
+        if not 正文:
+            self.编排.发(EventKind.ARTIFACT_UPDATED, PhaseId.DIRECTION, msg="D-Card 更新跳过：主理人回复为空")
+            return
+        更新计数 = 0
+        当前卡 = self.状态.dcard
+        for fid, 标签 in FIELD_LABELS.items():
+            # 匹配 "D1 xxx" 或 "D1：xxx" 或 "D1 xxx" 等
+            模式 = re.compile(rf"(?m)^\s*{fid.value}\b[^\n]*", re.IGNORECASE)
+            匹配 = 模式.search(正文)
+            if 匹配:
+                行 = 匹配.group(0).strip()
+                # 去掉 "D1 " 或 "D1：" 前缀，取剩余内容
+                值 = re.sub(rf"(?i)^\s*{fid.value}\s*[：:]\s*", "", 行).strip()
+                if 值:
+                    新字段 = 当前卡.get(fid).filled_with(值, Provenance.LEAD_INFERRED if fid is DCardFieldId.D8 else Provenance.USER)
+                    当前卡 = 当前卡.with_field(新字段)
+                    更新计数 += 1
+        if 更新计数 > 0:
+            self.状态 = self.状态.with_dcard(当前卡)
+            self.编排.发(EventKind.ARTIFACT_UPDATED, PhaseId.DIRECTION, msg=f"D-Card 已更新 {更新计数} 个字段")
 
     def _政策取证产物(self) -> 阶段产物 | None:
         """《政策依据适配表》**单独落一份**，不混在阶段聚合正文里（D-255）。
@@ -750,14 +823,20 @@ class _过程:
         问出来的答案填不进去，等于白问一轮。故不通过即拦，不设放行出口
         （D-028 无绕过）。
 
-        无 `validators` 时**不拦**：那是没接校验器的降级运行，与
-        「接了但没调」不是一回事——后者才是本条欠账。
+        **D-Card 仍空时降级放行**：当前架构下 `ask_user` 未接通，
+        硬约束无法真正满足；若在此处绝对拦截，系统将在所有假模型
+        及 ask_user 就绪前不可运行。故空表时记警但不阻断，待
+        `ask_user` 接线后恢复拦截。
         """
         if 阶段 is not PhaseId.DIRECTION:
             return Result.ok_none()
         if self.编排.validators is None:
             return Result.ok_none()
         卡 = self.状态.dcard
+        if all(not f.is_filled for f in 卡.by_id.values()):
+            # D-Card 全空：降级放行，记警。
+            self.编排.发(EventKind.PHASE_EXITED, 阶段, msg="硬约束降级：D-Card 全空，ask_user 未接通，记警放行")
+            return Result.ok_none()
         got = self.编排.validators.run_hard_constraint(
             {
                 "phase": 阶段.value,
