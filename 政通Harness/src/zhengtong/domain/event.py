@@ -58,6 +58,7 @@ class EventKind(StrEnum):
     #: 而实际上已完成阶段的产物与状态**原样保住了**，可以直接续跑。
     RUN_CANCELLED = "run.cancelled"
 
+
     # ── 阶段 ──
     PHASE_STARTED = "phase.started"
     PHASE_ADVANCED = "phase.advanced"
