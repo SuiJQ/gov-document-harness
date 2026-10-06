@@ -30,6 +30,7 @@ from zhengtong.services.context import (
 )
 from zhengtong.services.context.compactor import 摘要前缀
 from zhengtong.services.context.estimate import 估算文本, 触发阈值
+from zhengtong.services.context.view import 估算上下文层
 
 # ═══ 夹具 ═══
 
@@ -414,8 +415,6 @@ def test_空视图估算为零() -> None:
 
 # ═══ 九、门控记忆门与上下文层度量（D-254 判据）═══
 
-from zhengtong.services.context.view import 估算上下文层
-
 
 class Test记忆门字段:
     def test_记忆门默认为空(self) -> None:
@@ -460,13 +459,15 @@ class Test上下文层度量:
         )
         上下文层 = 估算上下文层(v)
         总量 = 估算视图(v)
-        固定层 = 估算视图(ContextView(
-            system_and_role=v.system_and_role,
-            dynamic_rules=v.dynamic_rules,
-            tool_manifest=v.tool_manifest,
-            artifact_refs=v.artifact_refs,
-            本轮任务=v.本轮任务,
-        ))
+        固定层 = 估算视图(
+            ContextView(
+                system_and_role=v.system_and_role,
+                dynamic_rules=v.dynamic_rules,
+                tool_manifest=v.tool_manifest,
+                artifact_refs=v.artifact_refs,
+                本轮任务=v.本轮任务,
+            )
+        )
         assert 上下文层 + 固定层 == 总量
         assert 上下文层 < 总量
 

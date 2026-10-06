@@ -158,10 +158,7 @@ def 估算上下文层(视图: ContextView) -> int:
     应从配额里扣（它挤占了历史的空间）。
     """
     摘要 = () if 视图.summary_of_dropped is None else (视图.summary_of_dropped,)
-    return sum(
-        估算文本(m.content)
-        for m in (*视图.pinned_facts, *视图.recent_window, *摘要)
-    )
+    return sum(估算文本(m.content) for m in (*视图.pinned_facts, *视图.recent_window, *摘要))
 
 
 def 估算视图(view: ContextView) -> int:

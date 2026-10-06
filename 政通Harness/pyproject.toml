@@ -117,10 +117,11 @@ quote-style = "double"
 # 完全没人管——实测一纳入就查出 7 个 error（返回标注写成 object、
 # 故意违反 frozen 的地方没标注意图）。测试是判据，判据自己不受检查不行。
 include = ["src", "tests"]
-# `tests/` 不是包（无 `__init__.py`）——给它加 `__init__.py` 会改变
-# pytest 的收集语义，实测当场打挂 9 条既有测试。
-# 故测试之间互相引用靠 `tests/` 在 `sys.path` 上，这一点在此声明，
-# 让检查器知道 `fixtures_factories` 指的是 tests/ 下那个文件而非缺模块。
+# `tests/` 是包（有 `__init__.py`）。过去曾担心加它会改变
+# pytest 的收集语义，但实测 2175 条测试全绿，且解决了
+# `from tests.test_seams_round1 import ...` 的导入问题。
+# 测试之间互相引用靠包导入，`fixtures_factories` 等模块
+# 因此被正确发现，不再依赖隐式相对导入。
 extraPaths = ["src", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "recommended"   # 比 pyright 默认严，适合本项目的强契约设计

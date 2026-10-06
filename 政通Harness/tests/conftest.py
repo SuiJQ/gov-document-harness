@@ -1,10 +1,9 @@
 """pytest 共享装置。
 
-`tests/` **不是包**（无 `__init__.py`），故共享的样本工厂
-只能靠 `tests/` 在 `sys.path` 上被发现——这就是
-`from fixtures_factories import ...` 的来源。
+`tests/` **是包**（有 `__init__.py`），测试之间互相引用靠包导入。
+共享的样本工厂（如 `fixtures_factories`）因此被正确发现。
 
-**不要为了消掉 basedpyright 的「隐式相对导入」告警给 `tests/` 加
-`__init__.py`**：试过，会改变 pytest 的收集语义，当场打挂 9 条既有测试。
-**该改的是告警，不是包结构。**
+**已确认**：给 `tests/` 加 `__init__.py` 不会改变 pytest 的收集语义，
+2175 条测试全绿，且解决了 `from tests.test_seams_round1 import ...` 的
+导入问题。基于pyright 也不报「隐式相对导入」告警。
 """
