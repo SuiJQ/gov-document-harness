@@ -47,7 +47,11 @@ def _测(名: str, llm: HttpLlm, 请求: LlmRequest) -> bool:
         return False
     r = got.unwrap()
     尾 = f"正文={r.text.strip()[:24]!r}"
-    if r.usage.reasoning_tokens:
+    # **usage 是可选的**（D-384）：后端不回报用量时 `r.usage` 为 None，
+    # 原先直接 `.reasoning_tokens` 会 AttributeError。
+    # 而这里是「请求成功」的分支——崩了就没有第 43-47 行那个失败兜底，
+    # 于是成功路径反而会把脚本整崩，和「失败了要报出来」的设计相反。
+    if r.usage is not None and r.usage.reasoning_tokens:
         尾 += f" 推理={r.usage.reasoning_tokens}"
     print(f"  ✓ {名:12s} 通过（{耗时:.2f}s）  {尾}")
     return True
@@ -134,10 +138,33 @@ def main() -> int:
     # 于是「一直在跑一个已作废的探测」这件事看不出任何异样。
     # 基于pyright 报 `HttpLlm` 无此属性，才把它翻出来。
     #
-    # 推理开关的探测**本轮不补**：补它是新增功能（D-048 第 5 项），
-    # 不属于「搬家时修类型错误」的范围。已记进 `TODO.md`。
+    # **本轮补上**（TODO.md 第 1 条）：探测实现在
+    # `adapters/reasoning_probe.探测推理`，`--doctor` 已经在调它
+    # （`cli/main.py:远端自检项`），这里只是把它接到第 5 项的位置，
+    # 让这个脚本的五项真正凑齐、不再无条件打印「五项全通」。
     #
-    # 「不使用流式」这一半仍然成立且继续遵守（RULES.md D-032 的残留说明）。
+    # **守 `通过` 再跑**：探测要发 5 次请求（基准 + 四种写法），
+    # 前 4 项失败时后端已经不可用，没必要再发 5 次。
+    # 这与 `llm_probe.探测五项` 的三态语义一致——
+    # 「没失败，它是没机会跑」（D-295），不能谎报未通过。
+    if 通过:
+        from zhengtong.adapters.reasoning_probe import 探测推理
+
+        起 = time.monotonic()
+        探 = 探测推理(cfg.model, llm.complete)
+        耗时 = time.monotonic() - 起
+        if 探.is_error:
+            错3 = 探.error
+            assert 错3 is not None
+            print(
+                f"  ✗ 推理开关 失败（{耗时:.2f}s）{错3.code.value} {错3.detail}"
+            )
+            通过 = False
+        else:
+            结论 = 探.unwrap()
+            print(f"  ✓ 推理开关 通过（{耗时:.2f}s）  {结论.说明()}")
+    else:
+        print("  ~ 推理开关 未测（前项失败，未发出请求）")
 
     传输.close()
     print()
