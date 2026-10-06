@@ -284,6 +284,11 @@ def 压缩(
         artifact_refs=视图.artifact_refs,
         recent_window=保留,
         summary_of_dropped=摘要,
+        # **记忆门原样透传**（D-254）：它是「不丢」的导航层，
+        # 压缩器只动 `recent_window`，够不着这一栏——
+        # 故压缩前后它应该一模一样。漏传会让压缩把导航标记清空，
+        # 模型下一轮读不到「重点看这些」。
+        记忆门=视图.记忆门,
     )
     压缩后 = 估算视图(新视图)
     return 压缩结果(

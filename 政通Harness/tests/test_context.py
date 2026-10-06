@@ -410,3 +410,95 @@ def test_估算视图只算真发出去的消息() -> None:
 
 def test_空视图估算为零() -> None:
     assert 估算视图(ContextView()) == 0
+
+
+# ═══ 九、门控记忆门与上下文层度量（D-254 判据）═══
+
+from zhengtong.services.context.view import 估算上下文层
+
+
+class Test记忆门字段:
+    def test_记忆门默认为空(self) -> None:
+        """不传记忆门就是空门——旧行为逐字不变。"""
+        v = ContextView()
+        assert v.记忆门 == ()
+
+    def test_记忆门不参与压缩(self) -> None:
+        """压缩器只动 `recent_window`，够不着记忆门——
+        故压缩前后它应该一模一样。"""
+        门 = (("硬锚点", "D1=通知"), ("阶段锚点", "阶段 OUTLINE 已完成"))
+        v = ContextView(
+            system_and_role=(Message(role="system", content="角色。" * 100),),
+            recent_window=tuple(Message(role="user", content="x" * 400) for _ in range(8)),
+            记忆门=门,
+        )
+        结果 = 压缩(v, 上下文容量=2048)
+        assert 结果 is not None
+        assert 结果.视图.记忆门 == 门, "压缩把导航标记清空了"
+
+    def test_记忆门注入到本轮任务之前(self) -> None:
+        """U 型曲线：记忆门在倒数第二，本轮任务在末尾。"""
+        门 = (("硬锚点", "D1=通知"),)
+        v = ContextView(
+            记忆门=门,
+            本轮任务=Message(role="user", content="## 本轮任务\n请回答"),
+        )
+        序列 = v.messages()
+        导航下标 = next(i for i, m in enumerate(序列) if "重点导航" in m.content)
+        任务下标 = next(i for i, m in enumerate(序列) if "本轮任务" in m.content)
+        assert 导航下标 < 任务下标, "记忆门应在本轮任务之前"
+
+
+class Test上下文层度量:
+    def test_估算上下文层不含固定层(self) -> None:
+        """`估算上下文层` 只算 pinned_facts + recent_window + summary，
+        不含 system_and_role / dynamic_rules / tool_manifest / artifact_refs /
+        本轮任务——那两层永不压缩，不该参与「历史还剩多少空间」的判断。"""
+        v = ContextView(
+            system_and_role=(Message(role="system", content="角色提示词。" * 100),),
+            recent_window=tuple(Message(role="user", content="x" * 400) for _ in range(3)),
+        )
+        上下文层 = 估算上下文层(v)
+        总量 = 估算视图(v)
+        固定层 = 估算视图(ContextView(
+            system_and_role=v.system_and_role,
+            dynamic_rules=v.dynamic_rules,
+            tool_manifest=v.tool_manifest,
+            artifact_refs=v.artifact_refs,
+            本轮任务=v.本轮任务,
+        ))
+        assert 上下文层 + 固定层 == 总量
+        assert 上下文层 < 总量
+
+    def test_估算上下文层不含记忆门(self) -> None:
+        """记忆门是「不丢」的导航层，压缩器够不着，
+        故它不进上下文层——否则会被当成可压缩内容。"""
+        门 = (("硬锚点", "D1=通知" * 80),)
+        v = ContextView(
+            recent_window=(Message(role="user", content="x" * 400),),
+            记忆门=门,
+        )
+        assert 估算上下文层(v) == 估算上下文层(ContextView(recent_window=v.recent_window))
+
+    def test_压缩后总量可能仍超阈值但不需要再压(self) -> None:
+        """**真实差异判据**：压缩器不动记忆门，
+        压完总量 = 阈值 + 记忆门 > 阈值。
+        旧判据（总量 ≥ 阈值）会再次触发 → 反复压同一份视图；
+        新判据（上下文层 ≥ 配额）达标就停。
+        """
+        门 = (("硬锚点", "D1=通知" * 80),)
+        v = ContextView(
+            system_and_role=(Message(role="system", content="角色提示词。" * 100),),
+            recent_window=tuple(Message(role="user", content="x" * 400) for _ in range(8)),
+            记忆门=门,
+        )
+        结果 = 压缩(v, 上下文容量=2048, 摘要器=None)
+        assert 结果 is not None
+        阈值 = int(2048 * 0.85)
+        # 旧判据会再压一次（总量仍超阈值）
+        assert 估算视图(结果.视图) >= 阈值, "前提：压缩后总量确实仍超阈值"
+        # 新判据正确停止
+        assert not 需要压缩(结果.视图, 上下文容量=2048), (
+            "压缩后上下文层已达标，不应再次触发压缩——"
+            "否则压缩器会反复压同一份视图（记忆门没被压缩，总量永远降不下来）"
+        )
