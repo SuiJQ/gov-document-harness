@@ -512,7 +512,10 @@ def main() -> int:
     results.append(("门禁总数与编号", check_gate_count()))
     results.append(("门禁取证方声明", check_gate_ownership()))
     results.append(("被退回后处置（revision 闭环）", check_revision_guidance()))
-    results.append(("产物中文名（结构判定，自动跳过）", check_artifact_kind_names(contracts)))
+    # ~~产物中文名~~ 已从 check.sh 移除：
+    # `check_artifact_kind_names` 恒返回 []，是空壳不是判据（D-389）。
+    # 结构上无法可靠自动判定，交给人工（D-055 同类取舍）。
+    # 留着函数定义不删——它是公开 API，删是破坏性变更。
 
     total_problems = 0
     for name, problems in results:
