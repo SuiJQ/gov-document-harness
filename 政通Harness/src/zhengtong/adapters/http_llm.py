@@ -246,6 +246,29 @@ def _工具调用(列表: object) -> tuple[ToolCall, ...]:
     return tuple(出)
 
 
+def _合并系统消息(消息: list[dict[str, object]]) -> list[dict[str, object]]:
+    """合并所有 system 消息为一条（部分后端不支持多条 system）。
+
+    后端实测：`discovery-api.intern-ai.org.cn` 在 messages 含多条
+    system 时返回 `upstream_request_rejected: System message must be at the beginning.`
+    故在此处做兼容：把所有 system 消息合并为一条并置于开头，
+    其余消息保持原有顺序。
+    """
+    系统部分: list[str] = []
+    其余: list[dict[str, object]] = []
+    for m in 消息:
+        if m.get("role") == "system":
+            内容 = m.get("content", "")
+            if isinstance(内容, str):
+                系统部分.append(内容)
+        else:
+            其余.append(m)
+    if not 系统部分:
+        return 消息
+    合并系统 = "\n\n".join(系统部分)
+    return [{"role": "system", "content": 合并系统}, *其余]
+
+
 def _服务错误码(数据: object) -> str:
     """从错误体里取结构化 `code`（报告实测有 `code`/`type`/`trace_id`）。
 
@@ -314,7 +337,7 @@ class HttpLlm:
 
         体: dict[str, object] = {
             "model": request.model,
-            "messages": 消息,
+            "messages": _合并系统消息(消息),
             "temperature": request.temperature,
         }
         # **max_tokens 为 0 时不传**：传 0 会被服务端理解为「不要输出」
