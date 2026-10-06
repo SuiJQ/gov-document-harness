@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ...ports.llm import Message
+from .estimate import 估算文本
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,12 @@ class ContextView:
     #: 单独成字段而非混进 `recent_window`，是为了让这个位置**结构上**
     #: 就固定——一旦混进历史，滑动窗口就可能把它挤到中间去。
     本轮任务: Message | None = None
+    #: ⑧ 门控记忆门（D-254）：**不是压缩，是导航**。
+    #: 零阈值，始终在——压缩器只动 `recent_window`，够不着这一栏。
+    #: 存 `(优先级标签, 内容)`，渲染时放在 `本轮任务` **之前**
+    #: （U 型曲线：导航在倒数第二，指令在末尾）。
+    #: 默认 `()`——不传就是空门，旧行为逐字不变。
+    记忆门: tuple[tuple[str, str], ...] = ()
 
     def messages(self) -> tuple[Message, ...]:
         """按**缓存分层**组装成模型消息序列（第 14.5 步重排）。
@@ -98,8 +105,20 @@ class ContextView:
         **产物引用夹在摘要与历史之间**：它不是时间线上的内容，
         而是横切各阶段的产物索引，放在两者之间让模型在读历史时
         仍能看见「有哪些产物可查」。
+
+        **记忆门放在本轮任务之前**（U 型曲线）：它与本轮任务同属
+        「可变 + 最重要」，但本轮任务是**指令**（要回答什么），
+        记忆门是**导航**（读什么）。指令压过导航——
+        末尾最后一段必须是本轮任务，否则 recency bias 会浪费在
+        「读什么」上而不是「回答什么」。
         """
         摘要 = () if self.summary_of_dropped is None else (self.summary_of_dropped,)
+        # **记忆门不参与压缩**：压缩器只动 `recent_window`，
+        # 这一栏物理上够不着，所以永远完整。
+        记忆门 = ()
+        if self.记忆门:
+            清单 = "\n".join(f"- [{标签}] {内容}" for 标签, 内容 in self.记忆门)
+            记忆门 = (Message(role="system", content=f"【重点导航】\n{清单}"),)
         return (
             *self.system_and_role,
             *self.dynamic_rules,
@@ -108,10 +127,41 @@ class ContextView:
             *self.artifact_refs,
             *self.recent_window,
             *self.tool_manifest,
+            *记忆门,
             # 本轮任务至多一条，故用条件元组而非裸 * ——
             # `*Message` 会抛「Value after * must be an iterable」。
             *(() if self.本轮任务 is None else (self.本轮任务,)),
         )
+
+
+def 估算上下文层(视图: ContextView) -> int:
+    """只算**压缩器管得到的那一层**：。
+
+    ## 为什么单独拆一个函数（而不是复用 ）
+
+     算的是**总 token**（含提示词层与本轮任务），
+    而那两层**永不压缩**。用总量做触发判定，会出现两种反噬：
+
+    - 提示词层很大时，历史才用了 10% 就触发压缩——压完总 token 没降
+      （提示词层没动）， 恒返回 True，反复压同一份视图；
+    - 反过来，固定开销吃掉大半容量时，历史已经没空间了，
+      但总量还没到 85%，触发线迟迟不来。
+
+    故触发判定必须看**上下文层自己的配额**，而不是总量。
+
+    ## 配额怎么算
+
+
+
+    固定层越大，配额越小，触发越早——产物越积越多时触发线自然前移，
+    不用另写逻辑。 虽然物理上够不着，但它是**固定占用**，
+    应从配额里扣（它挤占了历史的空间）。
+    """
+    摘要 = () if 视图.summary_of_dropped is None else (视图.summary_of_dropped,)
+    return sum(
+        估算文本(m.content)
+        for m in (*视图.pinned_facts, *视图.recent_window, *摘要)
+    )
 
 
 def 估算视图(view: ContextView) -> int:

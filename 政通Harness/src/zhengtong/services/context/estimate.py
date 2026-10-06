@@ -33,6 +33,17 @@ from __future__ import annotations
 
 from typing import Final
 
+# `ContextView` 只作为**类型注解**出现，而文件开头有
+# `from __future__ import annotations`，注解在运行时就是字符串，
+# 不需要 import。**不 import 是为了避免与 `view.py` 的
+# `from .estimate import 估算文本` 形成 import cycle**——
+# `估算上下文层` 已挪到 `view.py`，本文件不再需要它。
+
+# `ContextView` 只作为**类型注解**出现，而文件开头有
+# `from __future__ import annotations`，注解在运行时就是字符串，
+# 不需要 import。**不 import 是为了避免与 `view.py` 的
+# `from .estimate import 估算文本` 形成 import cycle**。
+
 #: 汉字除数。D-025 实测每字约 0.5 token，除 1.6 得 0.625，比实测高 24%。
 #: **别改。** 误改记录见 D-077 与本文件顶部说明。
 汉字除数: Final[float] = 1.6

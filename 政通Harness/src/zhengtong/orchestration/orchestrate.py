@@ -46,7 +46,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from queue import Empty, SimpleQueue
 from threading import Lock
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from ..domain.artifact import ArtifactKind, ArtifactRef
 from ..domain.errors import ErrorCode, Result
@@ -87,6 +87,7 @@ from ..ports.llm import (
 from ..ports.storage import StoragePort
 from ..ports.validators import ValidatorPort
 from ..services.context import 压缩, 组装, 需要压缩
+from ..services.context.memory_gate import 记忆门 as 记忆门类
 from ..services.context.view import 估算视图
 from ..services.export import 导出文件
 from ..services.prompting import 装配提示词, 装配请求, 预算闸门
@@ -492,6 +493,19 @@ class _过程:
         self.动过的: list[RoleId] = []
         #: **本段**派发过的角色。`动过的` 跨段累积，记账只能用这个。
         self.本段动过: list[RoleId] = []
+        # **门控记忆门（D-254）**：每成员一份，独立于 `ContextView`。
+        # 可变状态在 `记忆门` 类里（`deque`）；
+        # `ContextView.记忆门` 只存压缩时的快照。
+        # **每成员一份**：模型推送是成员私有的——
+        # 「截止 8 月 2 日」只对写它的人有意义，
+        # 给别的成员看反而污染对方的注意力。
+        # 故按 `RoleId` 懒建（首次读时才 new），不预建、不共享。
+        # 类型注解在 `from __future__ import annotations` 下是字符串，
+        # 故 import 放在 TYPE_CHECKING 里——运行时不触发 import。
+        if TYPE_CHECKING:
+            from ..services.context.memory_gate import 记忆门 as _记忆门类
+
+        self.记忆门: dict[RoleId, _记忆门类] = {}
         self.回复: dict[RoleId, str] = {}
         self.交付物 = ""
         self.标注: tuple[str, ...] = ()
@@ -651,6 +665,15 @@ class _过程:
             return Result.fail(存错.code, f"状态落盘失败：{存错.detail}")
 
         self.编排.发(EventKind.PHASE_EXITED, 阶段, ok=True)
+        # **阶段边界写记忆门**（D-254）：程序侧硬锚点。
+        # 阶段切换是**信息结构变化**的时刻——上一阶段的产出
+        # 与下一阶段的任务都变了。模型不记住这个切换点，
+        # 就会把「写大纲」的指令带进「写正文」的阶段。
+        # 记忆门只标不丢，压缩器够不着，所以它永远在。
+        self.记忆门.setdefault(RoleId.TEAM_LEAD, 记忆门类()).程序写入(
+            f"阶段 {阶段.value} 已完成，产出见产物引用",
+            标签="阶段锚点",
+        )
         return Result.ok(Step(phase=阶段, state=进度 + 1))
 
     def _跑一段(self, 阶段: PhaseId) -> Result[阶段产物]:
@@ -1356,6 +1379,12 @@ class _过程:
         条 = self.历史.setdefault(RoleId.TEAM_LEAD, [])
         条.append(Message(role="user", content=f"【背景·成员汇报】{内容}"))
         条.append(Message(role="assistant", content=答复))
+        # **程序侧写入记忆门**（D-254）：汇报本身就是硬锚点。
+        # 它是「这个成员刚刚告诉我了什么」——下一轮读历史时
+        # 优先看到它，比翻整段对话快。
+        self.记忆门.setdefault(RoleId.TEAM_LEAD, 记忆门类()).程序写入(
+            内容.strip(), 标签="成员汇报"
+        )
 
     def _记入历史(self, 角色: RoleId, 阶段: PhaseId, 回复: str) -> None:
         """把这一轮的**提问与回复**记进该角色的上下文（第 14.5 步）。
@@ -1439,6 +1468,12 @@ class _过程:
             ),
             对话=历史,
             本轮任务=_本轮任务(需求, 角色, 阶段),
+            # **记忆门在 `本轮任务` 之前**（U 型曲线，D-254）：
+            # 两者都是「可变 + 最重要」，但本轮任务是**指令**（要回答什么），
+            # 记忆门是**导航**（读什么）。指令压过导航——
+            # 末尾最后一段必须是本轮任务，否则 recency bias
+            # 会浪费在「读什么」上而不是「回答什么」。
+            记忆门=self.记忆门.setdefault(角色, 记忆门类()).注入(),
         )
         序列 = 视图.messages()
         # **插话接在末位之后，不进 `组装`**（D-012）。
