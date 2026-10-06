@@ -1,3 +1,20 @@
+# 会话局部笔记（每次会话独立，不进仓库）
+*_TODO.md
 
-# 会话局部笔记
-WIRING_FIX_TODO.md
+# 开发期产物（每次跑 check.sh / pytest 自动重建）
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 便携运行时不带开发依赖
+.venv/
+
+# 用户工作区运行数据（可被用户整体删除，程序自动重建）
+data/
+user/
+
+# 系统运行数据（配置、日志、缓存）
+system/
