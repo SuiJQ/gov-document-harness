@@ -51,6 +51,7 @@ body 会被日志记录，头不会。
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Protocol, cast, final, runtime_checkable
 
 from ..domain.errors import ErrorCode, Result
@@ -395,8 +396,10 @@ class HttpLlm:
         头 = self._头()
         末次: tuple[ErrorCode, str] = (ErrorCode.LLM_REQUEST_FAILED, "未发出请求")
 
+        实际重试 = 0
         for 次第 in range(self._max_retries + 1):
             if 次第 > 0:
+                实际重试 = 次第
                 # 指数退避：1s、2s、4s（D-027「递增间隔」）。
                 # **不用 `2 ** n`**：底数为 int、指数为 int 时，
                 # Pyright 推成 `Any`（因为 `__pow__` 允许返回 float），
@@ -449,7 +452,9 @@ class HttpLlm:
             if 状态码 == 200:
                 响应 = self._解析(数据)
                 if 响应 is not None:
-                    return Result.ok(响应)
+                    # **重试次数随成功一起带出**（D-412）：
+                    # 成功路径上 `AppError` 不存在，只能挂响应。
+                    return Result.ok(replace(响应, 重试次数=实际重试))
                 末次 = (ErrorCode.LLM_REQUEST_FAILED, "响应结构无法识别")
                 continue
 
@@ -458,12 +463,21 @@ class HttpLlm:
                 # 确定性失败，重试无意义
                 return Result.fail(末次[0], 末次[1])
 
+        # **两条失败路径都带上重试次数**（D-412）——
+        # 编排层据此发 `model.retry`，否则重试在事件流里完全不可见。
+        # **显式标注 `dict[str, object]`**：`dict` 在泛型里是不变的，
+        # 推断出的 `dict[str, int | float]` 传不进 `dict[str, object]`。
+        诊断: dict[str, object] = {
+            "重试次数": 实际重试,
+            "已用间隔秒": _退避基准秒 * float(2) ** max(实际重试 - 1, 0),
+        }
         if self._max_retries > 0:
             return Result.fail(
                 ErrorCode.LLM_RETRY_EXHAUSTED,
                 f"重试 {self._max_retries} 次仍失败：{末次[1]}",
+                诊断,
             )
-        return Result.fail(末次[0], 末次[1])
+        return Result.fail(末次[0], 末次[1], 诊断)
 
     def _解析(self, 数据: object) -> LlmResponse | None:
         字典 = _取字典(数据)

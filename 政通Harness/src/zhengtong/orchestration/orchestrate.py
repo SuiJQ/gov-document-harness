@@ -961,9 +961,24 @@ class _过程:
         那是另一件事。**此刻不假装能发**——`model.retry` 继续留在台账里。
         """
         答 = self.llm.complete(问)
+        # **先发 `model.retry` 再发 `model.error`**（D-412）：重试是
+        # 「先发生」的事。用户看事件流时先看到「重试了 3 次」，
+        # 再看到「最终失败」——反过来读不懂因果。
+        #
+        # 计数从**适配器带出来**（D-027：重试在 `http_llm.complete` 内部，
+        # 而 `LlmPort` 协议明写「上层不感知重试」，编排层本来无从得知）。
+        # 成功路径挂 `LlmResponse.重试次数`，失败路径挂 `AppError.诊断`。
         if 答.is_error:
             错 = 答.error
             assert 错 is not None
+            if 错.诊断.get("重试次数"):
+                self.编排.发(
+                    EventKind.MODEL_RETRY,
+                    阶段,
+                    角色=角色.value if 角色 is not None else "",
+                    重试次数=错.诊断["重试次数"],
+                    最终失败=True,
+                )
             self.编排.发(
                 EventKind.MODEL_ERROR,
                 阶段,
@@ -971,6 +986,16 @@ class _过程:
                 错误码=错.code.value,
                 detail=错.detail[:120],
             )
+        else:
+            重试次数 = 答.unwrap().重试次数
+            if 重试次数:
+                self.编排.发(
+                    EventKind.MODEL_RETRY,
+                    阶段,
+                    角色=角色.value if 角色 is not None else "",
+                    重试次数=重试次数,
+                    最终失败=False,
+                )
         return 答
 
     def _并行取证(self, 档: TierId, 门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:

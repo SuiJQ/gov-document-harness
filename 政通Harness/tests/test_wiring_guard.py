@@ -52,7 +52,7 @@ assert 收到 == ["等门禁"]
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -65,7 +65,7 @@ from zhengtong.adapters.fakes import (
 )
 from zhengtong.adapters.paths import Workspace
 from zhengtong.app import build_app_from_workspace
-from zhengtong.domain.errors import ErrorCode
+from zhengtong.domain.errors import ErrorCode, Result
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.role import RoleId
 from zhengtong.ports.llm import FinishReason, LlmResponse
@@ -458,3 +458,150 @@ def _裸应用(根: Path) -> App:
     got = build_app_from_workspace(Workspace(root=根))
     assert got.is_ok, got.error.detail if got.error else ""
     return got.unwrap()
+
+
+# ═══ 判据 5：重试次数必须从适配器带出来（D-412）═══
+
+
+class _会重试的模型:
+    """先失败 n 次再成功。**用真实失败路径**产出诊断，
+    而不是在成功响应上手写 `重试次数=n`——后者验不到带出这一步。
+
+    **参数是「先失败几次」**：`_会重试的模型(1)` = 第一次失败、第二次成功。
+    写成 0 就直接成功了，于是没有 retry 可发——
+    本条第一版就栽在这（事件列表空，还以为判据不对）。
+
+    ## 为什么有第二个参数
+
+    成功响应的 `重试次数` 是**另一个来源**：失败路径的次数来自
+    `AppError.诊断`（适配器内部算的），成功路径的次数来自
+    `LlmResponse.重试次数`（适配器在成功时挂上去的）。
+    两者走的是**不同的代码分支**，必须分别验。
+
+    第一版 `_会重试的模型(0)` 直接返回 `_空响应()`，
+    而 `_空响应()` 的 `重试次数` 是默认 0——
+    于是「成功路径也发事件」这条断言**永远不可能红**：
+    它要的是一条带次数的成功响应，拿到的却是一条没次数的。
+    这正是 `test_重试后成功也要留痕` 挂掉的原因。
+    """
+
+    def __init__(self, n: int, 成功重试次数: int = 0) -> None:
+        self.剩下 = n
+        self._成功重试次数 = 成功重试次数
+
+    def complete(self, req: object) -> Result[LlmResponse]:
+        from zhengtong.domain.errors import ErrorCode, Result
+
+        if self.剩下 > 0:
+            self.剩下 -= 1
+            return Result.fail(
+                ErrorCode.LLM_REQUEST_FAILED,
+                "端点不通",
+                {"重试次数": self.剩下 + 1, "已用间隔秒": 1.0},
+            )
+        return Result.ok(
+            LlmResponse(
+                text="完成",
+                finish_reason=FinishReason.STOP,
+                usage=None,
+                重试次数=self._成功重试次数,
+            )
+        )
+
+
+def test_重试次数从失败诊断里读出并发成事件(tmp_path: Path) -> None:
+    应用, 编排 = _真应用(tmp_path)
+    try:
+        过程 = 编排._建过程()
+        # **换掉模型**：`_过程.llm` 的静态类型是 `LlmPort` 协议，
+        # 而本条要测的正是「失败路径带出诊断」这个实现细节。
+        # 故 cast 成 `Any`——**不是**用 ignore 掩盖类型错误（D-018）。
+        假模型 = cast(Any, _会重试的模型(2))
+        过程.__dict__["llm"] = 假模型
+        for _ in range(2):
+            问 = 过程._构造请求(RoleId.STRUCTURE, 过程.状态.phase)
+            过程._问模型(问, 过程.状态.phase, RoleId.STRUCTURE)
+        重试 = [e for e in 编排.事件 if e.kind.value == "model.retry"]
+        assert len(重试) == 2, f"两次重试应有 2 条：{[e.kind.value for e in 编排.事件]}"
+        assert 重试[0].data["重试次数"] == 2
+        assert 重试[0].data["最终失败"] is True
+    finally:
+        应用.close()
+
+
+def test_重试后成功也要留痕(tmp_path: Path) -> None:
+    """**成功路径同样要发**——「重试了 2 次才成功」与「一次就成」，
+    在台账上是两回事，不记就看不出抖动。"""
+    应用, 编排 = _真应用(tmp_path)
+    try:
+        过程 = 编排._建过程()
+        # **先让模型失败两次**（真实失败路径带出诊断），
+        # **第三次成功且带重试次数**——验的是「成功路径也发事件」。
+        假模型 = cast(Any, _会重试的模型(2))
+        过程.__dict__["llm"] = 假模型
+        for _ in range(2):
+            问 = 过程._构造请求(RoleId.STRUCTURE, 过程.状态.phase)
+            过程._问模型(问, 过程.状态.phase, RoleId.STRUCTURE)
+        # **换模型而不是复用**：`_会重试的模型` 是有状态的，
+        # 复用同一个实例会让 `剩下` 已为 0，第三次虽成功却**不带次数**。
+        # 故重新造一个，并显式传「成功时挂几次」——
+        # 那个次数来自 `LlmResponse.重试次数`（成功路径），
+        # 与失败路径的 `AppError.诊断` 是两个来源，得分别给值。
+        假模型 = cast(Any, _会重试的模型(0, 成功重试次数=2))
+        过程.__dict__["llm"] = 假模型
+        问 = 过程._构造请求(RoleId.STRUCTURE, 过程.状态.phase)
+        过程._问模型(问, 过程.状态.phase, RoleId.STRUCTURE)
+        重试 = [e for e in 编排.事件 if e.kind.value == "model.retry"]
+        assert len(重试) == 3, (
+            f"应有 3 条（2 次失败 + 1 次成功）：{[e.kind.value for e in 编排.事件]}"
+        )
+        assert 重试[-1].data["重试次数"] == 2
+        assert 重试[-1].data["最终失败"] is False
+    finally:
+        应用.close()
+
+
+def test_未重试时不发_model_retry(tmp_path: Path) -> None:
+    """**没重试就不该有事件**——否则满屏噪声，
+    而满屏噪声的检查等于没有检查（D-247）。"""
+    应用, 编排 = _真应用(tmp_path)
+    try:
+        过程 = 编排._建过程()
+        假模型 = _会重试的模型(0)
+        过程.__dict__["llm"] = 假模型
+        问 = 过程._构造请求(RoleId.STRUCTURE, 过程.状态.phase)
+        过程._问模型(问, 过程.状态.phase, RoleId.STRUCTURE)
+        assert not [e for e in 编排.事件 if e.kind.value == "model.retry"]
+    finally:
+        应用.close()
+
+
+def test_真适配器端点不通时真的带出次数(tmp_path: Path) -> None:
+    """**用真 `HttpLlm`**：上面的判据验的是编排层能读，
+    这条验适配器真的把次数带出来了。
+
+    端点写 `127.0.0.1:9`（丢弃端口）——连接必然失败，
+    且把退避 sleep 换掉，否则真等 1+2 秒。
+    """
+    应用, 编排 = _真应用(tmp_path)
+    try:
+        过程 = 编排._建过程()
+        # **换掉退避等待**：否则真等 1+2 秒。次数上限调到 2，测试才跑得快。
+        # `过程.llm` 静态类型是 `LlmPort`，而退避时钟与重试上限是
+        # `HttpLlm` 的实现细节——本条要测的正是实现细节，故 cast 成 `Any`。
+        # **不是**用 ignore 掩盖类型错误（D-018）。
+        真件 = cast(Any, 过程.llm)
+        真件._clock.sleep = lambda _秒: None  # 换掉退避等待，否则真等 1+2 秒
+        真件._max_retries = 2  # 上限降到 2 次，测试才跑得快
+        # **传真请求**：`None` 会让 `_请求体` 在 `request.messages` 上炸，
+        # 根本走不到重试循环——那就白测了。
+        问 = 过程._构造请求(RoleId.STRUCTURE, 过程.状态.phase)
+        过程._问模型(问, 过程.状态.phase, RoleId.STRUCTURE)
+        重试 = [e for e in 编排.事件 if e.kind.value == "model.retry"]
+        assert 重试, f"真适配器重试了却没留痕：{[e.kind.value for e in 编排.事件]}"
+        assert 重试[0].data["重试次数"] == 2
+        assert 重试[0].data["最终失败"] is True
+        错 = [e for e in 编排.事件 if e.kind.value == "model.error"]
+        assert 错, "最终失败却没有 model.error"
+    finally:
+        应用.close()

@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final, Generic, TypeVar
 
@@ -113,6 +113,19 @@ class AppError:
 
     code: ErrorCode
     detail: str = ""
+    #: **诊断用**，不进用户文案（D-412）。
+    #:
+    #: 为什么需要它：重试发生在 `http_llm.complete` **内部**（D-027），
+    #: 而 `LlmPort` 协议明写「上层不感知重试」——
+    #: 编排层只看得到最终成败，于是 `model.retry` 事件**发不出来**
+    #: （D-408 当时刻意没假装能发）。
+    #:
+    #: 失败路径上没有 `LlmResponse` 可挂字段，`Result` 又是通用容器，
+    #: 改它会波及全仓所有拒绝。故挂在**这一次拒绝自己的**诊断位上——
+    #: 成功路径的重试次数由 `LlmResponse.重试次数` 带，两者互补。
+    #:
+    #: **可选且默认空**：不构造它的调用点一律不受影响（全仓仅一处构造）。
+    诊断: dict[str, object] = field(default_factory=dict)
 
     def __str__(self) -> str:
         return f"[{self.code}] {self.detail}" if self.detail else f"[{self.code}]"
@@ -179,8 +192,17 @@ class Result(Generic[T]):
         return Result(error=None, value=None)
 
     @classmethod
-    def fail(cls, code: ErrorCode, detail: str = "") -> Result[Any]:  # pyright: ignore[reportExplicitAny]  # 见上方三方案论证
+    def fail(
+        cls,
+        code: ErrorCode,
+        detail: str = "",
+        诊断: dict[str, object] | None = None,
+    ) -> Result[Any]:  # pyright: ignore[reportExplicitAny]  # 见上方三方案论证
         """构造失败结果。
+
+        `诊断` 是**可选的**诊断位（D-412）：不进用户文案、不进 `__str__`，
+        只给需要记过程留痕的上层读（如 `model.retry` 的重试次数）。
+        不传就是空 dict——全仓既有的失败构造点一律不受影响。
 
         **为什么是 `Any`，以及为什么试过 `Self` 不行**
         （D-085：三方案均已实测，记下来免得后人再试一遍）：
@@ -201,7 +223,7 @@ class Result(Generic[T]):
         故此处是全项目**唯一**被允许出现 `Any` 的签名，
         配置里对 `reportExplicitAny` 做了定点豁免并注明此处。
         """
-        return Result(error=AppError(code, detail), value=None)
+        return Result(error=AppError(code, detail, 诊断 or {}), value=None)
 
 
 #: 已废弃但保留原样的码。留着是为了让旧日志里的码仍能查到含义（D-064 错误码约定）。
