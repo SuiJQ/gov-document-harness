@@ -49,9 +49,9 @@ from threading import Lock
 from typing import TYPE_CHECKING, Final
 
 from ..domain.artifact import ArtifactKind, ArtifactRef
+from ..domain.dcard import FIELD_LABELS, DCardFieldId, Provenance
 from ..domain.errors import ErrorCode, Result
 from ..domain.event import Event, EventKind, Level, make_call_id
-from ..domain.dcard import DCardFieldId, FIELD_LABELS, Provenance, empty_dcard
 from ..domain.gate import (
     FORMAL_GATES,
     GATES,
@@ -770,7 +770,7 @@ class _过程:
             return
         更新计数 = 0
         当前卡 = self.状态.dcard
-        for fid, 标签 in FIELD_LABELS.items():
+        for fid in FIELD_LABELS:
             # 匹配 "D1 xxx" 或 "D1：xxx" 或 "D1 xxx" 等
             模式 = re.compile(rf"(?m)^\s*{fid.value}\b[^\n]*", re.IGNORECASE)
             匹配 = 模式.search(正文)
@@ -1100,6 +1100,68 @@ class _过程:
                 )
         return 答
 
+    @staticmethod
+    def _从工具调用提取门禁结论(
+        工具调用: tuple[ToolCall, ...],
+        组门禁: tuple[GateId, ...],
+    ) -> dict[str, GateRecord]:
+        """从模型的工具调用中提取门禁结论（工具调用收结论方案）。
+
+        若模型没有调用 gate.report 工具，或调用格式不正确，
+        则所有门禁判定为「无证据」。
+        """
+        import json
+
+        结论映射: dict[str, GateRecord] = {}
+        报告调用 = [tc for tc in 工具调用 if tc.name == "gate.report"]
+        if not 报告调用:
+            for g in 组门禁:
+                结论映射[g.value] = GateRecord(
+                    gate=g.value,
+                    passed=False,
+                    evidence=(),
+                    rejection_reason="模型未调用 gate.report 工具",
+                )
+            return 结论映射
+
+        组门禁值 = {g.value for g in 组门禁}
+        for tc in 报告调用:
+            try:
+                参 = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                门禁号 = str(参.get("gate_id", ""))
+                结论 = str(参.get("conclusion", ""))
+                证据 = str(参.get("evidence", ""))
+                原因 = str(参.get("reason", ""))
+                通过 = 结论 == "通过"
+                if 门禁号 not in 组门禁值:
+                    continue
+                if not 证据.strip():
+                    结论映射[门禁号] = GateRecord(
+                        gate=门禁号,
+                        passed=False,
+                        evidence=(),
+                        rejection_reason="模型调用 gate.report 但未提供 evidence",
+                    )
+                    continue
+                结论映射[门禁号] = GateRecord(
+                    gate=门禁号,
+                    passed=通过,
+                    evidence=(证据,) if 证据 else (),
+                    rejection_reason=原因 if not 通过 else "",
+                )
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+        for g in 组门禁:
+            if g.value not in 结论映射:
+                结论映射[g.value] = GateRecord(
+                    gate=g.value,
+                    passed=False,
+                    evidence=(),
+                    rejection_reason="模型未报告该门禁",
+                )
+        return 结论映射
+
     def _并行取证(self, 档: TierId, 门禁: tuple[GateId, ...]) -> dict[str, GateRecord]:
         """门禁取证：**并行组并发跑，主理人终闸组串行在后**（D-049）。
 
@@ -1132,6 +1194,15 @@ class _过程:
                 )
                 for 组 in 并行组
             )
+            # G13 双取证方：同时跑 structure 和 compliance（D-084）。
+            # `gate_groups()` 把它排除在并行组之外是为避免「双取证与单取证混并行」，
+            # 但这里显式追加两个独立组，保证双取证语义落地。
+            G13 = tuple(g for g in 门禁 if g == GateId.G13)
+            if G13:
+                任务 = 任务 + tuple(
+                    GateGroup(owner=角色, gate_ids=tuple(g.value for g in G13))
+                    for 角色 in (RoleId.STRUCTURE, RoleId.COMPLIANCE)
+                )
 
             def _跑一组(g: GateGroup) -> Result[dict[str, GateRecord]]:
                 组门禁 = tuple(x for x in 门禁 if x.value in g.gate_ids)
@@ -1165,8 +1236,24 @@ class _过程:
                         错 = 答.error
                         assert 错 is not None
                         return Result.fail(错.code, f"{g.owner.value} 取证失败：{错.detail}")
-                    self.回复[g.owner] = 答.unwrap().text
-                    self._记入历史(g.owner, PhaseId.GATING, 答.unwrap().text)
+                    响应 = 答.unwrap()
+                    # **门禁取证改用工具调用收结论**（替代纯文本正则解析）。
+                    if 响应.tool_calls:
+                        # 从工具调用中提取门禁结论
+                        工具结论 = self._从工具调用提取门禁结论(响应.tool_calls, 组门禁)
+                        # 用提取的结论构建文本回复（用于历史记录）
+                        回复文本 = "\n".join(
+                            f"{k} | {'通过' if v.passed else '退回'} | 证据：{v.evidence}"
+                            for k, v in 工具结论.items()
+                        )
+                        self.回复[g.owner] = 回复文本
+                        self._记入历史(g.owner, PhaseId.GATING, 回复文本)
+                        self.已完成 = (*self.已完成, cid)
+                        self.状态 = self.状态.mark_completed(cid)
+                        return Result.ok(工具结论)
+                    # 模型未调用工具，回退到文本解析
+                    self.回复[g.owner] = 响应.text
+                    self._记入历史(g.owner, PhaseId.GATING, 响应.text)
                     self.已完成 = (*self.已完成, cid)
                     # **门禁取证也要记账**（D-065 补漏）。
                     #
@@ -1181,6 +1268,7 @@ class _过程:
                 self.状态 = self.状态.set_role_state(g.owner, RoleState.DONE)
                 # 每组**各自**取一次取证结论：并行的意义就在这儿——
                 # 一组一请求，而不是 12 道门禁挤在一次调用里。
+                # 若未从工具调用提取结论（含续跑场景），则调用门禁取证解析文本
                 return Result.ok(
                     self.编排.门禁取证(
                         门禁取证请求(
@@ -1223,24 +1311,42 @@ class _过程:
                         错 = 终答.error
                         assert 错 is not None
                         return {}
-                    self.回复[终闸方] = 终答.unwrap().text
-                    self._记入历史(终闸方, PhaseId.GATING, 终答.unwrap().text)
+                    终响应 = 终答.unwrap()
+                    if 终响应.tool_calls:
+                        # 从工具调用中提取门禁结论
+                        终工具结论 = self._从工具调用提取门禁结论(终响应.tool_calls, 终闸门禁)
+                        终回复文本 = "\n".join(
+                            f"{k} | {'通过' if v.passed else '退回'} | 证据：{v.evidence}"
+                            for k, v in 终工具结论.items()
+                        )
+                        self.回复[终闸方] = 终回复文本
+                        self._记入历史(终闸方, PhaseId.GATING, 终回复文本)
+                        裁定.update(终工具结论)
+                    else:
+                        self.回复[终闸方] = 终响应.text
+                        self._记入历史(终闸方, PhaseId.GATING, 终响应.text)
+                        门禁取证结果 = self.编排.门禁取证(
+                            门禁取证请求(
+                                门禁=终闸门禁,
+                                取证方=终闸方,
+                                回覆=self.回复.get(终闸方, ""),
+                                档位=档,
+                            )
+                        )
+                        裁定.update(门禁取证结果)
                     self.已完成 = (*self.已完成, 终cid)
                     self.状态 = self.状态.mark_completed(终cid)
+                else:
+                    # 续跑/退回重跑场景：终闸已完成，但上一轮的结论
+                    # 不会自动进入本轮裁定。从状态取回，保证缺席判据
+                    # 不把「已取证过的门禁」误判为「无证据」。
+                    for g in 终闸门禁:
+                        if g.value in self.状态.gates:
+                            裁定[g.value] = self.状态.gates[g.value]
                 self.动过的.append(终闸方)
                 self.本段动过.append(终闸方)
                 self.出现过的状态.append(RoleState.DONE)
                 self.状态 = self.状态.set_role_state(终闸方, RoleState.DONE)
-                裁定.update(
-                    self.编排.门禁取证(
-                        门禁取证请求(
-                            门禁=终闸门禁,
-                            取证方=终闸方,
-                            回覆=self.回复.get(终闸方, ""),
-                            档位=档,
-                        )
-                    )
-                )
         return 裁定
 
     def _派发(self, 档: TierId, 阶段: PhaseId) -> Result[None]:
@@ -2148,11 +2254,11 @@ class 编排器:
         **必须先 `建过程`**——`取一步` 单独用时（如测试 drive 的分段性）
         不会经过 `跑到终`，故这里就地建一次。
         """
-        return self._建过程().推进一步
+        return self._建过程(档位=self.档位).推进一步
 
     def 记汇报(self, 内容: str, 答复: str) -> None:
         """转给当前推进过程记账（见 `_过程.记汇报`）。"""
-        self._建过程().记汇报(内容, 答复)
+        self._建过程(档位=self.档位).记汇报(内容, 答复)
 
     # ── 工具回调需要的编排侧能力（D-406）──
     #
@@ -2269,14 +2375,17 @@ class 编排器:
             return
         self.发(事件类, self._当前阶段(), **载荷)
 
-    def _建过程(self) -> _过程:
+    def _建过程(self, *, 档位: TierId) -> _过程:
         """建立（或复用）推进过程。**幂等**——
         `取一步` 与 `跑到终` 都要它，故不能建两次。
+
+        **档位必须显式传入**：此前硬编码 `TierId.PRO`，
+        导致无论用户选什么档位，实际跑的都是 Pro 档。
         """
         if self._过程 is not None:
             return self._过程
 
-        任务 = TaskSpec(tier=TierId.PRO, requirement="")
+        任务 = TaskSpec(tier=档位, requirement="")
         self._过程 = _过程(
             编排=self,
             llm=self.llm,
@@ -2417,9 +2526,9 @@ class 编排器:
             # 返回 `ok` 而非失败：取消是预期行为，
             # 报错会让界面弹错误、让续跑把它当崩溃处理，
             # 而已完成阶段的状态**原样可用**。
-            return Result.ok(self._建过程().收结果())
+            return Result.ok(self._建过程(档位=self.档位).收结果())
         self.发(EventKind.RUN_FINISHED, PhaseId.DONE)
-        return Result.ok(self._建过程().收结果())
+        return Result.ok(self._建过程(档位=self.档位).收结果())
 
 
 # ── 阶段线 ──
