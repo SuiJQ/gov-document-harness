@@ -772,7 +772,10 @@ class _过程:
         当前卡 = self.状态.dcard
         for fid in FIELD_LABELS:
             # 匹配 "D1 xxx" 或 "D1：xxx" 或 "D1 xxx" 等
-            模式 = re.compile(rf"(?m)^\s*{fid.value}\b[^\n]*", re.IGNORECASE)
+            # **不用 \b**：中文属于 \w，D1 与中文之间无 \W 过渡，
+            # \b 在中文环境下永远不成立，导致字段提取全部失效。
+            # 去掉 \b 后，D1/D2 等字段编号后面的中文内容可正常匹配。
+            模式 = re.compile(rf"(?m)^\s*{fid.value}[^\n]*", re.IGNORECASE)
             匹配 = 模式.search(正文)
             if 匹配:
                 行 = 匹配.group(0).strip()
@@ -1466,11 +1469,16 @@ class _过程:
                 # **档位必须一起传下去**（D-389）。
                 # 只按角色过滤时，咨询档模型发来 `validate.run`
                 # 会真的执行——声明端不给 ≠ 执行端不接。
+                #
+                # **档位未设置时退回空域**：工具层对空域的解释是
+                #「一个工具都不给」，与不传工具层的效果一致。
+                档位 = self.编排.档位
+                启用域 = TIER_BY_ID[档位].工具域 if 档位 is not None else frozenset()
                 结果 = self.工具层.调用(
                     调用.name,
                     角色=角色,
                     参数=dict(调用.arguments),
-                    启用域=TIER_BY_ID[self.编排.档位].工具域,
+                    启用域=启用域,
                 )
                 正文 = 结果.unwrap() if not 结果.is_error else f"[工具失败] {结果.error}"
                 self.存档工具结果(调用.id, 正文)
@@ -1853,7 +1861,11 @@ class _过程:
         字段 = self.编排.推理关闭.关闭字段
         if not 字段:
             return ()
-        if TIER_BY_ID[self.编排.档位].reasoning_policy is ReasoningPolicy.ON:
+        # **档位未设置时退回空**：`跑到终()` 是唯一入口，
+        # 不经过它 `self.编排.档位` 是 `None`，此时不附加任何字段——
+        # 比按默认 `CONSULT` 静默跑更安全。
+        档位 = self.编排.档位
+        if 档位 is None or TIER_BY_ID[档位].reasoning_policy is ReasoningPolicy.ON:
             return ()
         return 字段
 
@@ -1865,7 +1877,11 @@ class _过程:
         同一个门禁在两处得到相反结论，而两边都是绿的。
         """
         裁定 = self._末次裁定
-        编制 = set(TIER_BY_ID[self.编排.档位].roster)
+        # **档位未设置时退回空编制**：门禁账里「该跑」与「已跑」
+        # 都会是空集，最终报告会如实显示「本档无门禁」。
+        # 这比按默认 CONSULT 算出错误编制更安全。
+        档位 = self.编排.档位
+        编制 = set(TIER_BY_ID[档位].roster) if 档位 is not None else set()
         已取证 = tuple(g for g in self.门禁 if g.value in 裁定)
         不适用 = tuple(
             g
@@ -2119,7 +2135,11 @@ class 编排器:
         #: 用户改配置里的温度**完全无效**。
         self.温度 = 温度
         self.推理关闭 = 推理关闭
-        self.档位: TierId = TierId.CONSULT
+        #: 当前档位。**初始为 None**——只有 `跑到终()` 能设它（D-380）。
+        #: 此前默认 `TierId.CONSULT`，导致 `取一步()` / `记汇报()`
+        #: 在 `跑到终()` 之前调用时，推理控制、工具域、阶段线
+        #: 全部按咨询档执行，与用户实际选择脱节。
+        self.档位: TierId | None = None
         #: 压缩摘要器。为 None 时走「有界原文」兜底并标明未经摘要。
         self.摘要器 = 摘要器
 
@@ -2253,11 +2273,16 @@ class 编排器:
 
         **必须先 `建过程`**——`取一步` 单独用时（如测试 drive 的分段性）
         不会经过 `跑到终`，故这里就地建一次。
+
+        **档位必须先设**：`跑到终()` 是唯一入口，不经过它
+        `self.档位` 是 `None`，直接报错比静默按默认值跑更安全。
         """
+        assert self.档位 is not None, "档位未设置：必须先调用 `跑到终()` 再取一步"
         return self._建过程(档位=self.档位).推进一步
 
     def 记汇报(self, 内容: str, 答复: str) -> None:
         """转给当前推进过程记账（见 `_过程.记汇报`）。"""
+        assert self.档位 is not None, "档位未设置：必须先调用 `跑到终()` 再记汇报"
         self._建过程(档位=self.档位).记汇报(内容, 答复)
 
     # ── 工具回调需要的编排侧能力（D-406）──
