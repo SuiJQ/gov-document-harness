@@ -53,8 +53,8 @@
     "prompts/compliance.md": "sha256:f0c38ddf75e32fafda965699979a5f4046a781f81141af0e7bb76b338bb1ac61",
     "prompts/doc-advisor.md": "sha256:b40d7b6f2ae7e0385b88ee6658cc92fe6d64ca9ad1ef626cb8b0bce0089095f4",
     "prompts/language.md": "sha256:b7c59d01ccc1640a54bc5cca084435949db823180425e28155877d1b6466141d",
-    "prompts/structure.md": "sha256:c45cedca2f5387430b883b264ef37d71785b8122e701bdf053fbf8adbb30f1ec",
-    "prompts/team-lead.md": "sha256:b08d3ab1862ffe692d3ed196a921d9816bd6e8d59a61af000e1e8b0f0f7a0eac",
+    "prompts/structure.md": "sha256:a5dd7123c1cb88953e7459806fcfdd39b3819a5ea37a2be339d456d5095619ff",
+    "prompts/team-lead.md": "sha256:2af4d29c782095cc5481be8903ff5bb69ddf5f75b61bf4d97d3caa1960e4e2b7",
     "references/admin-ordering-rules.md": "sha256:b4c41fb9cb5fdd39a1222479be07ee791879033b8ca4abcde7051bcc99d3a718",
     "references/compliance-rules.md": "sha256:cee2d4a21b8be906697cc3274182a1102bd02cd47a33a4a296dfb85e11d3030b",
     "references/deai-rules.md": "sha256:6e02633d7d87592a57d8765e65de0e1f964e3699c3851f437ff8667d010b1668",
@@ -71,6 +71,6 @@
     "references/title-techniques.md": "sha256:bb414aa79d22f2b4df64d867d68bd2f97fa6fde696f4ed208cf76ca2b63c5272",
     "references/cognition-baseline.md": "sha256:0e0dba0e3797b12177b662a86f13d2db3e68a3058a17fafdcdfce6a8e85431ef",
     "references/doc-templates.md": "sha256:59c19cd4cfa32edeb5262fca9824df4c4e7d842013a32b1bf023f144db522099",
-    "references/gate-verdict-format.md": "sha256:508819704a5f4b4041e147cf699abf82b88afceb2ba2c6350ffb628a0afeb871"
+    "references/gate-verdict-format.md": "sha256:af40af3c11bccdd5cf49690840e8a8e58f86407cb1105378cd6fbd5140ef500c"
   }
 }
