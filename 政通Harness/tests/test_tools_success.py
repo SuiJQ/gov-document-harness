@@ -389,6 +389,7 @@ def test_每个工具都至少被本文件走到一次(tmp_path: Path) -> None:
         "flow.inject_directive": {"text": "t"},
         # tool.result 查回 call-demo（见上方 _存档）
         "tool.result": {"call_id": "call-demo"},
+        "gate.report": {"gate_id": "G1", "conclusion": "通过", "evidence": "x"},
     }
     for s in TOOL_SPECS:
         # **按工具自己的白名单挑一个合法调用者**（D-384）。

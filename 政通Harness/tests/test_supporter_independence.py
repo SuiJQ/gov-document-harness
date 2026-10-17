@@ -143,11 +143,16 @@ class Test没有Supporter也能跑:
                     # `assert 主体.is_dir() and Supporter.is_dir()`，
                     # 差点被当成真发现去查「主体怎么依赖 Supporter 了」。
                     "--ignore=tests/test_supporter_independence.py",
+                    # **同样 ignore test_check_sh_report_order**：
+                    # 它读 `Supporter/check.sh` 验报告顺序（D-414）——而这个场景里
+                    # Supporter 恰恰被移走了。它红不是「主体依赖工具」，
+                    # 是判据在检查一个不存在的前提（同型坑）。
+                    "--ignore=tests/test_check_sh_report_order.py",
                 ],
                 cwd=主体,
                 capture_output=True,
                 text=True,
-                env={"PATH": "/usr/bin:/bin", "PYTHONPATH": ""},
+                env={"PATH": "/usr/bin:/bin", "PYTHONPATH": "/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/src:/app/user-packages/python:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/.venv/lib/python3.11/site-packages"},
             )
             末 = (r.stdout + r.stderr)[-2500:]
             assert r.returncode == 0, f"**移走 Supporter 后测试红了**——说明主体确实依赖它。\n{末}"

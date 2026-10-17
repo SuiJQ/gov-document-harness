@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
+from zhengtong.domain.tier import TierId
 from zhengtong.orchestration import 编排器
 from zhengtong.ports.llm import Message, ToolCall
 from zhengtong.services.tools.calllog import 调用存档
@@ -78,7 +79,7 @@ class Test动作入序列结果不入:
             模型名="m",
             门禁取证=lambda _请求: {},
         )
-        过程 = 编._建过程()
+        过程 = 编._建过程(档位=TierId.PRO)
         前 = len(过程.历史.get(RoleId.LANGUAGE, []))
         过程._记入历史(RoleId.LANGUAGE, PhaseId.DRAFTING, "模型写了一段正文")
         后 = 过程.历史.get(RoleId.LANGUAGE, [])
@@ -99,7 +100,7 @@ class Test动作入序列结果不入:
             模型名="m",
             门禁取证=lambda _请求: {},
         )
-        过程 = 编._建过程()
+        过程 = 编._建过程(档位=TierId.PRO)
         from zhengtong.domain.role import RoleId
 
         过程.记工具动作(

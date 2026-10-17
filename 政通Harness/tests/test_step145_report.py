@@ -22,17 +22,25 @@ import pytest
 
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
 from zhengtong.domain.run_state import GateRecord
+from zhengtong.domain.tier import TierId
 from zhengtong.orchestration import 编排器
 
 
 def _编(**kw: object) -> 编排器:
-    return 编排器(
+    """装一个编排器，并**顺手定档 PRO**。
+
+    汇报回调走 `记汇报()`，而它要求档位已设（D-380 起没有静默默认档）。
+    设的是编排器自己那个公开字段，不开测试专用口子。
+    """
+    器 = 编排器(
         llm=FakeLlm(),
         storage=FakeStorage(),
         模型名="test-model",
         门禁取证=lambda 请求: {g.value: GateRecord(gate=g.value, passed=True) for g in 请求.门禁},
         **kw,  # pyright: ignore[reportArgumentType]
     )
+    器.档位 = TierId.PRO
+    return 器
 
 
 class Test汇报回调接线:
@@ -53,7 +61,7 @@ class Test汇报回调接线:
         回 = 回调.汇报("【陈纲举】结构已改，第三段重排。", {"phase": "drafting"})
         assert isinstance(回, str), "汇报回调必须返回主理人答复"
 
-        过程 = 编._建过程()
+        过程 = 编._建过程(档位=TierId.PRO)
         历史 = 过程.历史.get(RoleId.TEAM_LEAD, [])
         assert 历史, "汇报没进主理人历史"
         全 = "\n".join(m.content for m in 历史)
@@ -65,7 +73,7 @@ class Test汇报回调接线:
         from zhengtong.domain.role import RoleId
 
         编.工具回调.汇报("【辞达意】请确认文种。", {})
-        过程 = 编._建过程()
+        过程 = 编._建过程(档位=TierId.PRO)
         历史 = 过程.历史.get(RoleId.TEAM_LEAD, [])
         角色 = [m.role for m in 历史]
         assert "assistant" in 角色, "主理人答复没进历史"

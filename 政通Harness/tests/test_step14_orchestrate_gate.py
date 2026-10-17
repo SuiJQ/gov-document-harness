@@ -225,7 +225,7 @@ class TestD065幂等与退回:
                 g.value: GateRecord(gate=g.value, passed=True) for g in 请求.门禁
             },
             初始状态=首.终态,
-            初始已完成=首._建过程().已完成,
+            初始已完成=首._建过程(档位=TierId.PRO).已完成,
         )
         续.跑到终(档位=TierId.PRO, 需求="通知")
         assert len(续.发出的请求) < 首轮, "续跑重复问了模型——幂等失效"

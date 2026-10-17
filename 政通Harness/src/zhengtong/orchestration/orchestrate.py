@@ -731,7 +731,10 @@ class _过程:
         当前卡 = self.状态.dcard
         更新计数 = 0
         # D1 文种：匹配常见文种关键词
-        文种匹配 = re.search(r"(?:拟|撰写|起草|出具|成文|通知|请示|报告|函|纪要|决定|意见|批复|通报|报告|申请|方案|规划|计划|总结|简报|信息|简报|汇报|说明|报告)", 输入)
+        文种匹配 = re.search(
+            r"(?:拟|撰写|起草|出具|成文|通知|请示|报告|函|纪要|决定|意见|批复|通报|报告|申请|方案|规划|计划|总结|简报|信息|简报|汇报|说明|报告)",
+            输入,
+        )
         if 文种匹配:
             文种 = 文种匹配.group(0)
             if 当前卡.get(DCardFieldId.D1).is_missing:
@@ -750,7 +753,9 @@ class _过程:
             elif "事项" in (当前卡.get(DCardFieldId.D1).value or ""):
                 现有 = 当前卡.get(DCardFieldId.D1).value or ""
                 if "事项" not in 现有:
-                    新字段 = 当前卡.get(DCardFieldId.D1).filled_with(f"{现有}：{标题}", Provenance.USER)
+                    新字段 = 当前卡.get(DCardFieldId.D1).filled_with(
+                        f"{现有}：{标题}", Provenance.USER
+                    )
                     当前卡 = 当前卡.with_field(新字段)
         if 更新计数 > 0:
             self.状态 = self.状态.with_dcard(当前卡)
@@ -766,7 +771,9 @@ class _过程:
 
         正文 = self.回复.get(RoleId.TEAM_LEAD, "")
         if not 正文:
-            self.编排.发(EventKind.ARTIFACT_UPDATED, PhaseId.DIRECTION, msg="D-Card 更新跳过：主理人回复为空")
+            self.编排.发(
+                EventKind.ARTIFACT_UPDATED, PhaseId.DIRECTION, msg="D-Card 更新跳过：主理人回复为空"
+            )
             return
         更新计数 = 0
         当前卡 = self.状态.dcard
@@ -782,12 +789,18 @@ class _过程:
                 # 去掉 "D1 " 或 "D1：" 前缀，取剩余内容
                 值 = re.sub(rf"(?i)^\s*{fid.value}\s*[：:]\s*", "", 行).strip()
                 if 值:
-                    新字段 = 当前卡.get(fid).filled_with(值, Provenance.LEAD_INFERRED if fid is DCardFieldId.D8 else Provenance.USER)
+                    新字段 = 当前卡.get(fid).filled_with(
+                        值, Provenance.LEAD_INFERRED if fid is DCardFieldId.D8 else Provenance.USER
+                    )
                     当前卡 = 当前卡.with_field(新字段)
                     更新计数 += 1
         if 更新计数 > 0:
             self.状态 = self.状态.with_dcard(当前卡)
-            self.编排.发(EventKind.ARTIFACT_UPDATED, PhaseId.DIRECTION, msg=f"D-Card 已更新 {更新计数} 个字段")
+            self.编排.发(
+                EventKind.ARTIFACT_UPDATED,
+                PhaseId.DIRECTION,
+                msg=f"D-Card 已更新 {更新计数} 个字段",
+            )
 
     def _政策取证产物(self) -> 阶段产物 | None:
         """《政策依据适配表》**单独落一份**，不混在阶段聚合正文里（D-255）。
@@ -838,7 +851,11 @@ class _过程:
         卡 = self.状态.dcard
         if all(not f.is_filled for f in 卡.by_id.values()):
             # D-Card 全空：降级放行，记警。
-            self.编排.发(EventKind.PHASE_EXITED, 阶段, msg="硬约束降级：D-Card 全空，ask_user 未接通，记警放行")
+            self.编排.发(
+                EventKind.PHASE_EXITED,
+                阶段,
+                msg="硬约束降级：D-Card 全空，ask_user 未接通，记警放行",
+            )
             return Result.ok_none()
         got = self.编排.validators.run_hard_constraint(
             {
@@ -1471,7 +1488,7 @@ class _过程:
                 # 会真的执行——声明端不给 ≠ 执行端不接。
                 #
                 # **档位未设置时退回空域**：工具层对空域的解释是
-                #「一个工具都不给」，与不传工具层的效果一致。
+                # 「一个工具都不给」，与不传工具层的效果一致。
                 档位 = self.编排.档位
                 启用域 = TIER_BY_ID[档位].工具域 if 档位 is not None else frozenset()
                 结果 = self.工具层.调用(
@@ -2406,8 +2423,26 @@ class 编排器:
 
         **档位必须显式传入**：此前硬编码 `TierId.PRO`，
         导致无论用户选什么档位，实际跑的都是 Pro 档。
+
+        **复用时档位不一致要炸**（D-413）：幂等这条捷径会让传进来的
+        `档位` 在「过程已存在」时被**静默丢弃**——那正是本项目栽过八次
+        的形状（D-222/D-231/D-233/D-234/D-235/D-406：值在那里没人往下传，
+        而所有既有测试全绿）。档位决定门禁、编制与推理开关，
+        丢弃一次就等于按别的档跑完全程且不报错，故此处主动 `raise`。
+
+        用 `raise` 而不是 `assert`：`assert` 在 `python -O` 下会消失，
+        而这条保护的是真实运行行为，不是调试辅助（同 `bus.py:83`、
+        `journal.py:149` 的口径）。
         """
         if self._过程 is not None:
+            已建 = self._过程.状态.task.tier
+            if 已建 is not 档位:
+                raise ValueError(
+                    f"档位不一致：过程已按 {已建.value} 建好，"
+                    f"本次又传 {档位.value}——传进来的档位会被静默丢弃，"
+                    "门禁与编制会按先建的档位执行。"
+                    "请由调用方传入与已建过程一致的档位。"
+                )
             return self._过程
 
         任务 = TaskSpec(tier=档位, requirement="")
@@ -2415,7 +2450,12 @@ class 编排器:
             编排=self,
             llm=self.llm,
             storage=self.storage,
-            序列=成文序列,
+            # **阶段线也要按档位取**（D-413）：此前这里写死 `成文序列`，
+            # 于是档位只被塞进 `TaskSpec` 就没往下走——咨询档经这条路
+            # 建出来的过程照跑 DIRECTION / OUTLINE / GATING。
+            # 与 `跑到终` 用 `阶段序列(档位)` 保持一致；PRO/FLASH 结果不变，
+            # 只有咨询档从「错走成文线」变成走咨询线。
+            序列=阶段序列(档位),
             状态=new_run_state(self.运行号, 任务),
             初始已完成=self.初始已完成,
         )

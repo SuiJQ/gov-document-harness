@@ -494,6 +494,16 @@ def tool_result(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[s
     return Result.ok(结果)
 
 
+def gate_report(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[str]:  # noqa: ARG001  # role 是统一签名的一部分，删了会让处理器表类型不一致
+    """报告一道门禁的取证结论。实际结论已在编排层通过工具调用参数提取，
+    此处仅做登记确认，返回简单回执。
+    """
+    门禁号 = p.get("gate_id", "?")
+    结论 = p.get("conclusion", "?")
+    证据 = p.get("evidence", "")
+    return Result.ok(f"已记录 {门禁号} {结论}：{证据}")
+
+
 #: 工具名 → 实现。**注册表与实现必须一一对应**，由测试守住。
 处理器表: Final[dict[str, Callable[[工具依赖, RoleId, dict[str, object]], Result[str]]]] = {
     "shared.write": shared_write,
@@ -513,4 +523,5 @@ def tool_result(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[s
     "flow.rollback": flow_rollback,
     "flow.inject_directive": flow_inject_directive,
     "tool.result": tool_result,
+    "gate.report": gate_report,
 }

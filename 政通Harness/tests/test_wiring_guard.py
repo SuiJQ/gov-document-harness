@@ -68,6 +68,7 @@ from zhengtong.app import build_app_from_workspace
 from zhengtong.domain.errors import ErrorCode, Result
 from zhengtong.domain.ids import RunId
 from zhengtong.domain.role import RoleId
+from zhengtong.domain.tier import TierId
 from zhengtong.ports.llm import FinishReason, LlmResponse
 
 if TYPE_CHECKING:
@@ -103,7 +104,27 @@ def _真应用(根: Path) -> tuple[App, 编排器]:
     got = build_app_from_workspace(Workspace(root=根))
     assert got.is_ok, got.error.detail if got.error else ""
     应用 = got.unwrap()
-    return 应用, 应用.编排器()  # 建编排器 = 触发后补
+    编排 = 应用.编排器()  # 建编排器 = 触发后补
+    # **定档 PRO**：七个回调里有五个最终落到 `记汇报()` / `_建过程()`，
+    # 它们要求档位已设（D-380 起编排器不再有静默默认档）。
+    # 设的是编排器自己那个公开字段（`跑到终` 写的也是它），
+    # 不开测试专用的设档口子——那等于再造一条生产不走的路径
+    # （D-406「另一条路径上没传」就是这么来的）。
+    编排.档位 = TierId.PRO
+    return 应用, 编排
+
+
+# ═══ 为什么下面一律写 `档位=TierId.PRO` ═══
+#
+# 本文件验的是**接线**，不是档位。但 `_建过程()` 现在要求显式交档
+# （D-412 前的 8f742ae 修掉了硬编码 `TierId.PRO`），而它**幂等**：
+# 过程已存在时传进来的档位会被丢掉——丢了就按先建的档跑，
+# 所以 `_建过程` 现在会比对并按 `raise` 处理（D-413）。
+#
+# 选 PRO 是为了**零行为变更**：硬编码时代所有过程都按 PRO 建，
+# 本文件当时是全绿的；换成别的档会顺带改掉阶段线与工具域，
+# 那就不再是「同步签名」而是另一件事了。
+# 档位传播本身由 `test_tier_propagation.py` 钉。
 
 
 # ═══ 判据 1：端到端，回调真的被调用且参数原样送到 ═══
@@ -115,7 +136,7 @@ class Test端到端七个回调:
         但接错成别的回调时它**照样是 True**，而内容就丢了。"""
         应用, 编排 = _真应用(tmp_path)
         try:
-            编排._建过程()
+            编排._建过程(档位=TierId.PRO)
             编排._派发中角色 = RoleId.STRUCTURE
             原句 = "汛情已核实，缺口三处"
             r = 应用.tools.调用(
@@ -136,7 +157,7 @@ class Test端到端七个回调:
     def test_挂起回调把成员真置为挂起(self, tmp_path: Path) -> None:
         应用, 编排 = _真应用(tmp_path)
         try:
-            编排._建过程()
+            编排._建过程(档位=TierId.PRO)
             编排._派发中角色 = RoleId.STRUCTURE
             r = 应用.tools.调用(
                 工具名="flow.sleep", 角色=RoleId.STRUCTURE, 参数={"reason": "等补充材料"}
@@ -151,7 +172,7 @@ class Test端到端七个回调:
         """**不立即放回运行中**——条件命中才该唤醒。"""
         应用, 编排 = _真应用(tmp_path)
         try:
-            编排._建过程()
+            编排._建过程(档位=TierId.PRO)
             编排._派发中角色 = RoleId.STRUCTURE
             r = 应用.tools.调用(
                 工具名="flow.wake_on",
@@ -170,7 +191,7 @@ class Test端到端七个回调:
         """**「严禁编造」**：主理人可能正忙，硬造批准就是编排器替它决定。"""
         应用, 编排 = _真应用(tmp_path)
         try:
-            编排._建过程()
+            编排._建过程(档位=TierId.PRO)
             编排._派发中角色 = RoleId.STRUCTURE
             r = 应用.tools.调用(
                 工具名="msg.request_from_lead",
@@ -187,7 +208,7 @@ class Test端到端七个回调:
     def test_状态回调返回真实成员状态表(self, tmp_path: Path) -> None:
         应用, 编排 = _真应用(tmp_path)
         try:
-            编排._建过程()
+            编排._建过程(档位=TierId.PRO)
             r = 应用.tools.调用(工具名="flow.status", 角色=RoleId.TEAM_LEAD, 参数={})
             assert r.is_ok, f"查状态失败：{r.error}"
             assert "structure" in r.unwrap(), f"状态表不含成员：{r.unwrap()}"
@@ -199,7 +220,7 @@ class Test端到端七个回调:
         另起一套就等于没有上限。"""
         应用, 编排 = _真应用(tmp_path)
         try:
-            编排._建过程()
+            编排._建过程(档位=TierId.PRO)
             编排._派发中角色 = RoleId.STRUCTURE
             过程 = 编排._过程
             assert 过程 is not None
@@ -221,7 +242,7 @@ class Test端到端七个回调:
         """`tool.result` 据此查回上一轮的工具输出（D-408 补的那条）。"""
         应用, 编排 = _真应用(tmp_path)
         try:
-            编排._建过程()
+            编排._建过程(档位=TierId.PRO)
             r = 应用.tools.调用(工具名="tool.result", 角色=RoleId.TEAM_LEAD, 参数={"call_id": "无"})
             # 查不到时**必须失败且说清**，不得返回空串——
             # 空串会让模型以为「我查过了，确实没有」（编造证据的另一形态）。
@@ -329,7 +350,7 @@ def test_装配根把六个回调逐一接到对应方法上(tmp_path: Path) -> 
     """
     应用, 编排 = _真应用(tmp_path)
     try:
-        编排._建过程()
+        编排._建过程(档位=TierId.PRO)
         d = 应用.tools._d
         for 名, 该连 in [
             ("汇报", 编排.工具回调.汇报),
@@ -374,7 +395,7 @@ def test_派发无论成败都复原派发中角色(tmp_path: Path, 炸不炸: b
 
     应用, 编排 = _真应用(tmp_path)
     try:
-        过程 = 编排._建过程()
+        过程 = 编排._建过程(档位=TierId.PRO)
         真实角色 = _该段角色(TierId.PRO, 过程.状态.phase)[0]
 
         class 工具模型:
@@ -512,7 +533,7 @@ class _会重试的模型:
 def test_重试次数从失败诊断里读出并发成事件(tmp_path: Path) -> None:
     应用, 编排 = _真应用(tmp_path)
     try:
-        过程 = 编排._建过程()
+        过程 = 编排._建过程(档位=TierId.PRO)
         # **换掉模型**：`_过程.llm` 的静态类型是 `LlmPort` 协议，
         # 而本条要测的正是「失败路径带出诊断」这个实现细节。
         # 故 cast 成 `Any`——**不是**用 ignore 掩盖类型错误（D-018）。
@@ -534,7 +555,7 @@ def test_重试后成功也要留痕(tmp_path: Path) -> None:
     在台账上是两回事，不记就看不出抖动。"""
     应用, 编排 = _真应用(tmp_path)
     try:
-        过程 = 编排._建过程()
+        过程 = 编排._建过程(档位=TierId.PRO)
         # **先让模型失败两次**（真实失败路径带出诊断），
         # **第三次成功且带重试次数**——验的是「成功路径也发事件」。
         假模型 = cast(Any, _会重试的模型(2))
@@ -566,7 +587,7 @@ def test_未重试时不发_model_retry(tmp_path: Path) -> None:
     而满屏噪声的检查等于没有检查（D-247）。"""
     应用, 编排 = _真应用(tmp_path)
     try:
-        过程 = 编排._建过程()
+        过程 = 编排._建过程(档位=TierId.PRO)
         假模型 = _会重试的模型(0)
         过程.__dict__["llm"] = 假模型
         问 = 过程._构造请求(RoleId.STRUCTURE, 过程.状态.phase)
@@ -585,7 +606,7 @@ def test_真适配器端点不通时真的带出次数(tmp_path: Path) -> None:
     """
     应用, 编排 = _真应用(tmp_path)
     try:
-        过程 = 编排._建过程()
+        过程 = 编排._建过程(档位=TierId.PRO)
         # **换掉退避等待**：否则真等 1+2 秒。次数上限调到 2，测试才跑得快。
         # `过程.llm` 静态类型是 `LlmPort`，而退避时钟与重试上限是
         # `HttpLlm` 的实现细节——本条要测的正是实现细节，故 cast 成 `Any`。

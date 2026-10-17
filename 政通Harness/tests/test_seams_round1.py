@@ -56,8 +56,17 @@ def _全过编排器() -> 编排器:
     第 14 步起编排按全集核对取证结论，**缺席即无证据**（D-221/E041）。
     本文件这批接缝判据关心事件流与幂等，不关心门禁判定，故统一注入
     全过结论——不是放宽，驳回与无证据由 test_step14_* 覆盖。
+
+    **顺手定档 PRO**：`取一步()` 要求档位已设（D-380 起编排器不再有
+    静默默认档）。本文件的 `drive` 接缝判据**故意不走 `跑到终`**——
+    走它就验不到「drive 才是调度边界」，所以只能自己把档设上。
+    设的是编排器自己那个公开字段（`跑到终` 写的也是它），
+    不开测试专用的设档口子：那等于再造一条生产不走的路径
+    （D-406「另一条路径上没传」就是这么来的）。
     """
-    return 编排器(llm=FakeLlm(), storage=FakeStorage(), 门禁取证=_全过)
+    器 = 编排器(llm=FakeLlm(), storage=FakeStorage(), 门禁取证=_全过)
+    器.档位 = TierId.PRO
+    return 器
 
 
 @pytest.fixture
@@ -160,6 +169,7 @@ class Test可被drive驱动:
 
         总线 = EventBus(Redactor())
         器 = 编排器(llm=FakeLlm(), storage=FakeStorage(), bus=总线, 门禁取证=_全过)
+        器.档位 = TierId.PRO  # 同 `_全过编排器`：本条自带总线，故自己定档
         got = drive(
             run_id=RunId("r-drive"),
             bus=总线,

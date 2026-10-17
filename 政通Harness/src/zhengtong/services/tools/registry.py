@@ -281,6 +281,25 @@ TOOL_RESULT = ToolSpec(
     域=ToolDomain.运行控制,
 )
 
+#: 门禁取证工具（GATING 阶段专用）。
+#: 将「自由文本输出格式」改为「结构化工具调用」，彻底避免模型不遵从格式。
+GATE_REPORT = ToolSpec(
+    name="gate.report",
+    description="报告一道门禁的取证结论。本轮只能调用本工具，不要输出自由文本。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "gate_id": {"type": "string", "description": "门禁编号，如 G1"},
+            "conclusion": {"type": "string", "enum": ["通过", "退回"], "description": "结论"},
+            "evidence": {"type": "string", "description": "可定位的正文原句或位置"},
+            "reason": {"type": "string", "description": "退回原因（仅退回时填写）"},
+        },
+        "required": ["gate_id", "conclusion", "evidence"],
+    },
+    effect=Effect.PURE,
+    域=ToolDomain.门禁校验,
+)
+
 TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
     SHARED_WRITE,
     SHARED_READ,
@@ -299,6 +318,7 @@ TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
     FLOW_ROLLBACK,
     FLOW_INJECT_DIRECTIVE,
     TOOL_RESULT,
+    GATE_REPORT,
 )
 
 _SPEC_BY_NAME: Final[dict[str, ToolSpec]] = {}

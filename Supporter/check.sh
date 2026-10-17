@@ -233,7 +233,6 @@ python3 ../Supporter/check_port_fields.py
 python3 ../Supporter/check_decision_refs.py
 
 echo ""
-echo "全部通过。"
 # 第六轮：接线逃逸口——「合法但失真」的三种写法。
 # 与前面几条**形状不同**：它们盯「有没有人在读」，
 # 这条盯「读取发生了，但读取方式是假的」——
@@ -266,3 +265,5 @@ python3 ../Supporter/check_event_wiring.py
 # 而 `tomli_w` 只装在 venv 里。裸 python3 会 ModuleNotFoundError——
 # 脚本对此 exit 2 而不是当成通过。
 .venv/bin/python ../Supporter/check_wiring_runtime.py
+echo ""
+echo "全部通过。"

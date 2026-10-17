@@ -83,13 +83,14 @@ def _运行器(d: 工具依赖) -> 工具运行器:
 
 
 class Test工具清单:
-    def test_共十七个(self) -> None:
+    def test_共十八个(self) -> None:
         """架构 §7.4 正文说「14 个」是**表格行数**——逐行落实是 16 个（D-190）。
 
         第 14.5 步新增 `tool.result`（对话序列只记工具动作不记结果，
-        模型需要一条查回途径）→ 17 个。**架构表已同步**。
+        模型需要一条查回途径）→ 17 个。门禁取证改用工具调用后新增 `gate.report` → 18 个。
+        **架构表已同步**。
         """
-        assert len(TOOL_SPECS) == 17
+        assert len(TOOL_SPECS) == 18
 
     def test_名字与架构表格一致(self) -> None:
         期望 = {
@@ -110,6 +111,7 @@ class Test工具清单:
             "flow.rollback",
             "flow.inject_directive",
             "tool.result",
+            "gate.report",
         }
         assert {s.name for s in TOOL_SPECS} == 期望
 
@@ -209,7 +211,7 @@ class Test角色白名单:
                 continue
             清单 = {s.name for s in 该角色可调(角色.id)}
             assert "flow.ask_user" not in 清单
-            assert len(清单) == 13  # 12 + tool.result（D-226，全体可调）
+            assert len(清单) == 14  # 13 + tool.result + gate.report（D-226，全体可调）
 
     def test_白名单为空意味着无人可调(self) -> None:
         """**默认方向**：空集是"没人能调"，不是"所有人都能调"。

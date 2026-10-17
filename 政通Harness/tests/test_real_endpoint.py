@@ -149,7 +149,7 @@ def 跑CLI(参数: list[str], 根: Path, 超时: int = 180) -> subprocess.Comple
         capture_output=True,
         text=True,
         cwd=仓库根,
-        env={"PYTHONPATH": str(仓库根 / "src"), "PATH": "/usr/bin:/bin"},
+        env={"PYTHONPATH": str(仓库根 / "src") + ":/app/user-packages/python:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/.venv/lib/python3.11/site-packages", "PATH": "/usr/bin:/bin"},
         timeout=超时,
         check=False,
     )
