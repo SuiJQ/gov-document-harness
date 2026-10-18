@@ -33,6 +33,7 @@ D-003 与架构 §15 的依赖策略：便携运行时必须能在**没有 textu
 | 命令 | 用途 |
 |---|---|
 | `--doctor` | 健康自检（探测能不能用，不跑编排） |
+| `--diagnose` | 诊断包（聚合全部检查，输出 JSON） |
 | `--tui` | 交互界面（需 textual） |
 | `--debug` | 打开调试显示（配合 `--tui`） |
 
@@ -43,6 +44,7 @@ D-003 与架构 §15 的依赖策略：便携运行时必须能在**没有 textu
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -53,6 +55,7 @@ from ..adapters.terminal import 查终端显示能力
 from ..app import 准备目录, 工作区
 from ..domain.tier import TIER_BY_ID, TierId
 from ..ports.llm import 探测结论
+from ..presentation.diagnostic import 跑诊断
 from ..presentation.doctor import 打印自检, 自检项, 跑自检
 
 #: 中文档位名 → 内部标识。用户输入中文，程序内部用英文（D-008）。
@@ -87,6 +90,11 @@ def 造解析器() -> argparse.ArgumentParser:
     )
     组 = 解析器.add_mutually_exclusive_group()
     组.add_argument("--doctor", action="store_true", help="健康自检：探测能不能用，不跑编排")
+    组.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="诊断包：聚合全部检查结果，输出 JSON",
+    )
     组.add_argument("--tui", action="store_true", help="交互界面（需要 textual）")
     # **需求与档位不再有命令行参数**（D-294）：这两个原本只服务无界面模式。
     # TUI 在诉求输入屏里收多行需求、并让用户在开始前选定档位
@@ -263,7 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     解析器 = 造解析器()
     参数 = 解析器.parse_args(list(argv) if argv is not None else None)
 
-    if not any((参数.doctor, 参数.tui)):
+    if not any((参数.doctor, 参数.diagnose, 参数.tui)):
         解析器.print_help()
         return 0
 
@@ -297,6 +305,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         结果 = 跑自检(探测=tuple(项), 字体=f"{详情}。{能力.提示}" if 能力.提示 else 详情)
         打印自检(结果)
         return 0 if 结果.全通过 else 1
+
+    if 参数.diagnose:
+        数据 = 跑诊断(参数.root)
+        sys.stdout.write(json.dumps(数据, ensure_ascii=False, indent=2) + "\n")
+        return 0
 
     if 参数.tui:
         return _进tui(参数)
