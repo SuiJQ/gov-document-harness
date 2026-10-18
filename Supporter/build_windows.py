@@ -27,11 +27,18 @@ spec 文件是 Python 源码，路径是 `str`，不存在这个问题。
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Windows 控制台默认 cp1252，中文 print 会 UnicodeEncodeError。
+# 强制 stdout/stderr 用 UTF-8。
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 def _find_root() -> Path:
     """定位项目根目录（含 src/ content/ pyproject.toml 的目录）。
