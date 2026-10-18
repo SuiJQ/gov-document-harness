@@ -34,9 +34,32 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-VENV = ROOT / "政通Harness" / ".venv"
+VENV = ROOT / ".venv"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
+
+
+def _find_python() -> str:
+    """找 PyInstaller 用的 Python 可执行文件。
+
+    优先用项目 .venv（里面装了 pyinstaller/textual/httpx/tomli-w）。
+    Windows 上 venv 的可执行文件在 Scripts/ 而不是 bin/。
+    """
+    candidates = []
+    if sys.platform == "win32":
+        candidates = [
+            str(VENV / "Scripts" / "python.exe"),
+            str(VENV / "Scripts" / "python"),
+        ]
+    else:
+        candidates = [
+            str(VENV / "bin" / "python"),
+            "/tmp/pyi-venv/bin/python",
+        ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    return sys.executable
 
 
 def _spec_content() -> str:
@@ -46,10 +69,10 @@ block_cipher = None
 
 a = Analysis(
     ['Supporter/_entry.py'],
-    pathex=['政通Harness/src'],
+    pathex=['src'],
     binaries=[],
     datas=[
-        ('政通Harness/content', 'content'),
+        ('content', 'content'),
     ],
     hiddenimports=[
         'zhengtong.tui_app',
@@ -150,18 +173,7 @@ def main() -> int:
     print("已清理旧构建产物")
 
     # 3. 跑 PyInstaller
-    # 优先用 uv 管理的独立 Python（自带 libpython3.11.so），
-    # 回退到 .venv（系统 Python 可能缺共享库）
-    for candidate in [
-        "/tmp/pyi-venv/bin/python",
-        str(VENV / "bin" / "python"),
-    ]:
-        if Path(candidate).exists():
-            py = candidate
-            break
-    else:
-        py = str(VENV / "bin" / "python")
-
+    py = _find_python()
     cmd = [
         py, "-m", "PyInstaller",
         "--noconfirm",
