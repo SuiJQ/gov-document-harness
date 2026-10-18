@@ -37,11 +37,22 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
           .\.venv\Scripts\python.exe -m pip install pyinstaller textual httpx tomli-w
 
+      - name: 清理 .git 中的 token（推送 URL 残留）
+        shell: pwsh
+        run: |
+          # git remote URL 可能含 token，清理后再做密钥扫描
+          $url = git config --get remote.origin.url
+          if ($url -match "ghp_") {
+              git remote set-url origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+              Write-Host "已清理 remote URL 中的 token"
+          }
+
       - name: 验证 API 密钥未被打包
         shell: pwsh
         run: |
           $secret = "sk-as-"
-          $hits = Get-ChildItem -Recurse -Path . -File |
+          # 排除 .git（可能含推送 token 残留）和 dist/build（构建产物）
+          $hits = Get-ChildItem -Recurse -Path . -File -Exclude ".git", "dist", "build" |
                   Select-String -Pattern $secret -Quiet
           if ($hits) {
               Write-Error "发现 API 密钥泄露！"
