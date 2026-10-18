@@ -54,3 +54,15 @@ class 调用存档:
     def __len__(self) -> int:
         with self._锁:
             return len(self._数据)
+
+    def 全部(self) -> dict[str, str]:
+        """返回全部 `call_id → 结果` 映射（D-069 补录）。
+
+        **为什么需要遍历**：`_尝试更新d卡` 要在 DIRECTION 段之后
+        回填 D-Card。模型在 intake 阶段可能用 `shared.write` 写过
+        方向确认单（工具结果存在这里），但 `self.回复` 里只有模型
+        的纯文本回复——纯文本不含结构化 D1–D9 行时，字段就填不进去。
+        遍历全部工具结果，找内容含 `D1 ` / `D2 ` 结构化行的那条。
+        """
+        with self._锁:
+            return dict(self._数据)

@@ -104,21 +104,49 @@ class Test两个出口都不许丢字段:
 
     def test_用户侧出口带规则与锚点(self) -> None:
         from zhengtong.adapters.fakes import FakeLlm, FakeStorage
+        from zhengtong.domain.dcard import FIELD_LABELS, DCard, DCardField, DCardFieldId, Provenance
         from zhengtong.domain.ids import RunId
         from zhengtong.domain.tier import TierId
         from zhengtong.orchestration import 编排器
 
+        # **预填部分字段**：D1、D2 有值、D3-D9 空，让硬约束真正跑起来并失败。
+        #
+        # 此前需求「就旱情写个通知」会被 `_从用户输入更新d卡()` 提取
+        # D1=通知，恰好也是「仅 D1 填、D2-D9 空」→ 降级放行，走不到 E040。
+        # 而 D-Card 全空时同样降级放行（ask_user 未接通，架构约束）。
+        # 故直接预填一张「D1、D2 有值、D3-D9 空」的卡——
+        # 已填字段数 > 1，不触发降级分支，硬约束真的拦下来。
+        _部分卡 = DCard(
+            {
+                DCardFieldId.D1: DCardField(
+                    DCardFieldId.D1,
+                    FIELD_LABELS[DCardFieldId.D1],
+                    value="通知：关于旱情",
+                    provenance=Provenance.USER,
+                ),
+                DCardFieldId.D2: DCardField(
+                    DCardFieldId.D2,
+                    FIELD_LABELS[DCardFieldId.D2],
+                    value="无",
+                    provenance=Provenance.USER,
+                ),
+                **{
+                    fid: DCardField(fid, label)
+                    for fid, label in FIELD_LABELS.items()
+                    if fid not in (DCardFieldId.D1, DCardFieldId.D2)
+                },
+            }
+        )
         编 = 编排器(
             llm=FakeLlm(),
             storage=FakeStorage(),
             模型名="m",
             门禁取证=lambda _请求: {},
             运行号=RunId("r-val"),
-            # **接真实校验器**：D-Card 全空，提问前必被拦下
             validators=硬约束校验器(),
         )
-        结果 = 编.跑到终(档位=TierId.PRO, 需求="就旱情写个通知")
-        assert 结果.is_error, "D-Card 全空却跑通了——提问前校验没拦"
+        结果 = 编.跑到终(档位=TierId.PRO, 需求="随便写点东西", 初始dcard=_部分卡)
+        assert 结果.is_error, "D-Card 部分填却跑通了——提问前校验没拦"
         详情 = _详情(结果)
         assert "D040" in 详情, f"用户看不到命中哪条规则：{详情}"
         assert "dcard." in 详情, f"用户看不到去哪儿改：{详情}"

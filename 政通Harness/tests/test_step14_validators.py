@@ -19,10 +19,26 @@
 from __future__ import annotations
 
 from zhengtong.adapters.fakes import FakeLlm, FakeStorage
+from zhengtong.domain.dcard import FIELD_LABELS, DCard, DCardField, Provenance
 from zhengtong.domain.run_state import GateRecord
 from zhengtong.domain.tier import TierId
 from zhengtong.orchestration import 编排器
 from zhengtong.ports.validators import ValidationIssue, ValidationResult
+
+
+def _满dcard() -> DCard:
+    """九个字段全填、来源 USER——供测试直接预填，绕过 `_从用户输入更新d卡()`。
+
+    需求文本只能被启发式提取 D1（文种关键词），D2-D9 永远留空，
+    而本组判据要测的是「校验器被调用」和「不通过时被拦」——
+    这跟「D1 被填时是否降级」无关，故直接给一张满卡。
+    """
+    return DCard(
+        {
+            fid: DCardField(fid, label, value=f"{fid.value} 的值", provenance=Provenance.USER)
+            for fid, label in FIELD_LABELS.items()
+        }
+    )
 
 
 class _记录校验器:
@@ -61,14 +77,14 @@ class Test提问前跑硬约束:
         """DIRECTION（方向确认）之前必须调用 `run_hard_constraint`（D-040）。"""
         校 = _记录校验器()
         编 = _编排(校)
-        编.跑到终(档位=TierId.PRO, 需求="通知")
+        编.跑到终(档位=TierId.PRO, 需求="通知", 初始dcard=_满dcard())
         assert 校.硬约束入参, "提问前没跑 run_hard_constraint——D-040 零实现"
 
     def test_硬约束收到DCard而非空壳(self) -> None:
         """校验入参必须带 D-Card（D-196 同型缺口：真校验器要看的东西不能不传）。"""
         校 = _记录校验器()
         编 = _编排(校)
-        编.跑到终(档位=TierId.PRO, 需求="通知")
+        编.跑到终(档位=TierId.PRO, 需求="通知", 初始dcard=_满dcard())
         首次 = 校.硬约束入参[0]
         assert "dcard" in 首次, f"硬约束入参没有 dcard：{首次}"
 
@@ -79,7 +95,7 @@ class Test提问前跑硬约束:
         """
         校 = _记录校验器(通过=False)
         编 = _编排(校)
-        结果 = 编.跑到终(档位=TierId.PRO, 需求="通知")
+        结果 = 编.跑到终(档位=TierId.PRO, 需求="通知", 初始dcard=_满dcard())
         assert 结果.is_error, "硬约束不通过却照常跑完——校验形同虚设"
 
     def test_咨询档不跑硬约束(self) -> None:
@@ -107,6 +123,33 @@ class Test提问前跑硬约束:
         编 = _编排(校)
         编.跑到终(档位=TierId.CONSULT, 需求="咨询一下")
         assert not 校.硬约束入参, "咨询档不该有 D-Card，硬约束不该被触发"
+
+    def test_仅D1由需求文本启发式填充时降级放行(self) -> None:
+        """仅 D1 由 `_从用户输入更新d卡()` 从需求文本提取时，降级放行。
+
+        `_从用户输入更新d卡()` 只从需求文本正则提取 D1（文种关键词），
+        D2-D9 不处理。结果 D1 已填而 D2-D9 为空——看起来像「部分填」，
+        实际上是「用户没说更多，等模型在 DIRECTION 阶段逐项问」。
+
+        此时若按「部分填 → 跑硬约束」处理，必然缺 D2-D9 而 E040。
+        但模型在 DIRECTION 段会调 `flow.ask_user` 逐项问用户，
+        答复回来后 `_尝试更新d卡()` 在派发后回填——
+        硬约束在下一轮自然通过。故在此场景下降级放行，与「全空」同处理。
+
+        判据：仅 D1、来源 USER（启发式从需求文本提取的），
+        不是模型研判（LEAD_INFERRED 仅 D8 允许，出现即异常）。
+        """
+        校 = _记录校验器()
+        编 = _编排(校)  # 不预填，需求 "通知" → _从用户输入更新d卡() 提取 D1=通知
+        结果 = 编.跑到终(档位=TierId.PRO, 需求="通知")
+        assert not 校.硬约束入参, "仅 D1 由需求文本填充时应降级放行，不跑硬约束"
+        assert 结果.is_ok, f"降级放行后流程应继续跑完：{结果}"
+
+
+if __name__ == "__main__":
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-v"]))
 
 
 if __name__ == "__main__":

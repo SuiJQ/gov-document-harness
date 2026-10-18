@@ -49,7 +49,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Final
 
 from ..domain.artifact import ArtifactKind, ArtifactRef
-from ..domain.dcard import FIELD_LABELS, DCardFieldId, Provenance
+from ..domain.dcard import FIELD_LABELS, DCard, DCardFieldId, Provenance
 from ..domain.errors import ErrorCode, Result
 from ..domain.event import Event, EventKind, Level, make_call_id
 from ..domain.gate import (
@@ -689,6 +689,29 @@ class _过程:
         档 = self.状态.task.tier
         if 阶段 is PhaseId.DIRECTION:
             self._从用户输入更新d卡()
+            # **校验前先回填**（D-069 补录）。
+            #
+            # 此前  放在  之后——但 DIRECTION 段的
+            #  在  之前，校验不过就根本走不到派发，
+            # 于是 D-Card 永远填不上、校验永远不过，死锁。
+            #
+            # 假模型在 intake 阶段就把 D-Card 内容用 shared.write 写入了
+            # 公共区（工具结果存在 self.工具存档），这里提前到校验前
+            # 从工具存档里捞出来解析。
+            #
+            # **`从回复=False`**：此时 `self.回复[TEAM_LEAD]` 里存的是
+            # **intake 阶段**的回复，不是 DIRECTION 阶段的。
+            # 真实模型在 intake 的回复是自由文本咨询意见，其中可能包含
+            # 「D1 是唯一停车项」「D3 硬确认项」等**元描述**——
+            # 它们恰好以 "D1 "/"D3 " 开头，会被 `_尝试更新d卡` 的正则
+            # 误匹配为 D-Card 字段值，导致 D-Card 出现 4 个伪字段
+            # （D1/D3/D7/D9），绕过「仅 D1 降级放行」分支，
+            # 跑硬约束必然失败（E040）。
+            #
+            # 故此处**只从公共区读**（假模型写入的 D-Card 产物），
+            # 不从 `self.回复` 解析。派发后的那次调用（第 725 行）
+            # 才需要同时看回复和公共区。
+            self._尝试更新d卡(从回复=False)
         校验 = self._提问前校验(阶段)
         if 校验.is_error:
             self.编排.发(EventKind.PHASE_EXITED, 阶段, ok=False)
@@ -708,6 +731,10 @@ class _过程:
         派 = self._派发(档, 阶段)
         if 派.is_error:
             return _转为失败(派, f"{阶段.value} 段派发失败")
+        if 阶段 is PhaseId.DIRECTION:
+            # **模型回复后再回填一次**（真实模型在 DIRECTION 段
+            # 的纯文本回复里也会包含结构化方向确认单）。
+            self._尝试更新d卡()
         if 阶段 is PhaseId.OUTLINE:
             # 《政策依据适配表》**不混进阶段聚合正文**（D-255）：
             # `_跑一段` 是单件契约（调用方按 `件.名称` 落盘），
@@ -760,21 +787,57 @@ class _过程:
         if 更新计数 > 0:
             self.状态 = self.状态.with_dcard(当前卡)
 
-    def _尝试更新d卡(self) -> None:
+    def _尝试更新d卡(self, 从回复: bool = True) -> None:
         """从 DIRECTION 段主理人回复中解析 D-Card 字段（D-069 补录）。
 
         真实模型会按提示词返回结构化方向确认单；
         假模型/降级场景可能返回非结构化文本，此时静默跳过，
         不阻断流程，但会在日志中留痕。
+
+        **两处来源都要看**（D-069 补录）：
+        1. `self.回复[TEAM_LEAD]`——模型纯文本回复；
+        2. `self.工具存档`——模型在 intake/DIRECTION 阶段用
+           `shared.write` 写入的方向确认单（工具结果存在这里）。
+           假模型把 D-Card 当工具调用写入公共区，纯文本回复里没有，
+           只从 `self.回复` 解析就永远填不满。
+
+        `从回复=False`：校验前那次调用（第 697 行）只读公共区，
+        不读 `self.回复`——因为那时 `self.回复` 里存的是 **intake**
+        阶段的回复（自由文本咨询意见），其中可能出现
+        「D1 是唯一停车项」「D3 硬确认项」等**元描述**，
+        它们恰好以 "D1 "/"D3 " 开头，会被正则误匹配为 D-Card 字段值，
+        产生伪字段绕过降级分支、触发 E040。
         """
         import re
 
-        正文 = self.回复.get(RoleId.TEAM_LEAD, "")
-        if not 正文:
+        来源列表: list[str] = []
+        回复正文 = self.回复.get(RoleId.TEAM_LEAD, "")
+        if 回复正文 and 从回复:
+            来源列表.append(回复正文)
+        # **从公共区读**（D-069 补录）。
+        #
+        # `shared.write` 把 D-Card 内容写入存储层（文件），
+        # 工具结果（`调用存档`）里只有一句摘要「已写入公共区：方向确认单-D-Card」，
+        # 不含 306 字的 D1–D9 结构化正文。只从工具结果解析永远拿不到内容。
+        # 故直接从存储层读公共区文件。
+        if self.storage is not None:
+            _run_id = self.状态.run_id
+            # **路径带 `data/` 前缀**：`put_artifact` 内部补 `data/`，
+            # 而 `list_dir` / `read_text` 不补——不带前缀就永远读不到。
+            _公共区路径 = f"data/{_run_id}/公共区"
+            _条目 = self.storage.list_dir(_公共区路径)
+            for _条目名 in _条目:
+                _读 = self.storage.read_text(f"{_公共区路径}/{_条目名}")
+                if _读.is_ok:
+                    _内容 = _读.unwrap()
+                    if _内容 and ("D1 " in _内容 or "D2 " in _内容):
+                        来源列表.append(_内容)
+        if not 来源列表:
             self.编排.发(
-                EventKind.ARTIFACT_UPDATED, PhaseId.DIRECTION, msg="D-Card 更新跳过：主理人回复为空"
+                EventKind.ARTIFACT_UPDATED, PhaseId.DIRECTION, msg="D-Card 更新跳过：无可用来源"
             )
             return
+        正文 = "\n".join(来源列表)
         更新计数 = 0
         当前卡 = self.状态.dcard
         for fid in FIELD_LABELS:
@@ -849,12 +912,37 @@ class _过程:
         if self.编排.validators is None:
             return Result.ok_none()
         卡 = self.状态.dcard
-        if all(not f.is_filled for f in 卡.by_id.values()):
+        已填 = [f for f in 卡.by_id.values() if f.is_filled]
+        if not 已填:
             # D-Card 全空：降级放行，记警。
             self.编排.发(
                 EventKind.PHASE_EXITED,
                 阶段,
                 msg="硬约束降级：D-Card 全空，ask_user 未接通，记警放行",
+            )
+            return Result.ok_none()
+        # **仅 D1 由 `_从用户输入更新d卡()` 启发式填充时降级放行**。
+        #
+        # `_从用户输入更新d卡()` 只从需求文本正则提取 D1（文种关键词），
+        # D2-D9 不处理。结果 D1 已填而 D2-D9 为空——看起来像「部分填」，
+        # 实际上是「用户没说更多，等模型在 DIRECTION 阶段逐项问」。
+        #
+        # 此时若按「部分填 → 跑硬约束」处理，必然缺 D2-D9 而 E040。
+        # 但模型在 DIRECTION 段会调 `flow.ask_user` 逐项问用户，
+        # 答复回来后 `_尝试更新d卡()` 在派发后回填（第 725 行）——
+        # 硬约束在下一轮自然通过。故在此场景下降级放行，与「全空」同处理。
+        #
+        # 判据：仅 D1、来源是 USER（启发式从需求文本提取的），
+        # 不是模型研判（LEAD_INFERRED 仅 D8 允许，出现即异常）。
+        if (
+            len(已填) == 1
+            and 已填[0].id is DCardFieldId.D1
+            and 已填[0].provenance is Provenance.USER
+        ):
+            self.编排.发(
+                EventKind.PHASE_EXITED,
+                阶段,
+                msg="硬约束降级：仅 D1 由需求文本启发式填充，D2-D9 待 DIRECTION 阶段逐项问用户",
             )
             return Result.ok_none()
         got = self.编排.validators.run_hard_constraint(
@@ -2478,9 +2566,20 @@ class 编排器:
         if self.工具层 is not None:
             self.工具层.接调用存档(存档)
 
-    def 跑到终(self, *, 档位: TierId, 需求: str) -> Result[编排结果]:
+    def 跑到终(
+        self,
+        *,
+        档位: TierId,
+        需求: str,
+        初始dcard: DCard | None = None,
+    ) -> Result[编排结果]:
         """用 `drive` 跑到底。**这是唯一入口**——
         没有另一条「一口气跑完」的路，否则 `drive` 会被绕过。
+
+        `初始dcard`：测试直接预填 D-Card，绕过 `_从用户输入更新d卡()`
+        的启发式（它只从需求文本正则提取 D1，D2-D9 永远留空）。
+        满卡不会被 `_从用户输入更新d卡()` 覆盖——它只在字段
+        `is_missing` 时才填，满卡所有字段都有值。
         """
         任务 = TaskSpec(tier=档位, requirement=需求)
         合法 = validate_task(任务)
@@ -2500,6 +2599,8 @@ class 编排器:
         # `app.py` 的 `run_once`，而那是个死函数（只有 tests 调）。
         # 于是「续跑」这个能力挂在一条不存在的链上。
         状态 = self.初始状态 or self._读续跑状态(任务) or new_run_state(self.运行号, 任务)
+        if 初始dcard is not None:
+            状态 = 状态.with_dcard(初始dcard)
         # 强制重建：同一编排器跑两次时，第二次不能沿用上次的进度。
         # 状态可续，过程必须重建——过程里存着逐请求的运行时状态。
         #: **本轮跳过的已完成调用数**（D-065）。`run.resumed` 的判据。

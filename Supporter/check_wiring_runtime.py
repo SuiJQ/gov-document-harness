@@ -99,11 +99,12 @@ def _实测() -> dict[str, object]:
         print("这不是判据问题，是环境缺依赖——**必须报出来**，不能当成通过。")
         sys.exit(2)
 
+    from zhengtong.domain.tier import TierId
     app = build_app()
     try:
         编排 = app.编排器()
         # 建过程——否则 `调用存档` 那类「按需惰性创建」的字段还没有对象。
-        编排._建过程()  # noqa: SLF001
+        编排._建过程(档位=TierId.PRO)  # noqa: SLF001
         依 = app.tools._d  # noqa: SLF001
         from zhengtong.services.tools.handlers import 工具依赖
 

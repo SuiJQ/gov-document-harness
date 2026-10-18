@@ -136,7 +136,11 @@ class TestURL原样使用:
         assert "xn--" in 见过[0], f"中文域名未按 RFC 转 punycode：{见过[0]}"
 
     def test_请求体原样发出(self) -> None:
-        """D-004 同样适用于体：不增删字段。"""
+        """D-004 同样适用于体：不增删字段。
+
+        **例外**：`stream` 字段由传输层强制设为 `True`（始终走流式接收）。
+        其他字段原样透传。
+        """
         见过: list[dict[str, object]] = []
 
         def 记(请求: httpx.Request) -> httpx.Response:
@@ -145,7 +149,10 @@ class TestURL原样使用:
 
         体: dict[str, object] = {"model": "m", "messages": [], "temperature": 0.2}
         _装(记).post_json("https://x.invalid/v1", {}, 体)
-        assert 见过[0] == 体, f"请求体被改动了：{见过[0]}"
+        # 传输层强制流式，会多一个 stream=True
+        期望 = dict(体)
+        期望["stream"] = True
+        assert 见过[0] == 期望, f"请求体被改动了：{见过[0]}"
 
 
 class Test流式已整体移除:

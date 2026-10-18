@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from zhengtong.domain.dcard import DCard
 from zhengtong.domain.errors import Result
 from zhengtong.domain.event import Event, EventKind, Level
 from zhengtong.domain.ids import RunId
@@ -75,7 +76,7 @@ class _假编排:
         self.事件 = 事件 if 事件 is not None else []
         self.跑时订阅数: list[int] = []
 
-    def 跑到终(self, *, 档位: TierId, 需求: str) -> Result[None]:
+    def 跑到终(self, *, 档位: TierId, 需求: str, 初始dcard: DCard | None = None) -> Result[None]:
         # **编排尚未结束时**观察订阅情况——这正是本判据与旧测试的分水岭。
         self.跑时订阅数.append(len(self.bus.sinks) if self.bus else 0)
         return Result.ok(None)

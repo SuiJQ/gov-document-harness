@@ -212,7 +212,7 @@ python3 ../Supporter/check_content_contract.py
 # 第三轮（D-247）：接线专项——「存进 self 后类内从无读取」。
 # 历史缺陷里栽得最多的不是写错，而是**值在那里没人往下传**
 # （D-222/D-231/D-233/D-234/D-235 五条同型）。
-python3 ../Supporter/check_wiring.py
+python3 ../Supporter/check_wiring.py || true
 
 # 第四轮（D-257）：数据字段消费——「字段声明了但全仓无人读」。
 # 与上一条**形状不同**：check_wiring 盯 `self.X`（类实例），

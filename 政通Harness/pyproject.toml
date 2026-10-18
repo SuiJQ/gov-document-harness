@@ -110,6 +110,13 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 
+# ── Vulture：死代码（只查 Ruff 看不到的）────────────────────
+# 与 Ruff 的 F401（未用导入）分工：Ruff 管「导入了没用」，
+# vulture 管「整个函数/变量没人调」。
+# 注意：vulture 2.16 不读 pyproject.toml，配置走命令行（见 Supporter/lint.sh）。
+# 全局白名单理由：这两个变量名只在接口签名中出现（Ruff ARG002 已豁免），
+# vulture 不认识 Ruff 的 noqa，故按名登记。签名即契约，不是死代码。
+
 # ── BasedPyright：慢但完整，负责类型 ─────────────────────
 # D-068 要求全 tuple 真不可变、D-069 要求 provenance 可校验 —— 这些都只能靠类型检查兜。
 [tool.basedpyright]

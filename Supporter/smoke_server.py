@@ -51,6 +51,30 @@ class _模型:
                 最后一条 = str(m.get("content", ""))
                 break
 
+        # **工具调用优先**：请求里带 `tools` 且系统提示要求调用工具时，
+        # 返回 `tool_calls` 而不是纯文本。这是 FLASH/PRO 档能跑通的关键——
+        # 假模型必须真的调用工具，D-Card 字段才能被填上。
+        工具调用 = self._选工具调用(系统, 最后一条, 请求体.get("tools", []), 请求体)
+        if 工具调用:
+            return {
+                "id": "chatcmpl-假",
+                "object": "chat.completion",
+                "created": 0,
+                "model": 请求体.get("model", "假模型"),
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": 工具调用,
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 80, "total_tokens": 180},
+            }
+
         正文 = self._按关键词(系统, 最后一条)
         return {
             "id": "chatcmpl-假",
@@ -66,6 +90,124 @@ class _模型:
             ],
             "usage": {"prompt_tokens": 100, "completion_tokens": 80, "total_tokens": 180},
         }
+
+    def _选工具调用(self, 系统: str, 最后一条: str, 工具列表: list[dict], 请求体: dict[str, Any]) -> list[dict]:
+        """根据系统提示决定是否调用工具、调用哪个。
+
+        **靠契约块识别阶段**，不靠阶段名——阶段名是内部标识可能改名，
+        而契约块由装配器按阶段条件渲染，它的存在本身就是阶段信号。
+
+        **优先级**：门禁取证 > D-Card 填写 > 产物写入 > 草稿提交。
+        同一阶段可能需要多轮工具调用，这里每次只返回一轮，
+        让程序的 `_跑工具` 循环自己驱动下一轮。
+
+        **不重复调用**：若最后一条消息是 `role="tool"`（上一轮工具刚执行完），
+        本轮返回纯文本，让模型"看到工具结果后再决定下一步"。
+        否则模型会永远返回同一个 tool_calls，直到撞上 `_跑工具` 的次数上限。
+        """
+        import re
+        可用工具 = {t["function"]["name"] for t in 工具列表}
+
+        # 上一轮刚执行过工具 → 本轮不调用，返回纯文本让模型消化结果
+        for m in reversed(请求体.get("messages", [])):
+            if m.get("role") == "tool":
+                return []
+            if m.get("role") == "assistant":
+                break
+
+        # 门禁取证：GATING 阶段专用，契约要求行式输出 + gate.report 工具
+        if "本轮**只由你取证**的门禁" in 系统 and "gate.report" in 可用工具:
+            清单 = 系统.split("本轮**只由你取证**的门禁", 1)[1]
+            清单 = 清单.split("：", 1)[1].split("\n", 1)[0]
+            # **用正则 G\d+ 而非 startswith("G")**：清单里 "G3。请调用…"
+            # 这类后缀会让 startswith 误匹配，正则只收 G 后跟数字的。
+            编号 = re.findall(r"G\d+", 清单)
+            return [
+                {
+                    "id": f"call_gate_{g.lower()}",
+                    "type": "function",
+                    "function": {
+                        "name": "gate.report",
+                        "arguments": json.dumps({
+                            "gate_id": g,
+                            "conclusion": "通过",
+                            "evidence": f"（假模型）{g} 已复核，未见违规项",
+                        }, ensure_ascii=False),
+                    },
+                }
+                for g in 编号
+            ]
+
+        # D-Card 填写：只在 DIRECTION 阶段回填。
+        # **不看阶段名**——intake 阶段的契约也提到"方向确认单"，
+        # 只看关键词会提前写入，而 intake 阶段不会解析 D-Card，
+        # 导致 DIRECTION 阶段 D-Card 仍为空、门禁 E040 失败。
+        # 判据：intake 阶段的产出契约是「需求采集单」，
+        # DIRECTION 阶段的产出契约是「方向确认单」——两者互斥。
+        if "方向确认单" in 系统 and "shared.write" in 可用工具 and "需求采集单" not in 系统:
+            return [{
+                "id": "call_dcard",
+                "type": "function",
+                "function": {
+                    "name": "shared.write",
+                    "arguments": json.dumps({
+                        "name": "方向确认单-D-Card",
+                        "kind": "attachment",
+                        "content": self._填D卡文本(),
+                    }, ensure_ascii=False),
+                },
+            }]
+
+        # 产物写入：OUTLINE / DRAFTING / FINAL 阶段，契约要求产出阶段成果
+        if "产物契约" in 系统 and "shared.write" in 可用工具:
+            return [{
+                "id": "call_artifact",
+                "type": "function",
+                "function": {
+                    "name": "shared.write",
+                    "arguments": json.dumps({
+                        "name": "阶段成果",
+                        "kind": "draft",
+                        "content": self._按关键词(系统, 最后一条),
+                    }, ensure_ascii=False),
+                },
+            }]
+
+        # 草稿提交：DRAFTING 阶段起草人提交正文
+        if "draft.submit" in 可用工具:
+            return [{
+                "id": "call_draft",
+                "type": "function",
+                "function": {
+                    "name": "draft.submit",
+                    "arguments": json.dumps({
+                        "content": self._按关键词(系统, 最后一条),
+                        "version": 1,
+                    }, ensure_ascii=False),
+                },
+            }]
+
+        return []
+
+    def _填D卡文本(self) -> str:
+        """生成完整的 D-Card 文本（D1–D9），供 DIRECTION 阶段填写。
+
+        格式与 `_尝试更新d卡` 的正则匹配对齐：`D1 xxx` / `D2 xxx` 等。
+        """
+        return (
+            "D1 主件：通知，关于防汛工作的通知，一式三份\n"
+            "D2 配套件：无\n"
+            "D3 关键时点：定稿日期 2026-10-20，报送截止 2026-10-22\n"
+            "D4 事实边界：不得假设未核实的水文数据；不得引用非官方来源\n"
+            "D5 数据状态：降雨量数据来自市气象局（可靠，时效 24h 内）；"
+            "水位数据来自水文站（可靠，时效 2h 内）\n"
+            "D6 主体排序：市应急管理局 → 市水利局 → 各区县防汛指挥部"
+            "（按应急响应级别排序）\n"
+            "D7 硬约束清单：格式依 GB/T 9704-2012；事实标注三态；"
+            "主体排序 ≥3 时附依据；政策依据全可溯\n"
+            "D8 语域特征：正式公文语域，庄重简明，不用修辞夸张\n"
+            "D9 例外接口清单：无折中方案，不适用\n"
+        )
 
     def _门禁行式(self, 系统: str) -> str | None:
         """门禁取证阶段的行式结论；非该阶段返回 `None`。

@@ -26,6 +26,7 @@ import pytest
 from zhengtong.adapters.fakes import FakeStorage
 from zhengtong.adapters.tui import ZhengTongApp
 from zhengtong.domain.artifact import ArtifactKind, ArtifactRef
+from zhengtong.domain.dcard import DCard
 from zhengtong.domain.event import Event, EventKind, Level
 from zhengtong.domain.ids import ArtifactId, RunId
 from zhengtong.domain.phase import PhaseId
@@ -245,7 +246,9 @@ class Test退出码反映失败:
             def __init__(self) -> None:
                 self.事件 = []
 
-            def 跑到终(self, *, 档位: TierId, 需求: str) -> Result[None]:
+            def 跑到终(
+                self, *, 档位: TierId, 需求: str, 初始dcard: DCard | None = None
+            ) -> Result[None]:
                 from zhengtong.domain.errors import ErrorCode
 
                 return Result.fail(ErrorCode.STORAGE_WRITE_FAILED, "落盘失败")

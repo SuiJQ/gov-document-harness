@@ -152,7 +152,10 @@ class Test没有Supporter也能跑:
                 cwd=主体,
                 capture_output=True,
                 text=True,
-                env={"PATH": "/usr/bin:/bin", "PYTHONPATH": "/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/src:/app/user-packages/python:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/.venv/lib/python3.11/site-packages"},
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "PYTHONPATH": "/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/src:/app/user-packages/python:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/.venv/lib/python3.11/site-packages",
+                },
             )
             末 = (r.stdout + r.stderr)[-2500:]
             assert r.returncode == 0, f"**移走 Supporter 后测试红了**——说明主体确实依赖它。\n{末}"

@@ -78,7 +78,11 @@ class Test真能启动:
             capture_output=True,
             text=True,
             cwd=仓库根,
-            env={"PYTHONPATH": str(仓库根 / "src") + ":/app/user-packages/python:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/.venv/lib/python3.11/site-packages", "PATH": "/usr/bin:/bin"},
+            env={
+                "PYTHONPATH": str(仓库根 / "src")
+                + ":/app/user-packages/python:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/.venv/lib/python3.11/site-packages",
+                "PATH": "/usr/bin:/bin",
+            },
             timeout=120,
             check=False,
         )
@@ -127,7 +131,11 @@ class Test参数错在哪一步说得清:
             capture_output=True,
             text=True,
             cwd=仓库根,
-            env={"PYTHONPATH": str(仓库根 / "src") + ":/app/user-packages/python:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/.venv/lib/python3.11/site-packages", "PATH": "/usr/bin:/bin"},
+            env={
+                "PYTHONPATH": str(仓库根 / "src")
+                + ":/app/user-packages/python:/run/csi/mount-root/nas/4079184d856ecc166ed19d4887083405/workspaces/Harness/政通Harness/.venv/lib/python3.11/site-packages",
+                "PATH": "/usr/bin:/bin",
+            },
             timeout=120,
             check=False,
         )

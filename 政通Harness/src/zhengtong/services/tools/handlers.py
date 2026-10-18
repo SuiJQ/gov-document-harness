@@ -159,7 +159,28 @@ def shared_read(d: 工具依赖, role: RoleId, p: dict[str, object]) -> Result[s
     # 第一版拿传入的 `大纲` 去拼路径 → 写得进、读不出来。
     命中名 = next((n for n in 条目 if n.split(".", 1)[0] == 名称), None)
     if 命中名 is None:
-        return Result.fail(ErrorCode.FILE_UNREADABLE, f"公共区没有名为 {名称} 的产物")
+        # **E061 不是死胡同，是导航牌。**
+        # 此前只回「公共区没有名为 xxx 的产物」，模型收到后只能靠猜——
+        # 它不知道公共区初始是空的，也不知道可以先写再读，
+        # 于是反复试不同名字（9 字符、12 字符、18 字符…），
+        # 每次都 E061，白白烧掉好几轮工具调用。
+        #
+        # 改成在失败信息里同时给出**当前公共区实际有什么**和**下一步该做什么**：
+        # - 空 → 明确说「初始为空」，引导用 shared.write 先写
+        # - 有别的 → 列出来，模型可以改名字或用 shared.list 看全貌
+        if not 条目:
+            return Result.fail(
+                ErrorCode.FILE_UNREADABLE,
+                f"公共区当前为空，没有名为 {名称} 的产物。"
+                "如果你需要这个产物，先用 shared.write 写入（name/kind/content 三项），"
+                "写入后即可用 shared.read 读取。",
+            )
+        已有 = "、".join(条目)
+        return Result.fail(
+            ErrorCode.FILE_UNREADABLE,
+            f"公共区没有名为 {名称} 的产物。当前已有：{已有}。"
+            "可以用 shared.list 看全部条目，或用 shared.write 写入新的。",
+        )
     内容 = d.storage.read_text(f"{_公共区路径(d)}/{命中名}")
     if 内容.is_error:
         return Result.fail(ErrorCode.FILE_UNREADABLE, f"读取公共区产物 {名称} 失败")

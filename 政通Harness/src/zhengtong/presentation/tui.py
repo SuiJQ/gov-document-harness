@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, TypeVar, runtime_checkable
 
+from ..domain.dcard import DCard
 from ..domain.errors import Result
 from ..domain.event import Event
 from ..domain.tier import TierId
@@ -80,7 +81,13 @@ class 可跑编排(Protocol[_编排值]):
     #: 跑完后回读用。桥接在「没订阅总线」时兜底喂一遍。
     事件: list[Event]
 
-    def 跑到终(self, *, 档位: TierId, 需求: str) -> Result[_编排值]: ...
+    def 跑到终(
+        self,
+        *,
+        档位: TierId,
+        需求: str,
+        初始dcard: DCard | None = None,
+    ) -> Result[_编排值]: ...
 
 
 @dataclass(slots=True)
