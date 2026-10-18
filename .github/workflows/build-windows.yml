@@ -85,5 +85,21 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: 政通Harness/dist/zhengtong/zhengtong.exe
+          # **必须传完整包，不能只传 EXE**（2026-10-18 实测确认）。
+          #
+          # PyInstaller --onedir 的产出：
+          #   dist/zhengtong/zhengtong.exe   (10 MB，入口)
+          #   dist/zhengtong/_internal/     (99 MB，依赖库 + content/)
+          # EXE 只是启动器，运行时要去 _internal/ 里找
+          # Python 解释器和所有 .so/.pyd。只传 EXE 的话，
+          # 用户双击会报「找不到 _internal/libpython3.11.so」，
+          # 程序根本起不来。
+          #
+          # 此前写的是单个文件路径：Actions artifact 传整目录（完整），
+          # Release 却只传 EXE（残缺）——两个出口不同步，
+          # 对外发布的版本是坏的，而 tag push 只触发 Release，
+          # 不触发 artifact 检查。
+          #
+          # `**/*` 递归匹配目录下所有文件（action-gh-release 支持 glob）。
+          files: 政通Harness/dist/zhengtong/**/*
           generate_release_notes: true
