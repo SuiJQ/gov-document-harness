@@ -40,7 +40,6 @@ jobs:
       - name: 验证 API 密钥未被打包
         shell: pwsh
         run: |
-          # 先确认源码里密钥已脱敏（build_windows.py 不应引入密钥）
           $secret = "sk-as-"
           $hits = Get-ChildItem -Recurse -Path . -File |
                   Select-String -Pattern $secret -Quiet
