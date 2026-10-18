@@ -33,7 +33,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+def _find_root() -> Path:
+    """定位项目根目录（含 src/ content/ pyproject.toml 的目录）。
+
+    支持两种布局：
+    - 扁平：gov-document-harness/src/zhengtong/...
+    - 嵌套：gov-document-harness/政通Harness/src/zhengtong/...
+    """
+    here = Path(__file__).resolve().parent.parent
+    for candidate in [here, here / "政通Harness"]:
+        if (candidate / "src" / "zhengtong").is_dir() and (candidate / "content").is_dir():
+            return candidate
+    return here  # fallback
+
+
+ROOT = _find_root()
 VENV = ROOT / ".venv"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"

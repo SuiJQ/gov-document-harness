@@ -64,8 +64,13 @@ jobs:
 
       - name: 构建完整版（含 TUI）
         if: ${{ inputs.target == 'full' || github.event_name == 'push' }}
+        shell: pwsh
         run: |
-          .\.venv\Scripts\python.exe Supporter/build_windows.py
+          $ErrorActionPreference = "Continue"
+          .\.venv\Scripts\python.exe Supporter/build_windows.py 2>&1 | Write-Output
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "PyInstaller 构建失败，退出码: $LASTEXITCODE"
+          }
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
