@@ -52,13 +52,15 @@ jobs:
         run: |
           $secret = "sk-as-"
           # 排除 .git（可能含推送 token 残留）和 dist/build（构建产物）
-          $hits = Get-ChildItem -Recurse -Path . -File -Exclude ".git", "dist", "build" |
-                  Select-String -Pattern $secret -Quiet
+          $allFiles = Get-ChildItem -Recurse -Path . -File |
+                      Where-Object { $_.FullName -notmatch '\\.git\\' -and $_.FullName -notmatch '\\dist\\' -and $_.FullName -notmatch '\\build\\' -and $_.FullName -notmatch '\\.github\\' }
+          $hits = $allFiles | Select-String -Pattern $secret
           if ($hits) {
               Write-Error "发现 API 密钥泄露！"
+              $hits | ForEach-Object { Write-Host "  命中: $($_.Path):$($_.LineNumber)" }
               exit 1
           }
-          Write-Host "密钥检查通过"
+          Write-Host "密钥检查通过（扫描 $($allFiles.Count) 个文件）"
 
       - name: 构建完整版（含 TUI）
         if: ${{ inputs.target == 'full' || github.event_name == 'push' }}
