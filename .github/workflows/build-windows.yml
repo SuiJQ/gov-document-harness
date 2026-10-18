@@ -1,6 +1,6 @@
 name: build-windows
 
-on:
+"on":
   push:
     tags:
       - "v*"
@@ -10,10 +10,10 @@ on:
         description: "构建目标"
         required: false
         default: "full"
-        type: choice:
-          options:
-            - full
-            - cli
+        type: choice
+        options:
+          - full
+          - cli
 
 jobs:
   build-windows:
@@ -30,7 +30,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: 创建 venv 并安装依赖
         run: |
